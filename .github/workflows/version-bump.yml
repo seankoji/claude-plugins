@@ -1,0 +1,79 @@
+name: Auto-bump plugin versions
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Never run on bot's own bump commits — avoids infinite loop
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can diff against the base branch
+          fetch-depth: 0
+          # Use the PR head ref so we can push back to it
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect changed plugins and bump versions
+        id: bump
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          changed=0
+
+          for plugin_dir in plugins/*/; do
+            plugin_name=$(basename "$plugin_dir")
+            manifest="${plugin_dir}.claude-plugin/plugin.json"
+            [ -f "$manifest" ] || continue
+
+            # Check if any file inside this plugin changed
+            if ! git diff --quiet "$BASE" "$HEAD" -- "$plugin_dir"; then
+              # Get version on base branch vs current
+              base_version=$(git show "$BASE:$manifest" 2>/dev/null | jq -r '.version // "0.0.0"')
+              current_version=$(jq -r '.version' "$manifest")
+
+              # Only bump if developer hasn't already bumped
+              if [ "$current_version" = "$base_version" ]; then
+                # Increment patch: split on dot, bump third segment
+                IFS='.' read -r major minor patch <<< "$current_version"
+                new_version="${major}.${minor}.$((patch + 1))"
+
+                echo "Bumping $plugin_name: $current_version -> $new_version"
+
+                # Update plugin.json
+                tmp=$(mktemp)
+                jq --arg v "$new_version" '.version = $v' "$manifest" > "$tmp"
+                mv "$tmp" "$manifest"
+
+                # Update marketplace.json to match
+                tmp=$(mktemp)
+                jq --arg name "$plugin_name" --arg v "$new_version" \
+                  '(.plugins[] | select(.name == $name) | .version) |= $v' \
+                  .claude-plugin/marketplace.json > "$tmp"
+                mv "$tmp" .claude-plugin/marketplace.json
+
+                changed=1
+              else
+                echo "$plugin_name already bumped ($base_version -> $current_version), skipping"
+              fi
+            fi
+          done
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bumps
+        if: steps.bump.outputs.changed == '1'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugins/*/.claude-plugin/plugin.json .claude-plugin/marketplace.json
+          git commit -m "chore: auto-bump plugin versions [skip ci]"
+          git push

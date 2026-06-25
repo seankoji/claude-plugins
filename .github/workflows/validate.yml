@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Validate marketplace manifest
         run: |
@@ -22,7 +24,9 @@ jobs:
             [ -n "$name" ] || { echo "ERROR: missing name in $plugin_json"; exit 1; }
             has_commands=$(jq 'has("commands")' "$plugin_json")
             [ "$has_commands" = "false" ] || { echo "ERROR: plugin.json must not have commands field: $plugin_json"; exit 1; }
-            echo "  OK: $plugin_json (name=$name)"
+            version=$(jq -r '.version // empty' "$plugin_json")
+            [ -n "$version" ] || { echo "ERROR: missing version in $plugin_json"; exit 1; }
+            echo "  OK: $plugin_json (name=$name version=$version)"
           done
 
       - name: Validate marketplace name-to-source consistency
@@ -34,6 +38,45 @@ jobs:
             [ "$actual_name" = "$name" ] || { echo "ERROR: name mismatch: marketplace='$name' manifest='$actual_name'"; exit 1; }
             echo "OK: $name -> $source"
           done
+
+      - name: Validate marketplace versions match plugin.json
+        run: |
+          jq -r '.plugins[] | "\(.name) \(.source) \(.version // "")"' .claude-plugin/marketplace.json | \
+          while IFS=" " read -r name source market_version; do
+            [ -n "$market_version" ] || { echo "ERROR: marketplace entry for '$name' is missing version"; exit 1; }
+            manifest="${source}/.claude-plugin/plugin.json"
+            plugin_version=$(jq -r '.version' "$manifest")
+            [ "$market_version" = "$plugin_version" ] || {
+              echo "ERROR: version mismatch for $name: marketplace=$market_version plugin.json=$plugin_version"
+              exit 1
+            }
+            echo "OK: $name@$market_version"
+          done
+
+      - name: Validate version bumped for changed plugins (PRs only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          failed=0
+          for plugin_dir in plugins/*/; do
+            plugin_name=$(basename "$plugin_dir")
+            manifest="${plugin_dir}.claude-plugin/plugin.json"
+            [ -f "$manifest" ] || continue
+
+            if ! git diff --quiet "$BASE_SHA" HEAD -- "$plugin_dir"; then
+              base_version=$(git show "$BASE_SHA:$manifest" 2>/dev/null | jq -r '.version // "0.0.0"')
+              current_version=$(jq -r '.version' "$manifest")
+
+              if [ "$current_version" = "$base_version" ]; then
+                echo "ERROR: $plugin_name changed but version not bumped (still $current_version)"
+                failed=1
+              else
+                echo "OK: $plugin_name bumped $base_version -> $current_version"
+              fi
+            fi
+          done
+          [ "$failed" = "0" ] || exit 1
 
       - name: Check shell scripts are executable
         run: |
