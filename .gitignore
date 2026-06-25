@@ -1,0 +1,6 @@
+# Claude Code runtime state — never commit
+.claude/worktrees/
+.claude/jobs/
+
+# macOS
+.DS_Store
