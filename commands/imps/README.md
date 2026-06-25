@@ -75,8 +75,8 @@ or add briefs in `~/.claude/imps/personas/` to retune the panel.
 
 | Slug | Lens | Type |
 | --- | --- | --- |
-| `technical-architect` | boundaries, contracts, coupling | code |
-| `chissy-engineer` | edge cases, error paths, lazy shortcuts | code |
+| `solution-architect` | boundaries, contracts, coupling | code |
+| `grumpy-engineer` | edge cases, error paths, lazy shortcuts | code |
 | `sre` | failure modes, ops, idempotency, resource limits | code |
 | `business-analyst` | does the diff satisfy each issue's acceptance criteria | code |
 | `ux-designer` | hierarchy, affordance, consistency, mobile | browser |
