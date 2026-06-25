@@ -9,6 +9,11 @@
       "name": "elephant-goldfish",
       "source": "./plugins/elephant-goldfish",
       "description": "Self-validating /elephant design-doc command + Gemini goldfish judge."
+    },
+    {
+      "name": "imps",
+      "source": "./plugins/imps",
+      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, monitors progress, merges through deterministic gates, and runs a persona-review panel."
     }
   ]
 }
