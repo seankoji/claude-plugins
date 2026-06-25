@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/seankoji/claude-plugins/schemas/marketplace.schema.json",
+  "title": "Claude Plugins Marketplace Manifest",
+  "description": "Schema for .claude-plugin/marketplace.json — the top-level marketplace index.",
+  "type": "object",
+  "required": ["name", "owner", "plugins"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Marketplace or repository name."
+    },
+    "owner": {
+      "type": "object",
+      "required": ["name", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Owner's display name or GitHub username."
+        },
+        "url": {
+          "type": "string",
+          "description": "Owner's GitHub profile URL.",
+          "format": "uri"
+        }
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "description": "List of plugins registered in this marketplace.",
+      "items": {
+        "type": "object",
+        "required": ["name", "source", "description"],
+        "additionalProperties": true,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin name — must match the name field in its plugin.json."
+          },
+          "source": {
+            "type": "string",
+            "description": "Relative path to the plugin directory (e.g. ./plugins/elephant-goldfish)."
+          },
+          "description": {
+            "type": "string",
+            "description": "One-line description shown in marketplace listings."
+          }
+        }
+      }
+    }
+  }
+}
