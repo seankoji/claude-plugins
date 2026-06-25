@@ -58,7 +58,7 @@ It needs a Chrome/Chromium instance, found in this order:
 
 1. **CDP endpoint** — set `CLAUDE_CDP_URL` (default `ws://localhost:3000`). Point it at a
    headless-Chrome container, local or on a LAN host
-   (e.g. `export CLAUDE_CDP_URL=ws://192.168.1.50:3000` for a remote rig). The panel
+   (e.g. `export CLAUDE_CDP_URL=ws://<lan-host>:3000` for a remote rig). The panel
    connects with `chromium.connectOverCDP(process.env.CLAUDE_CDP_URL)` — use
    `connectOverCDP`, never `connect()` (it hangs); an `http://` URL returns 426.
 2. **Chrome MCP fallback** — if no CDP endpoint is reachable, the panel drives the browser
