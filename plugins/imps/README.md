@@ -14,7 +14,7 @@ claude plugin install imps@seankoji
 Or via the marketplace:
 
 ```sh
-claude plugin marketplace add seankoji
+claude plugin marketplace add seankoji/claude-plugins
 claude plugin install imps@seankoji
 ```
 

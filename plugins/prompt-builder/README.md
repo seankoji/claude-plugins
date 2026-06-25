@@ -35,7 +35,7 @@ None. This is a pure instruction command — no scripts, no MCP servers, no shel
 ## Install
 
 ```sh
-claude plugin marketplace add seankoji
+claude plugin marketplace add seankoji/claude-plugins
 claude plugin install prompt-builder@seankoji
 ```
 

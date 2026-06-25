@@ -17,7 +17,7 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 
 ```bash
 # Add the marketplace (one-time)
-claude plugin marketplace add seankoji
+claude plugin marketplace add seankoji/claude-plugins
 
 # Install a plugin
 claude plugin install elephant-goldfish@seankoji

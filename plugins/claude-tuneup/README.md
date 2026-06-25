@@ -39,7 +39,7 @@ Claude Code only — no external tools required. The transcript scanner (`scan_p
 ## Install
 
 ```bash
-claude plugin marketplace add seankoji
+claude plugin marketplace add seankoji/claude-plugins
 claude plugin install claude-tuneup@seankoji
 ```
 
@@ -76,7 +76,7 @@ Default (no flag) is recommended: running Phase 1 before Phase 2 ensures that an
 - CLAUDE.md scope findings are printed as `file:line` notes and never auto-edited.
 - If `~/.claude/settings.json` is a symlink (common in dotfiles setups), the command follows it to the real file before writing.
 - The self-reflect log lives at `~/.claude/claude-tuneup.notes.md` — one level above `commands/` so it is not auto-registered as a slash command.
-- To remove: `rm ~/.claude/commands/claude-tuneup.md`. The built-in `/fewer-permission-prompts` covers Phase 1 alone.
+- To remove: `claude plugin uninstall claude-tuneup@seankoji`. The built-in `/fewer-permission-prompts` covers Phase 1 alone.
 
 ---
 
