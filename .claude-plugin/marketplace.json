@@ -7,21 +7,25 @@
   "plugins": [
     {
       "name": "elephant-goldfish",
+      "version": "0.1.0",
       "source": "./plugins/elephant-goldfish",
       "description": "Self-validating /elephant design-doc command + Gemini goldfish judge."
     },
     {
       "name": "claude-tuneup",
+      "version": "0.1.0",
       "source": "./plugins/claude-tuneup",
       "description": "Permission audit and settings tuneup — scans transcripts, classifies by scope, deduplicates global vs project settings."
     },
     {
       "name": "prompt-builder",
+      "version": "0.1.0",
       "source": "./plugins/prompt-builder",
       "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
     },
     {
       "name": "imps",
+      "version": "0.1.0",
       "source": "./plugins/imps",
       "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, merges through gates and persona review."
     }
