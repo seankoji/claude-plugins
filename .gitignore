@@ -2,5 +2,8 @@
 .claude/worktrees/
 .claude/jobs/
 
+# Goldfish judge run artifacts (transient scratch from /elephant-goldfish:elephant)
+.goldfish-runs/
+
 # macOS
 .DS_Store
