@@ -116,8 +116,8 @@ Loop, at most `MAX_GOLDFISH_ITERS` rounds:
    - `RC == 10` → **NOT READY.** The file `"$RUNDIR/judge-<iter>.md"` is the goldfish failure
      report. Run the **FEEDBACK path**: execute Steps 2–4 with `MODE = FEEDBACK` and `$ARGUMENTS`
      = the verbatim contents of that report. Scout E targets exactly the named gaps; the Opus
-     author patches **only** those gaps; the main session **Writes** `<doc>`; each fix is logged
-     under `## Goldfish traps`. Then, if in a repo, commit `<doc>`. Snapshot:
+     author patches **only** those gaps, improving the prose of the relevant sections in place.
+     The main session **Writes** `<doc>`. Then, if in a repo, commit `<doc>`. Snapshot:
      `cp "<doc>" "$RUNDIR/iter-<iter>.elephant.md"`.
 4. **Oscillation/stall guard** (Bash): `H="$(hash_doc "<doc>")"`. If `H` already appears in `SEEN`
    (the patch changed nothing, or the loop is cycling A→B→A), **abort to a human** — the loop
@@ -223,9 +223,9 @@ intent, not just text.
 
 ### FEEDBACK
 `$ARGUMENTS` (or, inside the Goldfish Gate, the judge's failure report) is a goldfish's failure
-report. Patch the doc to close **exactly those gaps** — do not rewrite unrelated sections. Record
-each closed gap under `## Goldfish traps` as a dated bullet:
-> `<date> — goldfish: <what went wrong>. fix: <what was added/clarified and where>.`
+report. Patch the doc to close **exactly those gaps** — do not rewrite unrelated sections. Improve
+the prose of each affected section in place so a cold reader naturally has what they need; the doc
+should read as though the gap never existed, not as a log of patches applied to it.
 Ground every patch in the targeted scout's findings (Scout E), not guesswork.
 
 ---
@@ -233,8 +233,8 @@ Ground every patch in the targeted scout's findings (Scout E), not guesswork.
 ## Step 5 — Section template
 
 The author emits `elephant.md` with this structure. The four canonical sections are **always**
-present. `## Drift` and `## Goldfish traps` are mode-conditional. `## Open questions` is the
-honesty pressure-valve — anything unverified goes there, not into the authoritative body.
+present. `## Drift` is mode-conditional (RECONCILE only). `## Open questions` is the honesty
+pressure-valve — anything unverified goes there, not into the authoritative body.
 
 ```markdown
 # <Project name> — Elephant (design of record)
@@ -260,11 +260,6 @@ honesty pressure-valve — anything unverified goes there, not into the authorit
 ## Drift
 <!-- RECONCILE only. "doc says X / code does Y (path:line)" for each divergence.
      "No drift detected as of <date>." if clean. Omit section in CREATE/REGENERATE/FEEDBACK. -->
-
-## Goldfish traps
-<!-- Dated log of gaps a zero-context reader hit, and the doc change that closes each. Now
-     populated automatically by the Goldfish Gate as well as by manual FEEDBACK runs.
-     "None recorded yet." if there have been no failures. -->
 
 ## Open questions / unverified
 <!-- Anything the scouts could not confirm. Kept OUT of the authoritative body above.
@@ -305,9 +300,9 @@ After the run, reply with a compact summary block:
 🐘 elephant.md <created|gated|reconciled|regenerated|patched> · <doc>
 Mode: <MODE>   Scouts: <N> haiku   Author: opus   Judge: agy/<AGY_MODEL>
 Goldfish: <PASS after N pass(es) | ABORTED: stalled | ABORTED: max iters | ABORTED: judge error | n/a>
-Drift items flagged: <N>              (RECONCILE only)
-Goldfish traps closed this run: <N>   (GOLDFISH/FEEDBACK only)
-Sections: Problem · Technical Plan · Alternatives · Detailed Implementation [· Drift] [· Goldfish traps]
+Drift items flagged: <N>     (RECONCILE only)
+Gaps closed this run: <N>    (GOLDFISH/FEEDBACK only)
+Sections: Problem · Technical Plan · Alternatives · Detailed Implementation [· Drift]
 Run dir: <.goldfish-runs/... | n/a>
 ```
 
