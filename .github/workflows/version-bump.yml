@@ -29,41 +29,55 @@ jobs:
 
           changed=0
 
+          # Start the step summary table
+          {
+            echo "## Plugin version bump"
+            echo ""
+            echo "| Plugin | Base | Branch | Action |"
+            echo "|--------|------|--------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           for plugin_dir in plugins/*/; do
             plugin_name=$(basename "$plugin_dir")
             manifest="${plugin_dir}.claude-plugin/plugin.json"
             [ -f "$manifest" ] || continue
 
-            # Check if any file inside this plugin changed
-            if ! git diff --quiet "$BASE" "$HEAD" -- "$plugin_dir"; then
-              # Get version on base branch vs current
-              base_version=$(git show "$BASE:$manifest" 2>/dev/null | jq -r '.version // "0.0.0"')
-              current_version=$(jq -r '.version' "$manifest")
+            echo "── $plugin_name"
 
-              # Only bump if developer hasn't already bumped
-              if [ "$current_version" = "$base_version" ]; then
-                # Increment patch: split on dot, bump third segment
-                IFS='.' read -r major minor patch <<< "$current_version"
-                new_version="${major}.${minor}.$((patch + 1))"
+            if git diff --quiet "$BASE" "$HEAD" -- "$plugin_dir"; then
+              echo "   no changes, skipping"
+              echo "| \`$plugin_name\` | — | — | unchanged |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
 
-                echo "Bumping $plugin_name: $current_version -> $new_version"
+            echo "   changed files:"
+            git diff --name-only "$BASE" "$HEAD" -- "$plugin_dir" | sed 's/^/     · /'
 
-                # Update plugin.json
-                tmp=$(mktemp)
-                jq --arg v "$new_version" '.version = $v' "$manifest" > "$tmp"
-                mv "$tmp" "$manifest"
+            base_version=$(git show "$BASE:$manifest" 2>/dev/null | jq -r '.version // "0.0.0"')
+            current_version=$(jq -r '.version' "$manifest")
+            echo "   base version  : $base_version"
+            echo "   branch version: $current_version"
 
-                # Update marketplace.json to match
-                tmp=$(mktemp)
-                jq --arg name "$plugin_name" --arg v "$new_version" \
-                  '(.plugins[] | select(.name == $name) | .version) |= $v' \
-                  .claude-plugin/marketplace.json > "$tmp"
-                mv "$tmp" .claude-plugin/marketplace.json
+            if [ "$current_version" = "$base_version" ]; then
+              IFS='.' read -r major minor patch <<< "$current_version"
+              new_version="${major}.${minor}.$((patch + 1))"
+              echo "   → bumping to $new_version"
 
-                changed=1
-              else
-                echo "$plugin_name already bumped ($base_version -> $current_version), skipping"
-              fi
+              tmp=$(mktemp)
+              jq --arg v "$new_version" '.version = $v' "$manifest" > "$tmp"
+              mv "$tmp" "$manifest"
+
+              tmp=$(mktemp)
+              jq --arg name "$plugin_name" --arg v "$new_version" \
+                '(.plugins[] | select(.name == $name) | .version) |= $v' \
+                .claude-plugin/marketplace.json > "$tmp"
+              mv "$tmp" .claude-plugin/marketplace.json
+
+              echo "| \`$plugin_name\` | $base_version | $new_version | **bumped** ✓ |" >> "$GITHUB_STEP_SUMMARY"
+              changed=1
+            else
+              echo "   → already bumped by author, no action"
+              echo "| \`$plugin_name\` | $base_version | $current_version | pre-bumped |" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
