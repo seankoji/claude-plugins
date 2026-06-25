@@ -50,25 +50,28 @@ a. Read the file: `tasks`, `workflow_task_id`, `workflow_run_id`, `repo`, `dispa
 b. If `workflow_task_id` is non-null:
    1. Load `TaskOutput` schema: call `ToolSearch` with `query: "select:TaskOutput"`
    2. Call `TaskOutput` with `{ taskId: "<workflow_task_id>" }`
-   3. Scan the returned text for lines matching the pattern `imp:done #(\d+)` — collect
-      the integer N values as `completed_ids` for this run
+   3. Scan the returned text for:
+      - Lines matching `imp:done #(\d+)` — collect integer N values as `completed_ids`
+      - Lines matching `imp:start #(\d+)` — collect integer N values as `started_ids`
    4. Classify the result:
       - **"No task found"** or any cross-session error: use string `"cross-session"`.
         TaskOutput is session-scoped — it cannot query workflow IDs started in a different
         Claude Code session. The heartbeat shows these imps with a tracking-unavailable note.
-      - **Success, but zero `imp:done` lines** (whether `imp:start` lines are present or
-        output is empty/very short): use string `"not_ready"`. The workflow is running but
-        no imps have finished yet; logs don't expose per-imp completion at this tick.
-      - **Success with one or more `imp:done` lines**: use the collected integer IDs as
-        `completed_ids`.
-      - **Any other error** (timeout, transient): use `[]` — show all imps as active.
+      - **Success, but zero `imp:done` AND zero `imp:start` lines** (output empty or very
+        short — no signal yet): use string `"not_ready"`. The workflow may still be
+        initializing.
+      - **Success with any `imp:start` or `imp:done` lines**: use
+        `{"completed": completed_ids, "started": started_ids}` (both can be empty lists).
+        This is the normal in-flight case — partial visibility is better than none.
+      - **Any other error** (timeout, transient): use `{"completed": [], "started": []}` —
+        show all imps as active.
 
-c. If `workflow_task_id` is null: `completed_ids = []`
+c. If `workflow_task_id` is null: use `{"completed": [], "started": []}`
 
-Build a JSON object mapping each slug to its value — a list of completed IDs, or one of
-the sentinel strings `"cross-session"` or `"not_ready"`. For example:
+Build a JSON object mapping each slug to its value — a dict with `completed`/`started`
+lists, or one of the sentinel strings `"cross-session"` or `"not_ready"`. For example:
 ```json
-{"my-repo": [1, 3], "other-project": "not_ready", "foreign-run": "cross-session"}
+{"my-repo": {"completed": [1, 3], "started": [2, 4]}, "other-project": "not_ready", "foreign-run": "cross-session"}
 ```
 
 ---
@@ -80,7 +83,7 @@ single-quoted shell string). Do not add extra shell escaping — construct the J
 cleanly before passing it.
 
 ```bash
-IMP_STATUS='{"my-repo": [1, 3]}' python3 - <<'PYEOF'
+IMP_STATUS='{"my-repo": {"completed": [1, 3], "started": [2]}}' python3 - <<'PYEOF'
 import os, json
 from datetime import datetime, timezone
 
@@ -94,6 +97,7 @@ RST       = '\033[0m'
 PINK      = '\033[38;5;211m'   # opus
 YELLOW    = '\033[93m'         # sonnet
 GREEN     = '\033[92m'         # haiku / default
+DIM       = '\033[2m'
 
 def model_color(m):
     m = (m or '').lower()
@@ -101,9 +105,10 @@ def model_color(m):
     if 'sonnet' in m: return YELLOW
     return GREEN
 
-def colored_imp(t):
+def colored_imp(t, dim=False):
     idx = (t['id'] - 1) % len(IMPS)
-    return f'{model_color(t.get("model",""))}{IMPS[idx]}{RST}'
+    prefix = DIM if dim else model_color(t.get('model', ''))
+    return f'{prefix}{IMPS[idx]}{RST}'
 
 try:
     files = sorted(f for f in os.listdir(state_dir) if f.endswith('.json'))
@@ -120,10 +125,16 @@ for fname in files:
     with open(os.path.join(state_dir, fname)) as f:
         state = json.load(f)
 
-    completed_raw = per_run.get(slug, [])
-    cross_session = completed_raw == 'cross-session'
-    not_ready     = completed_raw == 'not_ready'
-    completed     = set() if (cross_session or not_ready) else set(completed_raw)
+    status_raw    = per_run.get(slug, {})
+    cross_session = status_raw == 'cross-session'
+    not_ready     = status_raw == 'not_ready'
+    if cross_session or not_ready:
+        completed, started = set(), set()
+    elif isinstance(status_raw, list):   # backward compat with old format
+        completed, started = set(status_raw), set()
+    else:
+        completed = set(status_raw.get('completed', []))
+        started   = set(status_raw.get('started', [])) - completed
     tasks         = state.get('tasks', [])
 
     try:
@@ -133,26 +144,27 @@ for fname in files:
     except Exception:
         elapsed = '?'
 
-    active = [t for t in tasks if t['id'] not in completed]
-    n      = len(active)
-    total  = len(tasks)
-    bats   = '  '.join(colored_imp(t) for t in active)
+    active   = [t for t in tasks if t['id'] not in completed]
+    running  = [t for t in active if t['id'] in started]
+    waiting  = [t for t in active if t['id'] not in started]
+    n        = len(active)
+    n_done   = len(tasks) - n
+    total    = len(tasks)
+    # running imps show full color; waiting imps show dim
+    bats     = '  '.join(
+        colored_imp(t, dim=(t['id'] not in started)) for t in active
+    )
 
     if cross_session:
         note = '[x-session · tracking unavailable]'
     elif not_ready:
-        plural = 'both' if n == 2 else ('all' if n > 2 else '')
-        note   = (plural + ' ' if plural else '') + \
-                 "still running. The workflow doesn't expose incremental logs (not_ready), " \
-                 "so I can't see per-imp completion until the whole run finishes; " \
-                 "the heartbeat shows " + (plural + ' ' if plural else '') + "active by default."
+        note = 'no signal yet — polling'
     else:
-        done_n = total - n
-        if done_n > 0:
-            note = f'{done_n} done, {n} running'
-        else:
-            plural = 'both' if n == 2 else ('all' if n > 2 else '')
-            note   = (plural + ' ' if plural else '') + 'still running'
+        parts = []
+        if n_done:        parts.append(f'{n_done} done')
+        if running:       parts.append(f'{len(running)} running')
+        if waiting:       parts.append(f'{len(waiting)} waiting')
+        note = ' · '.join(parts) if parts else 'dispatched'
 
     prefix = f'{state.get("repo", slug)} · ' if multi else ''
     print(f'{bats}  {n}/{total} imps still out · {prefix}{elapsed} — {note}')
