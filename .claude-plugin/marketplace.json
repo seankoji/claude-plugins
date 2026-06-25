@@ -1,5 +1,5 @@
 {
-  "name": "claude-plugins",
+  "name": "seankoji",
   "owner": {
     "name": "seankoji",
     "url": "https://github.com/seankoji"
@@ -11,9 +11,19 @@
       "description": "Self-validating /elephant design-doc command + Gemini goldfish judge."
     },
     {
+      "name": "claude-tuneup",
+      "source": "./plugins/claude-tuneup",
+      "description": "Permission audit and settings tuneup — scans transcripts, classifies by scope, deduplicates global vs project settings."
+    },
+    {
+      "name": "prompt-builder",
+      "source": "./plugins/prompt-builder",
+      "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
+    },
+    {
       "name": "imps",
       "source": "./plugins/imps",
-      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, monitors progress, merges through deterministic gates, and runs a persona-review panel."
+      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, merges through gates and persona review."
     }
   ]
 }

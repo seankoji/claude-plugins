@@ -7,6 +7,8 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 | Plugin | Description |
 |---|---|
 | [elephant-goldfish](./plugins/elephant-goldfish/) | Self-validating `/elephant` design-doc command + Gemini goldfish judge |
+| [claude-tuneup](./plugins/claude-tuneup/) | Permission audit and settings tuneup for Claude Code |
+| [prompt-builder](./plugins/prompt-builder/) | Iterative prompt engineering assistant |
 | [imps](./plugins/imps/) | Swarm orchestrator — parallel model-routed agents, Workflow dispatch, deterministic gates, persona-review panel |
 
 ---
@@ -15,13 +17,13 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 
 ```bash
 # Add the marketplace (one-time)
-claude plugin marketplace add seankoji/claude-plugins
+claude plugin marketplace add seankoji
 
 # Install a plugin
-claude plugin install elephant-goldfish@claude-plugins
+claude plugin install elephant-goldfish@seankoji
 
 # Install project-scoped (shared with teammates via .claude/)
-claude plugin install elephant-goldfish@claude-plugins --scope project
+claude plugin install elephant-goldfish@seankoji --scope project
 
 # Keep marketplace up to date
 claude plugin marketplace update
