@@ -261,6 +261,7 @@ Tell the operator in one line what you recorded. Respect the file's ~150-line so
 
 When a learning hardens from a data point into an **always-applies rule** — typically signalled by the *same* default being overridden 2+ times, or the same failure mode recurring — propose editing **this skill's own body** (`~/.claude/commands/prompt-builder.md`) rather than just logging it again.
 
+# Note: when installed as a plugin, the installed path differs — locate it via 'claude plugin path prompt-builder'.
 Protocol, strictly:
 
 1. **Never edit the skill body silently.** Show the proposed diff and state the evidence (which log entries justify it).

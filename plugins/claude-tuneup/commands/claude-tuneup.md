@@ -27,7 +27,7 @@ Flags:
 - All `mcp__*` tools EXCEPT ones whose target is project-state
 - `Read`/`Write`/`Edit` on `/tmp/**`, `/private/tmp/**`
 - `Read` on global config dirs (`~/.config/**`, `~/.cloudflare/**`, `~/.wrangler/**`, `/private/etc/**`)
-- `Bash(python3 ~/.claude/scripts/<script>.py*)` — scripts in the global scripts dir
+- `Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<script>.py*)` — scripts in the global scripts dir
 - `Skill(<name>)` entries for globally-used skills
 
 **Project** (`.claude/settings.json`) — patterns referencing THIS repo:
@@ -67,7 +67,7 @@ If a candidate matches any of these, drop it — no rule needed.
 
 Read in parallel:
 
-- `python3 ~/.claude/scripts/scan_perms.py` — frequency tables for Bash, MCP, SSH/sudo drills (last 50 transcripts). If absent, Phase 1 is unavailable; run with `--audit-only`.
+- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` — frequency tables for Bash, MCP, SSH/sudo drills (last 50 transcripts). If absent, Phase 1 is unavailable; run with `--audit-only`.
 - `~/.claude/settings.json` — follow the symlink to the real file if it's a link
 - `.claude/settings.json` if it exists
 - `.claude/settings.local.json` if it exists

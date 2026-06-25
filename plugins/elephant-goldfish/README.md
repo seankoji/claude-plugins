@@ -46,7 +46,7 @@ agy -p "say VERDICT: READY"   # should print a VERDICT line
 
 ```bash
 claude plugin marketplace add seankoji/claude-plugins
-claude plugin install elephant-goldfish@claude-plugins
+claude plugin install elephant-goldfish@seankoji
 ```
 
 ---

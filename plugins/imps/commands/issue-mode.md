@@ -112,7 +112,7 @@ Resolve a transport in this order, and record which one is live:
 
 ### Personas
 
-Briefs live at `~/.claude/imps/personas/<slug>.md`; each persona agent Reads its
+Briefs live at `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md`; each persona agent Reads its
 own brief at startup. Brief missing → improvise from the Lens column. Use only
 slugs whose brief exists (or whose Lens you can improvise) — don't invent slugs.
 

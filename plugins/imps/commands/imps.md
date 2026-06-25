@@ -33,7 +33,7 @@ seconds, and integrate results cleanly.
 
 - **Issue-driven mode** — `$ARGUMENTS` is *entirely* GitHub issue references: every
   whitespace-separated token matches `^#?\d+$` (e.g. `/imps 42 43 51`, `/imps #42`).
-  **→ Follow [`commands/imps/issue-mode.md`](./imps/issue-mode.md)** for the
+  **→ Follow [`commands/issue-mode.md`](./issue-mode.md)** for the
   full scout → rolling-dispatch → holding-branch → gates → persona-panel → handoff
   workflow. Do not continue with the phases below.
 
@@ -49,11 +49,11 @@ else → free-text mode.
 
 ## Spooky intro (optional)
 
-If `~/.claude/imps/imps-intro.py` exists, run it and emit its output verbatim (not in a
+If `${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py` exists, run it and emit its output verbatim (not in a
 code block). It is purely cosmetic — skip silently if absent.
 
 ```bash
-[ -f ~/.claude/imps/imps-intro.py ] && python3 ~/.claude/imps/imps-intro.py
+[ -f "${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py" ] && python3 "${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py"
 ```
 
 ---
@@ -69,8 +69,8 @@ Invoke it like this (swap in the actual content and role):
 ```
 agent(
   `You are the Head Imp — the sharpest critic in the swarm.
-   Your briefs: [READ ~/.claude/imps/personas/solution-architect.md]
-               [READ ~/.claude/imps/personas/grumpy-engineer.md]
+   Your briefs: [READ ${CLAUDE_PLUGIN_ROOT}/personas/solution-architect.md]
+               [READ ${CLAUDE_PLUGIN_ROOT}/personas/grumpy-engineer.md]
 
    <ARTIFACT>
    <what you're reviewing — GOAL.md task table, or the git diff output>
@@ -535,11 +535,11 @@ targets, CI config — and run them in order: build → lint → test → type. 
   until green. If a gate cannot be fixed in 3 attempts, surface it to the user.
 
 **Step 4 — Persona panel (code + browser):**
-Follow `commands/imps/issue-mode.md § Phase 4` exactly — it is the canonical reference.
+Follow `commands/issue-mode.md § Phase 4` exactly — it is the canonical reference.
 Short version:
 - **Code panel** (always): dispatch all four opus personas (`solution-architect`,
   `grumpy-engineer`, `sre`, `business-analyst`) in parallel. Each Reads its brief from
-  `~/.claude/imps/personas/<slug>.md`, reviews the integration diff (excluding
+  `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md`, reviews the integration diff (excluding
   lockfiles/generated via `git diff ... ':!*lock*' ':!dist'`), posts comments prefixed
   `[Persona: <Name>]`, ends with `VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>`.
 - **Browser panel** (when a UI surface exists): one sonnet collector drives the browser
