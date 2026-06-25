@@ -27,7 +27,7 @@ jobs:
 
       - name: Validate marketplace name-to-source consistency
         run: |
-          jq -r '.plugins[] | "(.name) (.source)"' .claude-plugin/marketplace.json | while IFS=" " read -r name source; do
+          jq -r '.plugins[] | "\(.name) \(.source)"' .claude-plugin/marketplace.json | while IFS=" " read -r name source; do
             manifest="${source}/.claude-plugin/plugin.json"
             [ -f "$manifest" ] || { echo "ERROR: source dir missing for $name: $manifest"; exit 1; }
             actual_name=$(jq -r '.name' "$manifest")
@@ -37,7 +37,9 @@ jobs:
 
       - name: Check shell scripts are executable
         run: |
-          while IFS=" " read -r mode hash stage path; do
+          # git ls-files -s emits: "<mode> <object> <stage>\t<path>" — path is tab-separated.
+          while IFS=$'\t' read -r meta path; do
+            mode=${meta%% *}
             [ "$mode" = "100755" ] || { echo "ERROR: $path not executable (mode $mode)"; exit 1; }
             echo "OK executable: $path"
           done < <(git ls-files -s 'plugins/**/*.sh')
