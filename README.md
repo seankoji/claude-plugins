@@ -2,23 +2,15 @@
 
 A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](https://github.com/seankoji).
 
----
-
-## Install the marketplace
-
-```bash
-claude plugin marketplace add seankoji/claude-plugins
-```
-
 ## Available plugins
 
-| Plugin | Description | Install |
-|---|---|---|
-| [elephant-goldfish](./plugins/elephant-goldfish/) | Self-validating `/elephant` design-doc command + Gemini goldfish judge | `claude plugin install elephant-goldfish@claude-plugins` |
+| Plugin | Description |
+|---|---|
+| [elephant-goldfish](./plugins/elephant-goldfish/) | Self-validating `/elephant` design-doc command + Gemini goldfish judge |
 
 ---
 
-## Adding a plugin to your project
+## Install
 
 ```bash
 # Add the marketplace (one-time)
@@ -29,10 +21,7 @@ claude plugin install elephant-goldfish@claude-plugins
 
 # Install project-scoped (shared with teammates via .claude/)
 claude plugin install elephant-goldfish@claude-plugins --scope project
-```
 
-## Updating
-
-```bash
+# Keep marketplace up to date
 claude plugin marketplace update
 ```

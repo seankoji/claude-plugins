@@ -31,8 +31,7 @@ The command fans out parallel **haiku scouts** to map the codebase, then an **Op
 The goldfish judge calls `agy` to run a cold Gemini read. If `agy` is missing or returns empty output, the judge fails **closed** (exit 2 — never a false pass). It will not silently skip validation.
 
 - Install: follow the [Antigravity CLI docs](https://antigravity.dev) for your platform.
-- The judge default model is `gemini-3.1-pro`. Override with the `AGY_MODEL` env var.
-- `agy`'s default model is already Gemini; do **not** point it at a Claude model — that reintroduces the "clone grading its own homework" problem.
+- Do **not** point `agy` at a Claude model — that reintroduces the "clone grading its own homework" problem. `agy`'s default is already Gemini.
 
 Verify before using:
 
@@ -75,13 +74,11 @@ The command runs interactively inside a Claude Code session. Auto / accept-edits
 
 ## The `goldfish-judge.sh` script
 
-The bundled `scripts/goldfish-judge.sh` is the per-round oracle. It:
+The bundled `scripts/goldfish-judge.sh` is the per-round oracle — a cold, read-only Gemini
+pass that requires a `VERDICT: READY` or `VERDICT: NOT READY` line; anything else is
+**exit 2** (fail-closed). See the script's header comments for full behavioral notes.
 
-1. Constructs a "brand-new engineer with zero prior knowledge" prompt.
-2. Runs `agy` with `--tool-permission read-only` so the judge can follow file references in the doc but cannot modify anything.
-3. Requires a `VERDICT: READY` or `VERDICT: NOT READY` line — missing or empty output is **exit 2** (fail-closed), never a pass.
-
-You can run it standalone to test:
+Run it standalone to test:
 
 ```bash
 bash /path/to/goldfish-judge.sh ./elephant.md
