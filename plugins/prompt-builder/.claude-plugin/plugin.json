@@ -1,0 +1,10 @@
+{
+  "name": "prompt-builder",
+  "version": "0.1.0",
+  "description": "Iterative prompt engineering assistant — diagnoses the brief, selects a structural framework (RTF/RISEN/CO-STAR/CRISPE/RACE/APE/CARE/TAG), drafts, critiques, and delivers a finished artefact with test cases and failure modes.",
+  "author": { "name": "seankoji", "url": "https://github.com/seankoji" },
+  "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/prompt-builder",
+  "repository": "https://github.com/seankoji/claude-plugins",
+  "license": "MIT",
+  "keywords": ["claude-code", "prompt-engineering", "prompts", "frameworks", "rtf", "risen"]
+}
