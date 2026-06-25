@@ -102,7 +102,7 @@ Resolve a transport in this order, and record which one is live:
    Reachable → agents connect with `chromium.connectOverCDP(process.env.CLAUDE_CDP_URL || 'ws://localhost:3000')`.
    Use `connectOverCDP`, NOT `connect()` (which hangs); an `http://` URL returns 426.
    This suits a headless-Chrome container, local or on a LAN host — set
-   `CLAUDE_CDP_URL` (e.g. `ws://192.168.1.50:3000`) for a remote rig.
+   `CLAUDE_CDP_URL` (e.g. `ws://<lan-host>:3000`) for a remote rig.
 2. **Chrome MCP fallback** — no CDP endpoint reachable → drive the browser through the
    `mcp__claude-in-chrome__*` tools (navigate, read_page, computer, gif_creator). Requires
    the Claude-in-Chrome extension connected to the session. The collector and browser
