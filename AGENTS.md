@@ -45,9 +45,9 @@ These five things must change **together** — missing one breaks the marketplac
 
 ## Validate before committing
 
+CI runs these checks automatically on every push and PR. For a quick local pre-commit check:
 ```bash
-jq . .claude-plugin/marketplace.json          # valid JSON, entry present
-jq . plugins/<name>/.claude-plugin/plugin.json  # valid JSON, all fields
-test -x plugins/<name>/scripts/<script>.sh    # executable bit set
-grep -rn '\.claude/bin/' plugins/             # must be empty — no hardcoded paths
+jq . .claude-plugin/marketplace.json && for f in plugins/*/.claude-plugin/plugin.json; do jq -e '.name' "$f"; done
+grep -rn --include="*.md" 'CLAUDE_PLUGIN_ROOT' plugins/*/commands/ | head  # confirm rewrites landed
 ```
+See .github/workflows/validate.yml for the full check suite.
