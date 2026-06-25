@@ -1,6 +1,6 @@
 {
   "name": "elephant-goldfish",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Self-validating /elephant design-doc command with a different-lineage Gemini goldfish gate.",
   "author": {
     "name": "seankoji",
@@ -9,5 +9,11 @@
   "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/elephant-goldfish",
   "repository": "https://github.com/seankoji/claude-plugins",
   "license": "MIT",
-  "keywords": ["documentation", "design-doc", "elephant", "goldfish", "gemini"]
+  "keywords": [
+    "documentation",
+    "design-doc",
+    "elephant",
+    "goldfish",
+    "gemini"
+  ]
 }
