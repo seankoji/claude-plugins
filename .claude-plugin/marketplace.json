@@ -8,7 +8,8 @@
     {
       "name": "elephant-goldfish",
       "source": "./plugins/elephant-goldfish",
-      "description": "Self-validating /elephant design-doc command + Gemini goldfish judge."
+      "description": "Self-validating /elephant design-doc command + Gemini goldfish judge.",
+      "version": "0.1.1"
     },
     {
       "name": "claude-tuneup",
