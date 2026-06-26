@@ -7,6 +7,16 @@ description: >
 
 # /imps:prs — proactive PR monitor
 
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🦇 **imps:prs** — keeping your PR clean automatically
+>
+> Watching the open PR from your imps run and addressing review comments, CI failures, and
+> merge conflicts as they appear. Fix commits are pushed directly to the PR branch without
+> manual intervention. Self-terminates when the PR is merged or closed.
+
+---
+
 This command is a self-pacing monitor. It reads the PR state written by `/imps` Phase 5,
 inspects the open PR, dispatches fixing agents as needed, and reschedules itself.
 It is invoked by `/imps` after a successful push and self-terminates when done.

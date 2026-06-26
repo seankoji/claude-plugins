@@ -28,3 +28,9 @@ claude plugin install elephant-goldfish@seankoji --scope project
 # Keep marketplace up to date
 claude plugin marketplace update
 ```
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to add a plugin, test changes locally, and open a PR.

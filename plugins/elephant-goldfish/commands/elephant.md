@@ -2,17 +2,27 @@
 description: >
   Create, validate, or maintain a repo's elephant.md — a durable, authoritative design doc
   (Rensin's Elephant-Goldfish model) that lets a zero-context "goldfish" session re-bootstrap the
-  project without token-heavy code re-reading. Fans out parallel haiku discovery scouts; a single
-  opus author writes the doc; a different-lineage Gemini goldfish (via `agy`) validates it in a
-  closed loop. Bare = create-if-absent then goldfish-gate (or just gate an existing doc);
-  `reconcile` = drift pass; `regenerate` = rebuild from code; any other text = manual goldfish
-  failure report to fold in.
-argument-hint: '[reconcile | regenerate | <goldfish failure report>]'
+  project without token-heavy code re-reading. Bare with an existing doc = interactive menu.
+  Bare without a doc = CREATE. `update` = drift pass then goldfish gate; `check` = read-only drift
+  report; `validate` = goldfish gate only; `regenerate` = rebuild from code then goldfish gate;
+  any other text = manual goldfish failure report to fold in.
+argument-hint: '[update | check | validate | regenerate | <goldfish failure report>]'
 ---
 
 # /elephant — the durable design doc, self-validating
 
 Arguments: `$ARGUMENTS`
+
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🐘 **elephant-goldfish** — keeping your design doc honest
+>
+> `elephant.md` is a durable design document that lets any new Claude session understand your
+> project without reading all the code. This command creates, updates, or validates it using
+> parallel discovery scouts and a cold Gemini reader — so a PASS means it actually works for
+> someone walking in with zero context.
+
+---
 
 You are a documentation architect. Your job is to write, **validate**, or update `elephant.md` — a
 durable, authoritative design document that lets a zero-context "goldfish" session re-bootstrap
@@ -62,26 +72,45 @@ Trim `$ARGUMENTS` (remove leading/trailing whitespace and a single pair of wrapp
 present). Then apply these rules **in order**:
 
 1. **Empty** (nothing or only whitespace) →
-   - `DOC_EXISTS == false` → **CREATE** (then run the **Goldfish Gate** unless
-     `GOLDFISH_AFTER_CREATE == false`)
-   - `DOC_EXISTS == true`  → **GOLDFISH GATE** (validate the existing doc — this slot no longer
-     runs RECONCILE)
-2. **Exactly the single token `reconcile`** (case-insensitive, no other tokens) → **RECONCILE**
-3. **Exactly the single token `regenerate`** (case-insensitive, no other tokens) → **REGENERATE**
+   - `DOC_EXISTS == false` → **CREATE**
+   - `DOC_EXISTS == true`  → **INTERACTIVE** (show menu — see below)
+2. **Exactly the single token `update`** (case-insensitive, no other tokens) → **UPDATE**
+3. **Exactly the single token `check`** (case-insensitive, no other tokens) → **CHECK**
+4. **Exactly the single token `validate`** (case-insensitive, no other tokens) → **VALIDATE**
+5. **Exactly the single token `regenerate`** (case-insensitive, no other tokens) → **REGENERATE**
    (`regenerate the auth section` has multiple tokens → goes to FEEDBACK)
-4. **Any other non-empty text** → **FEEDBACK** (the full trimmed string is a goldfish's failure
+6. **Any other non-empty text** → **FEEDBACK** (the full trimmed string is a goldfish's failure
    report; keep it verbatim for the author)
 
 Print one operator-visible line before continuing:
 `🐘 mode: <MODE> · doc: <doc>`
 
-**Dispatch:** CREATE, RECONCILE, REGENERATE, and FEEDBACK run Steps 2–7 as normal. CREATE then
-enters the Goldfish Gate (below) by default. A bare run on an existing doc runs **only** the
-Goldfish Gate, which itself drives the FEEDBACK path each failing round.
+### INTERACTIVE mode
+
+Use the `AskUserQuestion` tool to present the following single-select question:
+
+> **Question:** "What would you like to do with elephant.md?"
+> **Header:** "elephant.md"
+> **Options:**
+> 1. label: "Update" — description: "Sync the doc to code changes, then validate iteratively with the Goldfish judge"
+> 2. label: "Regenerate" — description: "Rebuild the doc from scratch from code, then validate iteratively with the Goldfish judge"
+> 3. label: "Check" — description: "Quick read-only drift check — reports gaps without writing anything"
+> 4. label: "Validate" — description: "Run the Goldfish judge on the existing doc without any rewrite first"
+
+Map the user's answer to the corresponding mode (**UPDATE**, **REGENERATE**, **CHECK**, or
+**VALIDATE**) and print the resolved `🐘 mode:` line before continuing.
+
+**Dispatch:**
+- **CREATE**: scouts → author → write `<doc>` → Goldfish Gate (unless `GOLDFISH_AFTER_CREATE == false`)
+- **UPDATE**: scouts → author (drift pass) → write `<doc>` → Goldfish Gate
+- **REGENERATE**: scouts → author (rebuild) → write `<doc>` → Goldfish Gate
+- **FEEDBACK**: scout E + scouts A–D → author (targeted patch) → write `<doc>` → Step 7
+- **CHECK**: two haiku agents (citation checker + structure scanner) → merged report → Step 7 (no author, no writes, no gate)
+- **VALIDATE**: skip Steps 2–3 → go directly to Goldfish Gate → Step 7
 
 ---
 
-## The Goldfish Gate  (GOLDFISH mode; also runs after CREATE unless disabled)
+## The Goldfish Gate  (VALIDATE mode; also runs after CREATE, UPDATE, and REGENERATE)
 
 Run `<doc>` against the cold, different-lineage judge and fold failures back in until it passes or
 a guard trips. **Editor = the Opus author** (Steps 2–4 in FEEDBACK mode). **Judge = `agy`/Gemini,
@@ -110,7 +139,7 @@ Loop, at most `MAX_GOLDFISH_ITERS` rounds:
 3. **Branch on `RC`:**
    - `RC == 0` → **READY.** Print `✓ goldfish PASS after <iter> pass(es)`. Stop the loop; go to
      Step 7. Drift is a *separate* question — if they want prose-vs-code sync, point them at
-     `/elephant-goldfish:elephant reconcile`. Do **not** silently run RECONCILE here.
+     `/elephant-goldfish:elephant update`. Do **not** silently run UPDATE here.
    - `RC == 2` → **judge error / empty / no verdict.** **Abort to a human.** Do not loop, do not
      treat as a pass. Print the helper's message and `"$RUNDIR/judge-<iter>.md"`. Stop.
    - `RC == 10` → **NOT READY.** The file `"$RUNDIR/judge-<iter>.md"` is the goldfish failure
@@ -132,6 +161,51 @@ report path. Then proceed to Step 7 reporting the non-convergence.
 > decisions that close gaps. Every round is a commit and a snapshot, so before you trust the
 > result, `diff` the gate's changes and read what it decided. A PASS means *a cold reader can
 > bootstrap from this doc*, not that every invented decision is the one you'd have made.
+
+---
+
+## CHECK shortcut — two haiku agents in parallel
+
+**CHECK mode bypasses Steps 2 and 3 entirely.** It covers two distinct failure modes that
+require different agents:
+
+| Agent | Catches |
+|---|---|
+| Citation checker | `doc says X / code now does Y` — stale or wrong claims |
+| Structure scanner | `code has X / doc never mentions it` — undocumented additions |
+
+Launch **both agents in a single message** (one tool call block) so they run concurrently.
+Both use `model: haiku`. Give each agent the full `elephant.md` contents and the relevant
+directive from Step 4.
+
+**Agent 1 — Citation checker**
+Reads only the files that `elephant.md` explicitly references (`path` or `path:line`
+citations), verifies each specific claim against what those files actually contain, and
+returns `CHECK_CITATIONS: PASS` or `CHECK_CITATIONS: FAIL <bulleted list>`.
+
+**Agent 2 — Structure scanner**
+Enumerates the actual repo structure using fast shell commands — does not read file contents.
+Compares what exists against what the doc names, and returns `CHECK_STRUCTURE: PASS` or
+`CHECK_STRUCTURE: FAIL <bulleted list>`. The scanner discovers the repo's significant units
+(top-level source/module dirs, entry points, command/script/config files — whatever the doc's
+`## Technical Plan` and `## Detailed Implementation` claim to enumerate) and flags any that the
+doc never names. Use `git ls-files` for a fast, ignore-aware listing, e.g.:
+
+```bash
+git -C <root> ls-files                       # everything tracked
+git -C <root> ls-files | grep -E '<pattern>' # narrow to the units the doc enumerates
+```
+
+Tailor `<pattern>` to whatever the doc claims to cover (e.g. command files, plugins, packages,
+services). The goal is to catch real additions the doc missed, not to flag every file.
+
+Collect both responses. Combine into a single result:
+- Both PASS → `ELEPHANT_CHECK: PASS`
+- Either FAIL → `ELEPHANT_CHECK: FAIL` with all bullets merged into one report
+
+The main session reads the combined result and proceeds to Step 7. **Do not write `<doc>`.**
+
+> Total cost: 2 haiku agents (run in parallel). Skip Steps 2 and 3 entirely for CHECK.
 
 ---
 
@@ -191,8 +265,10 @@ transcript, the prompt you give it must include **everything** it needs:
 The author returns the **complete proposed `elephant.md` content** as plain text.
 
 The **main session writes the file** — do not have the author write it directly:
-- CREATE / REGENERATE: use Write to overwrite `<doc>`
-- RECONCILE / FEEDBACK: use Write to apply the author's output to `<doc>`
+- CREATE / REGENERATE: use Write to overwrite `<doc>`, then enter the Goldfish Gate
+- UPDATE / FEEDBACK: use Write to apply the author's output to `<doc>`; UPDATE then enters the Goldfish Gate
+- VALIDATE: **no author step** — skip Steps 2–3 entirely and go directly to the Goldfish Gate
+- CHECK: **does not reach this step** — handled entirely by the CHECK shortcut above Step 2
 
 ---
 
@@ -207,19 +283,71 @@ diverge from). Mark any inferred-but-unconfirmed rationale as `_(inferred from c
 After writing, control returns to the **Goldfish Gate** to validate the new doc (unless
 `GOLDFISH_AFTER_CREATE == false`).
 
-### RECONCILE
+### UPDATE
 **Treat the existing doc as authoritative.** "Design is the new code" — the doc says what the
 project *should* be. Update prose to match current reality where the code confirms the design.
 Add or refresh a `## Drift` callout listing every place code has diverged from the documented
 design as: `doc says X / code does Y (path:line)`. If no drift: `No drift detected as of <date>`.
 **Never silently discard human-written rationale or the `## Alternatives` section.** Preserve
 them; only append or correct. Mark superseded rationale as superseded with a reason — do not delete.
+After the main session writes the updated doc, control passes to the **Goldfish Gate** to validate it.
+
+### CHECK (Citation checker — Agent 1)
+**Read-only. Do not modify any file.** You are a haiku-tier citation checker.
+
+Read only the files that `elephant.md` explicitly references (by `path` or `path:line`
+citations). For each cited claim, verify it against what that file actually contains at that
+location. Return exactly one of:
+
+```
+CHECK_CITATIONS: PASS
+```
+```
+CHECK_CITATIONS: FAIL
+- doc says X / code does Y (path:line)
+- doc says X / code does Y (path:line)
+```
+
+No other prose. Bullets must be specific enough that Scout E can locate and fix each one.
+
+### CHECK (Structure scanner — Agent 2)
+**Read-only. Do not modify any file.** You are a haiku-tier structure scanner.
+
+Use fast shell enumeration (no file content reads) to list what actually exists in the repo:
+all plugin directories, command files (`commands/*.md`), and scripts (`scripts/*.sh`). Compare
+against what `elephant.md` names. Flag anything that exists in the code but is not mentioned
+in the doc. Return exactly one of:
+
+```
+CHECK_STRUCTURE: PASS
+```
+```
+CHECK_STRUCTURE: FAIL
+- code has X / doc never mentions it (path)
+- code has X / doc never mentions it (path)
+```
+
+No other prose.
+
+### CHECK (Main session — combining results)
+After both agents return, the main session combines their outputs:
+
+- Both PASS → `ELEPHANT_CHECK: PASS` → print `✓ elephant.md is current`, proceed to Step 7.
+- Either FAIL → `ELEPHANT_CHECK: FAIL` → merge all bullets into one report, print between
+  delimiters, signal failure, proceed to Step 7. **Do not write `<doc>`.**
+
+```
+--- ELEPHANT CHECK REPORT (paste to /elephant-goldfish:elephant to fix) ---
+<all FAIL bullets merged, citations first then structure gaps>
+--- END REPORT ---
+```
 
 ### REGENERATE
 Rebuild `## The Problem`, `## The Technical Plan`, and `## Detailed Implementation` from code
 analysis (overwrite). **But fold back still-valid human rationale and `## Alternatives` from the
 old doc.** This is a rebuild, not a wipe. Pass the old doc contents to the author so it can diff
 intent, not just text.
+After the main session writes the regenerated doc, control passes to the **Goldfish Gate** to validate it.
 
 ### FEEDBACK
 `$ARGUMENTS` (or, inside the Goldfish Gate, the judge's failure report) is a goldfish's failure
@@ -239,7 +367,7 @@ pressure-valve — anything unverified goes there, not into the authoritative bo
 ```markdown
 # <Project name> — Elephant (design of record)
 <!-- Authoritative design doc. "Design is the new code." A zero-context session re-bootstraps
-     from this file alone. Last reconciled: <date> against <git sha or "pre-git">. -->
+     from this file alone. Last updated: <date> against <git sha or "pre-git">. -->
 
 ## The Problem
 <!-- Business/product context: what this exists to solve, for whom, and why.
@@ -251,23 +379,24 @@ pressure-valve — anything unverified goes there, not into the authoritative bo
 
 ## Alternatives
 <!-- Approaches CONSIDERED AND REJECTED, each with the reasoning. Human rationale is
-     preserved verbatim across reconciles; mark superseded items as superseded, never delete. -->
+     preserved verbatim across updates; mark superseded items as superseded, never delete. -->
 
 ## Detailed Implementation
 <!-- Step-by-step with explicit file listings. Key files/dirs, one-line roles, build/test/run
      commands, entry points, external integrations. The map a goldfish follows to find the code. -->
 
 ## Drift
-<!-- RECONCILE only. "doc says X / code does Y (path:line)" for each divergence.
-     "No drift detected as of <date>." if clean. Omit section in CREATE/REGENERATE/FEEDBACK. -->
+<!-- UPDATE only. "doc says X / code does Y (path:line)" for each divergence.
+     "No drift detected as of <date>." if clean. Omit section in CREATE/REGENERATE/FEEDBACK/CHECK. -->
 
 ## Open questions / unverified
 <!-- Anything the scouts could not confirm. Kept OUT of the authoritative body above.
      "None." if scouts resolved everything. -->
 
 ---
-*Refresh: `/elephant-goldfish:elephant` (create-if-absent then goldfish-gate, or gate an existing doc) ·
-`/elephant-goldfish:elephant reconcile` (drift) · `/elephant-goldfish:elephant regenerate` (rebuild from code) ·
+*Refresh: `/elephant-goldfish:elephant` (interactive menu, or create if no doc) ·
+`/elephant-goldfish:elephant update` (drift pass → goldfish gate) · `/elephant-goldfish:elephant check` (read-only drift report) ·
+`/elephant-goldfish:elephant validate` (goldfish gate only) · `/elephant-goldfish:elephant regenerate` (rebuild from code → goldfish gate) ·
 `/elephant-goldfish:elephant <what went wrong>` (fold in a manual goldfish report)*
 ```
 
@@ -297,15 +426,18 @@ Pass these to the author and enforce them in the main session when reviewing the
 After the run, reply with a compact summary block:
 
 ```
-🐘 elephant.md <created|gated|reconciled|regenerated|patched> · <doc>
-Mode: <MODE>   Scouts: <N> haiku   Author: opus   Judge: agy/<AGY_MODEL>
+🐘 elephant.md <created|updated|regenerated|patched|validated|checked> · <doc>
+Mode: <MODE>   Scouts: <N> haiku (n/a for VALIDATE)   Author: opus (n/a for VALIDATE/CHECK)
+Judge: agy/<AGY_MODEL> (n/a for CHECK)
 Goldfish: <PASS after N pass(es) | ABORTED: stalled | ABORTED: max iters | ABORTED: judge error | n/a>
-Drift items flagged: <N>     (RECONCILE only)
-Gaps closed this run: <N>    (GOLDFISH/FEEDBACK only)
+Drift items flagged: <N>     (UPDATE / CHECK only)
+Check result: <PASS | FAIL — N drift items> (CHECK only — no writes; exit non-zero on FAIL)
+Gaps closed this run: <N>    (VALIDATE/UPDATE/REGENERATE/CREATE only)
 Sections: Problem · Technical Plan · Alternatives · Detailed Implementation [· Drift]
 Run dir: <.goldfish-runs/... | n/a>
 ```
 
 Then one reminder line: if `elephant.md` is in a tracked repo, commit it — it is a first-class
 deliverable alongside the code, not a generated artefact to gitignore. If the gate aborted, the
-doc still has open gaps; the run dir holds the last judge report.
+doc still has open gaps; the run dir holds the last judge report. On a CHECK FAIL, no file was
+written — paste the printed report to `/elephant-goldfish:elephant <report>` to trigger a fix.

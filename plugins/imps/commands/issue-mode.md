@@ -9,6 +9,16 @@ description: >
 
 # /imps — issue-driven mode
 
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🦇 **imps** (issue mode) — turning GitHub issues into merged code
+>
+> Scouting the requested issues, decomposing them into parallel work units, dispatching
+> agents to isolated git worktrees, gating with a persona review panel, and opening a PR
+> — all in one run. Each issue is handled independently so they can proceed in parallel.
+
+---
+
 This is the workflow `/imps` follows when its arguments are entirely GitHub issue
 numbers (see the **Mode detection** section of [`../imps.md`](../imps.md)).
 `/imps 42 43` scouts those issues and drives them through implementation, gates, and a

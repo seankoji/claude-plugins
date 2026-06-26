@@ -3,6 +3,16 @@ description: Tune up Claude Code permissions — scan recent transcripts for com
 argument-hint: '[--scan-only | --audit-only | --dry-run | --no-reflect]'
 ---
 
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🔧 **claude-tuneup** — fewer prompts, cleaner settings
+>
+> Scans your recent Claude Code sessions for patterns that could be pre-approved permissions,
+> then audits your global and project settings for duplicates and misplaced entries. The result:
+> less friction every time you use Claude Code, and settings files that actually reflect how you work.
+
+---
+
 Combined permission tune-up. Phase 1 is the same scan-and-add work as the built-in `/fewer-permission-prompts` but classifies each candidate by scope (global vs project) instead of dumping everything into the project file. Phase 2 audits the two settings files for duplicates and misplaced entries. Phase 3 self-audits the run and logs findings so the skill improves over time.
 
 Three phases, run in order by default:
