@@ -59,14 +59,17 @@ issues, re-enter at the first incomplete phase. Never redo merged work.
   page dumps, or logs ever flow back into orchestrator context.
 - Every agent's final message is exactly the JSON contract for its class
   (defined per phase) — nothing else. Free-text fields ≤50 words.
-- Before Phase 0, load the `## Active rules` section from
-  `~/.claude/imps/learnings.md` (see [Learnings](#learnings)) and obey it.
+- Before Phase 0, load the `## Active rules` section from both learnings files
+  (see [Learnings](#learnings)) and obey them.
 
 ## Learnings
 
-Issue-driven mode reads the `## Active rules` section from `~/.claude/imps/learnings.md`
-at startup and obeys it (≤10 consolidated bullets). **Write all new entries there** (see
-the Self-tune section below).
+Issue-driven mode reads the `## Active rules` section from two files at startup:
+- **User-scoped:** `~/.claude/imps/learnings.md` — stack-agnostic rules across all projects
+- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules for this project only
+
+Both are optional. Merge rules from both; project-scoped rules take precedence on conflicts.
+**Write new entries to the appropriate file based on scope** (see the Self-tune section below).
 
 ## Setup requirements
 
@@ -325,8 +328,11 @@ Set the live comment to "/imps complete — see PR #N."
 
 ## Self-tune
 
-Append to `~/.claude/imps/learnings.md` using actual run data (dispatch
-concurrency achieved, model escalations, merge conflicts, gate failures, panel
+After each run, append learnings to the appropriate file based on scope:
+- **Project-specific** (this repo's stack, commands, conventions) → `.claude/imps/learnings.md` in the repo root
+- **Generally applicable** (model routing, task boundaries, agent patterns) → `~/.claude/imps/learnings.md`
+
+Use actual run data (dispatch concurrency achieved, model escalations, merge conflicts, gate failures, panel
 rounds, collector-vs-live-interaction finding counts):
 
 ```markdown
@@ -338,11 +344,11 @@ rounds, collector-vs-live-interaction finding counts):
 **Routing notes** - ...
 ```
 
-Maintain an `## Active rules` section at the top (≤10 bullets) — promote/demote
-rules each run. That section is what Global rules loads at startup; an unread
-learnings file tunes nothing. When the file exceeds ~10 run entries, consolidate
-the oldest into Active rules and delete them. Keep Active rules stack-agnostic —
-record a repo-specific command as an example, not as the rule.
+Maintain an `## Active rules` section at the top of each file (≤10 bullets per file) — promote/demote
+rules each run. Those sections are what loads at startup; an unread learnings file tunes nothing. When
+a file exceeds ~10 run entries, consolidate the oldest into Active rules and delete them. User-scoped
+Active rules must stay stack-agnostic; project-scoped Active rules may reference this repo's specific
+commands, paths, or patterns.
 
 ## Protocol notes (hard-won — do not skip)
 
