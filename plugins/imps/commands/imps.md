@@ -236,7 +236,7 @@ Before asking discovery questions, invoke the `prompt-builder` skill to sharpen 
 If `$ARGUMENTS` is empty AND the guard check (above) found no pending state file, ask "What's the task?" and wait — collect it here before invoking prompt-builder.
 
 Use the **Skill tool**:
-- `skill`: `prompt-builder`
+- `skill`: `prompt-builder:prompt-builder`
 - `args`: the raw task description alone (no framing preamble).
 
   After prompt-builder's first response, steer if needed: "Skip model selection, test cases, and save-path guidance — I just need 1–2 sharp sentences I can decompose into parallel agents."
