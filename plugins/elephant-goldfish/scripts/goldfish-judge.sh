@@ -2,10 +2,12 @@
 #
 # goldfish-judge.sh — ONE cold "goldfish" comprehension pass over a bootstrap doc.
 #
-# Runs the judge on a DIFFERENT-LINEAGE model (Gemini via the Antigravity CLI `agy`)
-# so it does not share the Claude author's priors — that is what stops the loop from
-# certifying its own guesses. The judge runs SANDBOXED with no filesystem access; the
-# doc is fed inline. It reads NOTHING but this one document and changes nothing.
+# Runs the judge(s) on DIFFERENT-LINEAGE models so they do not share the Claude
+# author's priors — that is what stops the loop from certifying its own guesses.
+# The primary judge is Gemini via the Antigravity CLI (`agy`), which is required.
+# An optional second opinion is available via `ollama` (set OLLAMA_MODEL).
+# Both judges run SANDBOXED with no filesystem access; the doc is fed inline.
+# Each reads NOTHING but this one document and changes nothing.
 #
 # This is the COMPREHENSION test (can a cold reader bootstrap the project from this
 # doc ALONE?), not the readiness test. It judges sufficiency, not writing quality.
@@ -13,16 +15,31 @@
 # does not know it either, so giving the judge the code would let the doc cheat its gaps.
 #
 # Exit codes:
-#   0  = READY
-#   10 = NOT READY   (report contains the gaps; feed it to /elephant FEEDBACK)
-#   2  = judge error / empty output / no VERDICT line  (FAIL-CLOSED — never a pass)
+#   0  = READY         (all run judges agree: READY)
+#   10 = NOT READY     (at least one judge says NOT READY; report has the gaps)
+#   2  = judge error   (empty output / no VERDICT line / requested CLI missing)
 #   1  = usage
 #
-# WHY THE PSEUDO-TTY + MARKER CHECK
+#   The 0/10/2 contract is preserved for callers regardless of how many judges run.
+#   Consensus is fail-closed AND: READY only when every judge that ran says READY.
+#   Worst case is always a false NOT-READY, never a false READY.
+#
+# WHY THE PSEUDO-TTY + MARKER CHECK (agy)
 #   agy changes behaviour by whether stdout is a TTY, and under a pipe it can return
 #   exit 0 with EMPTY output. In a gate, empty -> "no gaps" -> a false READY, the worst
 #   possible failure. So we (a) hand it a pseudo-TTY and (b) refuse to call anything
 #   READY unless a literal VERDICT line is present. Worst case is a false NOT-READY.
+#
+# WHY NO PSEUDO-TTY FOR OLLAMA
+#   `ollama run` does not suppress output under a plain pipe, so no PTY is needed.
+#   Using one would reintroduce the macOS control-byte artifact described below.
+#
+# WHY SANITIZE AFTER PTY CAPTURE
+#   On macOS, `script -q /dev/null` echoes the TTY's literal control bytes — ^D (0x04)
+#   plus two backspaces (0x08 0x08) — onto the first output line. This corrupts the
+#   VERDICT anchor. sanitize() strips all control bytes except tab and newline so the
+#   grep matches correctly. This also strips stray CRs that either script variant may
+#   inject, so it hardens both the Darwin and Linux paths.
 #
 # VERIFY AGAINST YOUR agy  ──────────────────────────────────────────────────────────
 #   The CLI is new and its flags move. Run `agy --help` and confirm the two marked
@@ -33,8 +50,10 @@
 set -euo pipefail
 
 DOC="${1:-elephant.md}"
-REPORT_OUT="${REPORT_OUT:-}"                 # optional: also write the report here
+REPORT_OUT="${REPORT_OUT:-}"                 # optional: also write the combined report here
 AGY_MODEL="${AGY_MODEL:-gemini-3.1-pro}"     # VERIFY: any Gemini model name
+OLLAMA_MODEL="${OLLAMA_MODEL:-}"             # optional: any model name accepted by `ollama run`
+                                             # honors OLLAMA_HOST for a remote instance
 
 # Isolation flag for a scriptable, no-filesystem-access judge. The CLI's flags move between
 # releases, so it is env-overridable: AGY_READONLY_FLAG. As of agy 1.0.12 the sandboxed,
@@ -59,6 +78,21 @@ pty_run() {
   fi
 }
 
+# Strip all control bytes except tab (0x09) and newline (0x0A). Removes the ^D + backspace
+# prefix that macOS `script` prepends to the first PTY output line, and any stray CRs.
+sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+
+# Classify a sanitized report. Echoes one of: READY | NOT_READY | ERROR
+classify() {
+  local report="$1" verdict
+  if [ -z "${report//[[:space:]]/}" ]; then echo ERROR; return; fi
+  verdict="$(printf '%s\n' "$report" | grep -m1 -E '^[[:space:]]*VERDICT:' || true)"
+  if [ -z "$verdict" ]; then echo ERROR; return; fi
+  if   printf '%s' "$verdict" | grep -qiE 'NOT[[:space:]]+READY'; then echo NOT_READY
+  elif printf '%s' "$verdict" | grep -qiE 'READY';                then echo READY
+  else echo ERROR; fi
+}
+
 # Cold-read isolation via a virtual workspace. We copy ONLY the doc into a fresh scratch
 # dir and run agy sandboxed from inside it, so the judge's workspace contains nothing but
 # this one file. By construction it can read the doc but NOT the repo source — if the doc
@@ -72,15 +106,11 @@ trap 'rm -rf "$SCRATCH"' EXIT
 DOC_BASENAME="$(basename "$DOC")"
 cp "$DOC" "$SCRATCH/$DOC_BASENAME"
 
-PROMPT="$(cat <<PROMPT_EOF
-You are a brand-new engineer with zero prior knowledge of this project. The ONLY file you
-can read is "$DOC_BASENAME" in your workspace — the design document. You have NO access to
-the source repository or any other file. If the document does not tell you something, you
-do not know it — do not assume, infer from convention, or imagine code you cannot see.
-
-Read "$DOC_BASENAME", then decide whether this document ALONE lets a zero-context reader
-bootstrap the project — understand what it is and why, how it is architected and how the
-components relate, and where in the code each major component lives.
+# Shared judging criteria used by all judges (format-spec only; no file-access framing).
+JUDGE_SPEC="$(cat <<'SPEC_EOF'
+Decide whether this document ALONE lets a zero-context reader bootstrap the project —
+understand what it is and why, how it is architected and how the components relate,
+and where in the code each major component lives.
 
 OUTPUT FORMAT — follow exactly:
 - The VERY FIRST LINE must be exactly:  VERDICT: READY   or   VERDICT: NOT READY
@@ -95,29 +125,71 @@ OUTPUT FORMAT — follow exactly:
 - Judge sufficiency for bootstrapping, not writing quality. Do not propose redesigns. A
   near-universal convention a competent engineer already knows is not a gap. A component
   whose owning path the doc names is navigable even though you cannot open it.
+SPEC_EOF
+)"
+
+# agy prompt — workspace-file framing (agy can read the copied file; sandbox is enforced).
+AGY_PROMPT="$(cat <<PROMPT_EOF
+You are a brand-new engineer with zero prior knowledge of this project. The ONLY file you
+can read is "$DOC_BASENAME" in your workspace — the design document. You have NO access to
+the source repository or any other file. If the document does not tell you something, you
+do not know it — do not assume, infer from convention, or imagine code you cannot see.
+
+Read "$DOC_BASENAME", then $JUDGE_SPEC
 PROMPT_EOF
 )"
 
-# Run from inside the scratch dir so agy's workspace root IS the scratch dir (single file).
-report="$(cd "$SCRATCH" && pty_run agy "${AGY_JUDGE_FLAGS[@]}" -p "$PROMPT" 2>&1 || true)"
+# ollama prompt — doc inlined (ollama reads no files; inlining is stronger cold isolation).
+DOC_CONTENTS="$(cat "$DOC")"
+OLLAMA_PROMPT="$(cat <<PROMPT_EOF
+You are a brand-new engineer with zero prior knowledge of this project. The ONLY information
+you have is the design document pasted below. You have NO access to the source repository or
+any other file. If the document does not tell you something, you do not know it — do not
+assume, infer from convention, or imagine code you cannot see.
 
-# ── Fail-closed guards ───────────────────────────────────────────────────────────
-if [ -z "${report//[[:space:]]/}" ]; then
-  echo "goldfish-judge: agy produced empty output (non-TTY drop, auth, or quota). NOT a pass." >&2
+$JUDGE_SPEC
+
+----- BEGIN DOCUMENT -----
+$DOC_CONTENTS
+----- END DOCUMENT -----
+PROMPT_EOF
+)"
+
+# ── Judge 1: agy / Gemini (pseudo-TTY required; sanitize fixes the macOS PTY artifact) ──
+agy_raw="$(cd "$SCRATCH" && pty_run agy "${AGY_JUDGE_FLAGS[@]}" -p "$AGY_PROMPT" 2>&1 | sanitize || true)"
+agy_class="$(classify "$agy_raw")"
+[ "$agy_class" = ERROR ] && echo "goldfish-judge: agy judge produced no usable verdict. NOT a pass." >&2
+
+combined="===== JUDGE 1: agy / $AGY_MODEL =====
+$agy_raw"
+
+# ── Judge 2: ollama (optional, sequential — no PTY, stderr quarantined) ─────────────────
+ollama_class="READY"   # neutral default when Ollama is disabled; doesn't affect consensus
+if [ -n "$OLLAMA_MODEL" ]; then
+  if command -v ollama >/dev/null 2>&1; then
+    ollama_raw="$(ollama run "$OLLAMA_MODEL" "$OLLAMA_PROMPT" 2>"$SCRATCH/ollama.err" | sanitize || true)"
+    ollama_class="$(classify "$ollama_raw")"
+    if [ "$ollama_class" = ERROR ]; then
+      echo "goldfish-judge: ollama judge produced no usable verdict. NOT a pass." >&2
+      tail -5 "$SCRATCH/ollama.err" >&2
+    fi
+    combined="$combined
+
+===== JUDGE 2: ollama / $OLLAMA_MODEL =====
+$ollama_raw"
+  else
+    echo "goldfish-judge: OLLAMA_MODEL set but 'ollama' not on PATH. NOT a pass." >&2
+    ollama_class="ERROR"
+  fi
+fi
+
+[ -n "$REPORT_OUT" ] && printf '%s\n' "$combined" > "$REPORT_OUT"
+printf '%s\n' "$combined"
+
+# ── Fail-closed AND consensus ─────────────────────────────────────────────────────────────
+if [ "$agy_class" = ERROR ] || [ "$ollama_class" = ERROR ]; then
+  echo "goldfish-judge: a judge errored / produced no verdict. NOT a pass. See report." >&2
   exit 2
 fi
-
-verdict="$(printf '%s\n' "$report" | grep -m1 -E '^[[:space:]]*VERDICT:' || true)"
-[ -n "$REPORT_OUT" ] && printf '%s\n' "$report" > "$REPORT_OUT"
-
-if [ -z "$verdict" ]; then
-  echo "goldfish-judge: no VERDICT line in agy output. NOT a pass. See report." >&2
-  exit 2
-fi
-
-printf '%s\n' "$report"   # full report to stdout for the caller / log
-
-if   printf '%s' "$verdict" | grep -qiE 'NOT[[:space:]]+READY'; then exit 10
-elif printf '%s' "$verdict" | grep -qiE 'READY';                then exit 0
-else echo "goldfish-judge: unrecognized verdict: $verdict" >&2;      exit 2
-fi
+if [ "$agy_class" = NOT_READY ] || [ "$ollama_class" = NOT_READY ]; then exit 10; fi
+exit 0
