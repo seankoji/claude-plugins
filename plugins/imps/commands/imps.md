@@ -267,9 +267,11 @@ Using `<REFINED_TASK>` and the discovery answers, invoke native plan mode to pro
 the authoritative decomposition. Under `opusplan`, plan mode routes to opus — so this
 IS the "decompose on opus" requirement, with no duplicate planning pass.
 
-**Step 0:** Check for `~/.claude/imps/learnings.md`. If it exists, read the
-`## Active rules` section — apply those rules to model assignment, task boundaries,
-and dependency detection throughout planning.
+**Step 0:** Load learnings from two sources (both optional):
+- **User-scoped:** `~/.claude/imps/learnings.md` — stack-agnostic rules that apply across all projects
+- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules specific to this project
+
+Read the `## Active rules` section from each file that exists. Merge both sets of rules and apply them to model assignment, task boundaries, and dependency detection throughout planning. Project-scoped rules take precedence over user-scoped rules on any conflict.
 
 **Step 1:** Call **`EnterPlanMode`**. You are now the opus planner. Explore the repo
 as needed (read key files, check the default branch, confirm GATE_CMDS exist) to ground
@@ -734,25 +736,36 @@ PYEOF
    - **options**: one option per candidate learning, phrased as a concise rule
      (not a description of what happened — the rule to apply next time)
 
-   For each confirmed learning, append to `~/.claude/imps/learnings.md`:
+   If any were confirmed, immediately follow with a second **AskUserQuestion**
+   (`multiSelect: true`) to determine scope:
+   - **question**: `"Which of these are project-specific? (the rest will be saved globally)"`
+   - **header**: `"Scope"`
+   - **options**: one option per confirmed learning (same text)
+
+   Selected → write to `.claude/imps/learnings.md` in the repo root (project-scoped).
+   Unselected → write to `~/.claude/imps/learnings.md` (user-scoped, applies to all projects).
+
+   For each destination file, append using this format:
 
    ```markdown
    ## Active rules
-   <!-- ≤10 stack-agnostic bullets; promote confirmed learnings here when a pattern
-        repeats across ≥2 runs; demote to run notes if it turns out to be one-off -->
+   <!-- ≤10 bullets; promote confirmed learnings here when a pattern repeats across
+        ≥2 runs; demote to run notes if it turns out to be one-off.
+        User-scoped: keep stack-agnostic. Project-scoped: repo-specific rules are fine. -->
 
    ## YYYY-MM-DD — <project> <task description>
    - <confirmed learning 1>
    - <confirmed learning 2>
    ```
 
-   If `## Active rules` does not exist yet, create it. If a confirmed learning is
-   a repeat of something already in a past run entry, promote it into Active rules
-   instead of appending a new run note. Keep Active rules ≤10 bullets.
+   If `## Active rules` does not exist yet in a file, create it. If a confirmed
+   learning repeats something already in a past run entry of the same file, promote
+   it into that file's Active rules instead of appending a new run note. Keep each
+   file's Active rules ≤10 bullets.
 
    After writing, print the confirmed learnings as a brief closing line:
    ```
-   Learnings saved: "<rule 1>" · "<rule 2>"
+   Learnings saved: "<rule 1>" [project] · "<rule 2>" [user]
    ```
    If none were confirmed: `No learnings saved this run.`
 
