@@ -66,6 +66,7 @@ The command runs interactively inside a Claude Code session. Auto / accept-edits
 | Var | Default | Notes |
 |---|---|---|
 | `AGY_MODEL` | `gemini-3.1-pro` | Any Gemini model name accepted by `agy` |
+| `OLLAMA_MODEL` | _(unset)_ | Optional local second-opinion judge via `ollama run`, run sequentially after `agy`. Set to any model name `ollama` accepts (e.g. `llama3.1`). READY requires both judges to agree. Honors `OLLAMA_HOST` for a remote instance. Do not use a Claude model. |
 | `GOLDFISH_JUDGE` | `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh` | Path to the cold-judge helper; bundled with this plugin |
 | `MAX_GOLDFISH_ITERS` | `5` | Hard cap on judge → patch → re-judge rounds |
 | `GOLDFISH_AFTER_CREATE` | `true` | Set `false` to skip the gate after initial creation |
@@ -74,18 +75,24 @@ The command runs interactively inside a Claude Code session. Auto / accept-edits
 
 ## The `goldfish-judge.sh` script
 
-The bundled `scripts/goldfish-judge.sh` is the per-round oracle — a cold, read-only Gemini
-pass that requires a `VERDICT: READY` or `VERDICT: NOT READY` line; anything else is
-**exit 2** (fail-closed). See the script's header comments for full behavioral notes.
+The bundled `scripts/goldfish-judge.sh` is the per-round oracle — a cold, read-only Gemini pass
+(primary) plus an optional local second opinion via Ollama. All judges must produce a
+`VERDICT: READY` or `VERDICT: NOT READY` line; anything else, or a disagreement, is **exit 2**
+(fail-closed). Consensus is AND: READY only when every judge that ran says READY. See the script's
+header comments for full behavioral notes.
 
 Run it standalone to test:
 
 ```bash
 bash /path/to/goldfish-judge.sh ./elephant.md
 echo "exit: $?"
+
+# With a second opinion from a local Ollama model:
+OLLAMA_MODEL=llama3.1 bash /path/to/goldfish-judge.sh ./elephant.md
+echo "exit: $?"
 ```
 
-Exit codes: `0` = READY · `10` = NOT READY · `2` = judge error / empty / no verdict.
+Exit codes: `0` = all judges READY · `10` = any judge NOT READY · `2` = any judge errored / empty / no verdict.
 
 ---
 

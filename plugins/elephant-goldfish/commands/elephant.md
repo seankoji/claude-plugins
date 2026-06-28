@@ -44,12 +44,18 @@ elephant and testing it against that goldfish is now built into this command.
   `false` for pure create-only (what a bare run on a missing doc would otherwise do).
 - `GOLDFISH_JUDGE` (default `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh`) — path to the
   cold-judge helper. Bundled with this plugin; override via environment if needed.
-- `AGY_MODEL` (default `gemini-3.1-pro`) — the judge model. **Must be a Gemini model.** `agy` can
-  also run Claude; a Claude judge shares this author's priors and reintroduces the clone problem.
-  `agy`'s default is already Gemini, so the lineage requirement holds even if the flag is wrong.
+- `AGY_MODEL` (default `gemini-3.1-pro`) — the primary judge model. **Must be a Gemini model.**
+  `agy` can also run Claude; a Claude judge shares this author's priors and reintroduces the clone
+  problem. `agy`'s default is already Gemini, so the lineage requirement holds even if the flag is
+  wrong.
+- `OLLAMA_MODEL` (default unset) — when set, enables an optional second-opinion judge via the
+  `ollama` CLI, run **sequentially after `agy`**. Set to any model name `ollama run` accepts (e.g.
+  `llama3.1`). Consensus is fail-closed AND: the gate passes only if **both** judges say READY.
+  `OLLAMA_HOST` is honored for a remote Ollama instance. **Do not point this at a Claude model** —
+  that reintroduces the clone problem.
 
-The judge is read-only and different-lineage **by design** — that, plus its being a separate cold
-process, is what makes a PASS mean something. Do not weaken either property.
+All judges are read-only and different-lineage **by design** — that, plus their being separate cold
+processes, is what makes a PASS mean something. Do not weaken either property.
 
 ---
 
@@ -129,11 +135,11 @@ SEEN="$(hash_doc "<doc>")"
 
 Loop, at most `MAX_GOLDFISH_ITERS` rounds:
 
-1. `iter++`; print `🐟 goldfish pass <iter> (judge: agy/$AGY_MODEL)`.
-2. **Judge** (Bash). The helper is fail-closed: empty output or a missing verdict is an error, not
-   a pass.
+1. `iter++`; print `🐟 goldfish pass <iter> (judge: agy/$AGY_MODEL${OLLAMA_MODEL:+ + ollama/$OLLAMA_MODEL})`.
+2. **Judge** (Bash). The helper is fail-closed: empty output or a missing verdict from any judge is
+   an error, not a pass. When `OLLAMA_MODEL` is set, both judges must agree READY.
    ```bash
-   REPORT_OUT="$RUNDIR/judge-<iter>.md" AGY_MODEL="$AGY_MODEL" \
+   REPORT_OUT="$RUNDIR/judge-<iter>.md" AGY_MODEL="$AGY_MODEL" OLLAMA_MODEL="${OLLAMA_MODEL:-}" \
      bash "$GOLDFISH_JUDGE" "<doc>"; RC=$?
    ```
 3. **Branch on `RC`:**
