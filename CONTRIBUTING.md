@@ -1,0 +1,128 @@
+# Contributing
+
+Contributions welcome — new plugins, improvements to existing ones, docs fixes.
+
+## Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- `jq` (for local validation and CI parity)
+- Plugin-specific prerequisites vary — see the relevant `plugins/<name>/README.md`
+
+## Repo layout
+
+```
+.claude-plugin/marketplace.json     # marketplace index (one entry per plugin)
+plugins/<name>/
+  .claude-plugin/plugin.json        # plugin manifest
+  commands/<name>.md                # slash-command definition (source of truth for mechanics)
+  scripts/*.sh                      # bundled helpers — must be chmod +x
+  README.md                         # user-facing docs
+schemas/                            # JSON Schema contracts for manifests
+.github/workflows/validate.yml      # CI gate
+```
+
+See `AGENTS.md` for the full invariants and the add-a-plugin checklist.
+
+---
+
+## Testing locally
+
+Plugins install into a local cache. To test changes without publishing:
+
+**1. Find your cache path**
+
+```bash
+ls ~/.claude/plugins/cache/seankoji/
+# elephant-goldfish/  claude-tuneup/  prompt-builder/  imps/
+```
+
+Each plugin lives at `~/.claude/plugins/cache/seankoji/<plugin>/<version>/`.
+
+**2. Copy your changed file into the cache**
+
+```bash
+cp plugins/elephant-goldfish/commands/elephant.md \
+   ~/.claude/plugins/cache/seankoji/elephant-goldfish/0.1.0/commands/elephant.md
+```
+
+Do this for any file you changed — commands, scripts, or READMEs.
+
+**3. Hot-reload in Claude Code**
+
+In any Claude Code session, run:
+
+```
+/reload-plugins
+```
+
+This re-reads all plugin command files from disk. No session restart needed.
+
+**4. Invoke your command**
+
+```
+/elephant-goldfish:elephant check
+```
+
+The change is live. Edit → copy → `/reload-plugins` → test, repeat.
+
+**Testing a new plugin end-to-end**
+
+If you're adding a brand-new plugin and want to test the full install flow:
+
+```bash
+# Install from your local branch (Claude Code supports file:// paths)
+claude plugin install file://$(pwd)/plugins/my-new-plugin --scope user
+```
+
+Then invoke it normally. To uninstall when done:
+
+```bash
+claude plugin uninstall my-new-plugin@seankoji
+```
+
+---
+
+## Adding a plugin
+
+Five things must change **together** — missing one breaks the marketplace:
+
+1. `plugins/<name>/.claude-plugin/plugin.json` — fill every required field (name, version, description, author, homepage, repository, license, keywords)
+2. `.claude-plugin/marketplace.json` — add an entry under `"plugins"` (name, source, description)
+3. Root `README.md` — add one row to the "Available plugins" table
+4. `plugins/<name>/README.md` — user-facing prerequisites, modes, env vars, license
+5. `chmod +x plugins/<name>/scripts/*.sh` — every shipped shell helper must be executable
+
+**Invariants to follow:**
+- Use `${CLAUDE_PLUGIN_ROOT}` for bundled asset paths — never hardcode `~/.claude/`
+- Runtime state (logs, run state) goes under `~/.claude/` — never bundle it
+- Commands are auto-discovered from `commands/*.md` — no `commands` field in `plugin.json`
+- Fail-closed: scripts should exit non-zero on ambiguous/empty output, not treat silence as success
+
+---
+
+## Validate before opening a PR
+
+Run CI checks locally first:
+
+```bash
+# Validate JSON manifests
+jq . .claude-plugin/marketplace.json
+for f in plugins/*/.claude-plugin/plugin.json; do jq -e '.name' "$f"; done
+
+# Confirm no hardcoded machine paths in command files
+grep -rn --include="*.md" '~/.claude/' plugins/*/commands/
+
+# Check all .sh files are executable
+git ls-files plugins/**/*.sh | xargs ls -la | grep -v '^-rwx'
+```
+
+CI runs all of these automatically on push. See `.github/workflows/validate.yml` for the full suite.
+
+---
+
+## Opening a PR
+
+- Branch from `master`
+- Keep PRs scoped to one plugin or one concern — easier to review and revert
+- The PR description should explain *why*, not just what changed
+- CI must pass before merge

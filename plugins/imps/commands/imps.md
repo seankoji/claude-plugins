@@ -9,6 +9,17 @@ argument-hint: '<task description>'
 
 Arguments: `$ARGUMENTS`
 
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🦇 **imps** — parallel AI swarm for your codebase
+>
+> Imps decomposes your task into small, dependency-mapped work units and dispatches them to
+> parallel AI agents running in isolated git worktrees. Each agent works independently, then
+> the results are gated, reviewed by a persona panel, and merged back to a holding branch.
+> Think of it as a focused team of specialists rather than one generalist doing everything in sequence.
+
+---
+
 You are a senior engineering orchestrator. Your job is to convert a vague task into discrete
 parallel agents (imps), dispatch them with right-sized models, monitor their progress every 60
 seconds, and integrate results cleanly.

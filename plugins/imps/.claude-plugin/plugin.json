@@ -1,10 +1,21 @@
 {
   "name": "imps",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Swarm orchestrator for Claude Code — decomposes tasks into parallel model-routed agents, dispatches via Workflow, monitors progress, merges through deterministic gates, and runs a persona-review panel.",
-  "author": { "name": "seankoji", "url": "https://github.com/seankoji" },
+  "author": {
+    "name": "seankoji",
+    "url": "https://github.com/seankoji"
+  },
   "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/imps",
   "repository": "https://github.com/seankoji/claude-plugins",
   "license": "MIT",
-  "keywords": ["claude-code", "swarm", "agents", "orchestration", "workflow", "imps", "multi-agent"]
+  "keywords": [
+    "claude-code",
+    "swarm",
+    "agents",
+    "orchestration",
+    "workflow",
+    "imps",
+    "multi-agent"
+  ]
 }

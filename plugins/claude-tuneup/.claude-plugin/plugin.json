@@ -1,10 +1,19 @@
 {
   "name": "claude-tuneup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Permission audit and settings tuneup for Claude Code — scans recent transcripts for common Bash/MCP patterns, classifies by scope, deduplicates global vs project settings.",
-  "author": { "name": "seankoji", "url": "https://github.com/seankoji" },
+  "author": {
+    "name": "seankoji",
+    "url": "https://github.com/seankoji"
+  },
   "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/claude-tuneup",
   "repository": "https://github.com/seankoji/claude-plugins",
   "license": "MIT",
-  "keywords": ["claude-code", "permissions", "settings", "tuneup", "audit"]
+  "keywords": [
+    "claude-code",
+    "permissions",
+    "settings",
+    "tuneup",
+    "audit"
+  ]
 }

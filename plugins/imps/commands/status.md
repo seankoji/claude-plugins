@@ -4,6 +4,15 @@ description: Emit a heartbeat for active /imps runs. Self-reschedules via Schedu
 
 # /imps:status — imp roll-call
 
+**Before executing any steps**, output the following intro block so the user knows what's happening:
+
+> 🦇 **imps:status** — checking in on your swarm
+>
+> Polling active imps runs and showing which agents are still working. This command
+> self-reschedules automatically until the run completes — no need to invoke it again manually.
+
+---
+
 This command is a self-pacing heartbeat. It reads active run state, emits one status
 block per run (showing only imps still working), and reschedules itself via `ScheduleWakeup`.
 When the run is over (state file deleted by the merge phase), it stops by not rescheduling.
