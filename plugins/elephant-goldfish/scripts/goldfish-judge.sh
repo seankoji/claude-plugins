@@ -54,6 +54,9 @@ REPORT_OUT="${REPORT_OUT:-}"                 # optional: also write the combined
 AGY_MODEL="${AGY_MODEL:-gemini-3.1-pro}"     # VERIFY: any Gemini model name
 OLLAMA_MODEL="${OLLAMA_MODEL:-}"             # optional: any model name accepted by `ollama run`
                                              # honors OLLAMA_HOST for a remote instance
+OLLAMA_NO_THINK="${OLLAMA_NO_THINK:-true}"  # prepend /no_think to suppress the <think> block on
+                                             # qwen3 and other thinking models so VERDICT: is the
+                                             # first output line; set false for non-thinking models
 
 # Isolation flag for a scriptable, no-filesystem-access judge. The CLI's flags move between
 # releases, so it is env-overridable: AGY_READONLY_FLAG. As of agy 1.0.12 the sandboxed,
@@ -140,9 +143,14 @@ PROMPT_EOF
 )"
 
 # ollama prompt — doc inlined (ollama reads no files; inlining is stronger cold isolation).
+# /no_think prefix tells qwen3 and compatible models to skip their <think> block so the very
+# first output token is VERDICT:, matching the format spec. Ignored by non-thinking models.
 DOC_CONTENTS="$(cat "$DOC")"
+_OLLAMA_NOTHINK_PREFIX=""
+[ "${OLLAMA_NO_THINK}" = "true" ] && _OLLAMA_NOTHINK_PREFIX="/no_think
+"
 OLLAMA_PROMPT="$(cat <<PROMPT_EOF
-You are a brand-new engineer with zero prior knowledge of this project. The ONLY information
+${_OLLAMA_NOTHINK_PREFIX}You are a brand-new engineer with zero prior knowledge of this project. The ONLY information
 you have is the design document pasted below. You have NO access to the source repository or
 any other file. If the document does not tell you something, you do not know it — do not
 assume, infer from convention, or imagine code you cannot see.

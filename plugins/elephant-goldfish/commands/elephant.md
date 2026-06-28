@@ -50,9 +50,14 @@ elephant and testing it against that goldfish is now built into this command.
   wrong.
 - `OLLAMA_MODEL` (default unset) — when set, enables an optional second-opinion judge via the
   `ollama` CLI, run **sequentially after `agy`**. Set to any model name `ollama run` accepts (e.g.
-  `llama3.1`). Consensus is fail-closed AND: the gate passes only if **both** judges say READY.
-  `OLLAMA_HOST` is honored for a remote Ollama instance. **Do not point this at a Claude model** —
-  that reintroduces the clone problem.
+  `qwen3:14b-q8_0`). Consensus is fail-closed AND: the gate passes only if **both** judges say
+  READY. `OLLAMA_HOST` is honored for a remote Ollama instance. **Do not point this at a Claude
+  model** — that reintroduces the clone problem.
+- `OLLAMA_NO_THINK` (default `true`) — prepends `/no_think` to the Ollama prompt to suppress
+  the `<think>` preamble on qwen3 and compatible thinking models, ensuring `VERDICT:` is the first
+  output line. Set `false` for non-thinking models that don't recognise the token.
+- `OLLAMA_HOST` — passed through to the `ollama` CLI to target a remote instance (e.g.
+  `http://pc.robot.house:11434`).
 
 All judges are read-only and different-lineage **by design** — that, plus their being separate cold
 processes, is what makes a PASS mean something. Do not weaken either property.

@@ -66,7 +66,9 @@ The command runs interactively inside a Claude Code session. Auto / accept-edits
 | Var | Default | Notes |
 |---|---|---|
 | `AGY_MODEL` | `gemini-3.1-pro` | Any Gemini model name accepted by `agy` |
-| `OLLAMA_MODEL` | _(unset)_ | Optional local second-opinion judge via `ollama run`, run sequentially after `agy`. Set to any model name `ollama` accepts (e.g. `llama3.1`). READY requires both judges to agree. Honors `OLLAMA_HOST` for a remote instance. Do not use a Claude model. |
+| `OLLAMA_MODEL` | _(unset)_ | Optional second-opinion judge via `ollama run`, run sequentially after `agy`. Set to any model name `ollama` accepts (e.g. `qwen3:14b-q8_0`). READY requires both judges to agree. Honors `OLLAMA_HOST` for a remote instance. Do not use a Claude model. |
+| `OLLAMA_NO_THINK` | `true` | Prepend `/no_think` to the Ollama prompt to suppress thinking-model preamble (qwen3, etc.) so `VERDICT:` is the first output line. Set `false` for non-thinking models that don't recognise the token. |
+| `OLLAMA_HOST` | _(ollama default)_ | Override Ollama endpoint, e.g. `http://pc.robot.house:11434` for a remote instance. |
 | `GOLDFISH_JUDGE` | `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh` | Path to the cold-judge helper; bundled with this plugin |
 | `MAX_GOLDFISH_ITERS` | `5` | Hard cap on judge → patch → re-judge rounds |
 | `GOLDFISH_AFTER_CREATE` | `true` | Set `false` to skip the gate after initial creation |
