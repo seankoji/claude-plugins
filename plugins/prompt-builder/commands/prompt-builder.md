@@ -138,7 +138,7 @@ Even more minimal than APE. Appropriate for highly constrained, well-understood 
 
 Apply the complexity rubric: mechanical → haiku, judgment → sonnet, deep judgment → opus.
 
-Default to **Sonnet 4.6** (`claude-sonnet-4-6`) for most prompts. Recommend Haiku for tasks
+Default to **Sonnet 5** (`claude-sonnet-5`) for most prompts. Recommend Haiku for tasks
 with deterministic output (extraction, classification, enumeration). Recommend Opus when the
 decision space is large and quality is the primary constraint (open-ended research, architectural
 reasoning). When in doubt, recommend Sonnet and note conditions that would push up or down.
