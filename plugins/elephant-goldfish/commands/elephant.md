@@ -372,7 +372,7 @@ Ground every patch in the targeted scout's findings (Scout E), not guesswork.
 ## Step 5 — Section template
 
 The author emits `elephant.md` with this structure. The four canonical sections are **always**
-present. `## Drift` is mode-conditional (RECONCILE only). `## Open questions` is the honesty
+present. `## Drift` is mode-conditional (UPDATE only). `## Open questions` is the honesty
 pressure-valve — anything unverified goes there, not into the authoritative body.
 
 ```markdown
@@ -452,3 +452,7 @@ Then one reminder line: if `elephant.md` is in a tracked repo, commit it — it 
 deliverable alongside the code, not a generated artefact to gitignore. If the gate aborted, the
 doc still has open gaps; the run dir holds the last judge report. On a CHECK FAIL, no file was
 written — paste the printed report to `/elephant-goldfish:elephant <report>` to trigger a fix.
+
+If a `.goldfish-runs/` run dir was created and the repo's `.gitignore` doesn't already exclude it,
+print one more reminder line: add `.goldfish-runs/` to `.gitignore` — these are per-run judge
+artefacts, not deliverables to commit.
