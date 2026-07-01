@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "elephant-goldfish",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "source": "./plugins/elephant-goldfish",
       "description": "Self-validating /elephant design-doc command + Gemini goldfish judge."
     },
