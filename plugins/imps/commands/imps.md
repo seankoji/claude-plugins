@@ -428,7 +428,7 @@ Rules for the workflow script:
 - **Agent-type fallback**: If a workflow agent call errors with an agent-type registration failure, the `imp` type may not be registered in this session. Change `agentType: 'imp'` to `agentType: 'general-purpose'` in the workflow script and re-run.
 - Every `code`-type task adds `isolation: 'worktree'`: `agent(..., { agentType: 'imp', isolation: 'worktree' })`
 - **Worktree base**: `isolation: 'worktree'` always creates the agent's worktree from the repo's last committed HEAD on the default branch — NOT the caller's working branch. If `code` tasks must see in-progress changes, commit them to the current branch before dispatch.
-- Apply model routing per assignment above: `agent(..., { agentType: 'imp', model: 'claude-haiku-4-5-20251001' | 'claude-sonnet-4-6' | 'claude-opus-4-8' })`
+- Apply model routing per assignment above: `agent(..., { agentType: 'imp', model: 'claude-haiku-4-5-20251001' | 'claude-sonnet-5' | 'claude-opus-4-8' })`
 - Use `log()` to emit progress markers. Format **must** be: `log('imp:start #N')` when starting task N, `log('imp:done #N')` when task N completes. The integer N **must exactly match** the `id` field of the corresponding task in the state file — never combine multiple state-file tasks into one agent or split one task across agents. One agent = one task ID. Mismatches cause the heartbeat to show tasks as perpetually running.
 - Never create GitHub PRs from inside the workflow. PRs should be deferred to Phase 5, created from the main worktree branch after merge — not from isolated worktree branches whose names are non-deterministic.
 - Every agent returns structured output via `schema`:
