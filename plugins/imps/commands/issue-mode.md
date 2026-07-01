@@ -376,9 +376,10 @@ commands, paths, or patterns.
 11. Dispatched runs snapshot the workflow definition — fixing the workflow on the
     default branch does not fix a queued run; cancel + re-dispatch.
 12. **Always set `model:` explicitly on every `agent()` call** — omitting it
-    silently inherits the session model and wastes budget on mechanical tasks.
-    Mechanical → haiku, judgment → sonnet, deep judgment → opus. Persona panel +
-    cross-cutting fixer → opus. Merge agents → haiku.
+    silently inherits the session model and wastes budget on mechanical tasks. For the
+    complexity→model mapping and the escalation ladder, see **Model sizing** in Phase 2
+    (the canonical statement for this mode); scout/merge agents are always haiku, and the
+    persona panel + cross-cutting fixer are always opus.
 13. **Resolve the Project profile before Phase 0 — never hardcode a stack.** Default
     branch, gate commands, preview command, and schema convention all vary per repo;
     a prompt that assumes one stack's commands silently no-ops or errors on another.
