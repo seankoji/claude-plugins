@@ -19,13 +19,13 @@
     },
     {
       "name": "prompt-builder",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "source": "./plugins/prompt-builder",
       "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
     },
     {
       "name": "imps",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "source": "./plugins/imps",
       "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, merges through gates and persona review."
     }
