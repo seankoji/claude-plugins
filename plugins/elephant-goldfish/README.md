@@ -17,9 +17,11 @@ The command fans out parallel **haiku scouts** to map the codebase, then an **Op
 | Invocation | Mode | What it does |
 |---|---|---|
 | `/elephant-goldfish:elephant` (no doc) | CREATE | Write a fresh `elephant.md`, then run the Goldfish Gate |
-| `/elephant-goldfish:elephant` (doc exists) | GOLDFISH GATE | Validate the existing doc; fold in failures |
-| `/elephant-goldfish:elephant reconcile` | RECONCILE | Drift pass — doc stays authoritative, code is checked against it |
-| `/elephant-goldfish:elephant regenerate` | REGENERATE | Rebuild from code; preserve human rationale and Alternatives |
+| `/elephant-goldfish:elephant` (doc exists) | INTERACTIVE | Show a menu (Update / Regenerate / Check / Validate) |
+| `/elephant-goldfish:elephant update` | UPDATE | Drift pass — doc stays authoritative, code is checked against it — then the Goldfish Gate |
+| `/elephant-goldfish:elephant check` | CHECK | Read-only drift report; no writes, no gate |
+| `/elephant-goldfish:elephant validate` | VALIDATE | Run the Goldfish Gate on the existing doc without any rewrite first |
+| `/elephant-goldfish:elephant regenerate` | REGENERATE | Rebuild from code; preserve human rationale and Alternatives, then the Goldfish Gate |
 | `/elephant-goldfish:elephant <failure report>` | FEEDBACK | Fold in a manual goldfish failure report |
 
 ---
@@ -71,6 +73,7 @@ The command runs interactively inside a Claude Code session. Auto / accept-edits
 | `OLLAMA_HOST` | _(ollama default)_ | Override Ollama endpoint, e.g. `http://pc.robot.house:11434` for a remote instance. |
 | `GOLDFISH_JUDGE` | `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh` | Path to the cold-judge helper; bundled with this plugin |
 | `MAX_GOLDFISH_ITERS` | `5` | Hard cap on judge → patch → re-judge rounds |
+| `JUDGE_TIMEOUT` | `180` | Seconds before a hung `agy`/`ollama` judge call is killed (needs `timeout` or `gtimeout` on PATH; otherwise unguarded) |
 | `GOLDFISH_AFTER_CREATE` | `true` | Set `false` to skip the gate after initial creation |
 
 ---
