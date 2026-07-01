@@ -8,9 +8,8 @@ Prints three tables that help build a permissions allowlist:
   4. sudo-via-ssh drill — what sudo is actually doing remotely
 
 Scans the 50 most-recent .jsonl files across all ~/.claude/projects/ subdirs.
-Companion to the /claude-tuneup slash command.
-
-Install: copy to ~/.claude/scripts/scan_perms.py
+Companion to the /claude-tuneup slash command, which bundles this script and
+invokes it automatically via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py`.
 """
 
 import json
@@ -31,11 +30,19 @@ LEADERS = {"sudo", "time", "nice", "timeout", "env", "exec", "command"}
 
 
 def first_real_token(cmd):
+    """Walk past leader tokens (sudo/time/nice/timeout/env/exec/command) to find
+    the real command + first subcommand, but keep the leaders around so the
+    caller can fold them back into the reported pattern. Stripping them
+    entirely (as this used to do) produced allowlist rules like
+    `Bash(systemctl restart *)` that never match the real `sudo systemctl
+    restart ...` invocation that prompted in the first place."""
     cmd = PREFIX_STRIP.sub("", cmd.strip())
     parts = cmd.split()
+    leaders = []
     if not parts:
-        return ("", None)
+        return ([], "", None)
     while parts and parts[0] in LEADERS:
+        leaders.append(parts[0])
         if parts[0] == "timeout" and len(parts) >= 2:
             parts = parts[2:]
         elif parts[0] == "env":
@@ -45,12 +52,12 @@ def first_real_token(cmd):
         else:
             parts = parts[1:]
     if not parts:
-        return ("", None)
+        return (leaders, "", None)
     head = parts[0].rsplit("/", 1)[-1]
     sub = parts[1] if len(parts) > 1 else None
     if sub and (sub.startswith("-") or not re.match(r"^[a-zA-Z0-9_-]+$", sub)):
         sub = None
-    return (head, sub)
+    return (leaders, head, sub)
 
 
 def first_segment(cmd):
@@ -77,16 +84,19 @@ def iter_tool_uses(transcripts):
                 for raw in f:
                     try:
                         msg = json.loads(raw)
-                    except json.JSONDecodeError:
+                        if msg.get("type") != "assistant":
+                            continue
+                        content = msg.get("message", {}).get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                yield block
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        # A single malformed-but-valid-JSON line (e.g. an
+                        # aborted turn with "message": null) shouldn't abort
+                        # the scan of every remaining transcript.
                         continue
-                    if msg.get("type") != "assistant":
-                        continue
-                    content = msg.get("message", {}).get("content")
-                    if not isinstance(content, list):
-                        continue
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_use":
-                            yield block
         except (FileNotFoundError, PermissionError):
             continue
 
@@ -111,9 +121,10 @@ def main():
             if not isinstance(cmd, str) or not cmd.strip():
                 continue
             seg = first_segment(cmd.strip()).strip()
-            head, sub = first_real_token(seg)
+            leaders, head, sub = first_real_token(seg)
             if head:
-                bash_patterns[f"{head} {sub}" if sub else head] += 1
+                tokens = leaders + [head] + ([sub] if sub else [])
+                bash_patterns[" ".join(tokens)] += 1
 
             # SSH remote-command drill
             parts = seg.split()
