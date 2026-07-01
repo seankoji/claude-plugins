@@ -48,6 +48,8 @@ Flags:
 - Service-specific subcommands (e.g. `n8n n8n *`, project-specific docker exec paths)
 - Project-specific webhook URLs / API endpoints
 
+**Skip — different repo** (neither global nor project): `scan_perms.py` scans `~/.claude/projects/` across every repo on the machine, not just this one. If a candidate's hostname, container name, path, or service reference clearly belongs to a repo other than the current one, DROP it — don't default it into this repo's `.claude/settings.json` as a false-positive project entry. Cross-check against `~/repos/` directory names and other repos' known aliases when in doubt.
+
 Quote-style variants (`'foo *` vs `"foo *`) are SEPARATE permission rules — Claude's matcher is exact-prefix. NEVER dedupe across quote styles.
 
 ## Safety rules (applied in BOTH phases)
@@ -101,7 +103,9 @@ Present candidates grouped by scope via `AskUserQuestion` (multi-select). Apply 
 
 ### 3. Phase 2 — Scope audit (skip if `--scan-only`)
 
-Pre-step: back up `~/.claude/settings.json` to `<dir>/settings.json.bak.$(date +%Y%m%d-%H%M%S)`. Resolve the symlink first so the `.bak` lives in the storage dir (where the matching `.gitignore` rule covers it).
+Pre-step A — validate before touching anything: for each of `~/.claude/settings.json` (resolve the symlink first), `.claude/settings.json` (if present), and `.claude/settings.local.json` (if present), run `jq '.' <file> >/dev/null`. If ANY fails to parse, STOP immediately — no backup, no edits. Backing up an already-malformed file preserves the corruption, and edits on top of it compound it with no path back to known-good. Report the offending file and its parse error, then abort the run.
+
+Pre-step B — back up `~/.claude/settings.json` to `<dir>/settings.json.bak.$(date +%Y%m%d-%H%M%S)`. Resolve the symlink first so the `.bak` lives in the storage dir (where the matching `.gitignore` rule covers it).
 
 **3a. Duplicates & cross-file prefix subsumption**
 
@@ -175,7 +179,7 @@ Sort `permissions.allow` alphabetically after edits.
 
 ### 5. Validate
 
-For each modified file: `jq '.' <file> >/dev/null`. On parse failure, restore from the `.bak.` snapshot and stop with a clear error.
+Post-edit safety net (the pre-flight check in step 3 catches pre-existing corruption; this catches edits that broke a previously-valid file). For each modified file: `jq '.' <file> >/dev/null`. On parse failure, restore from the `.bak.` snapshot and stop with a clear error.
 
 ### 6. Commit (project only)
 
