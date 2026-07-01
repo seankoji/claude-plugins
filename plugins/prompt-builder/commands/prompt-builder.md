@@ -56,6 +56,8 @@ Before picking a framework or drafting, establish:
 
 Batch independent questions. Ask iteratively when each answer shapes the next. Hard cap: **20 questions across the session total**.
 
+If the cap is reached before diagnosis is sufficient, stop asking — proceed on explicitly-flagged assumptions instead of stalling. State each assumption inline (e.g. in the deliverable's Context/Use-when line) so the operator can correct it in one pass.
+
 ---
 
 ## Framework selection
@@ -68,12 +70,14 @@ If you switch framework mid-session, say so explicitly.
 
 | If the task is… | Reach for… |
 |---|---|
-| Simple, well-scoped, low-stakes | **RTF**, **TAG**, or **APE** |
-| Tone- or audience-sensitive | **CO-STAR** |
+| Simple, needs a defined persona/role | **RTF** |
+| Simple, format is the only real constraint — no persona needed | **APE** |
+| Trivial, well-understood, format already implicit | **TAG** |
+| Tone- or audience-sensitive, voice is load-bearing | **CO-STAR** |
 | Brainstorming, ideation, exploring options | **CRISPE** |
 | Multi-step, technical, constraint-heavy | **RISEN** |
-| Content, marketing, SEO | **RACE** |
-| Style or format mimicry (reference available) | **CARE** |
+| Content, marketing, SEO — tone detail less critical (lighter than CO-STAR) | **RACE** |
+| Style or format mimicry (reference example available) | **CARE** |
 | Reasoning-heavy (maths, logic, debugging) | Any + **Chain-of-Thought** |
 | Pattern-matching or classification | Any + **Few-shot** |
 
@@ -202,6 +206,8 @@ For Claude Code commands, MCP availability depends on the project's `settings.js
 - <what to watch for>
 ```
 
+**Known failure modes guidance:** list 2–3 concrete, prompt-specific risks — not generic hedges like "may not always work." Ground each one in an actual constraint of this prompt: which instruction is most likely to be dropped under a long or messy input, which input shape breaks the output format, where CoT (if used) might be over- or under-applied. If you can't name a concrete failure mode, treat that as a signal to run another critique pass rather than shipping the section empty.
+
 Present this as the final output. Ask: "Good enough, or shall we refine?" Loop until satisfied.
 
 ---
@@ -243,12 +249,13 @@ Before presenting the final draft, verify:
 - [ ] If CoT: reasoning instruction is placed before the output instruction
 - [ ] Model recommendation is justified
 - [ ] Test cases cover at least one non-obvious input
+- [ ] Known failure modes are concrete and specific to this prompt, not generic hedges
 
 ---
 
 ## Validation
 
-Recommend 2–3 test inputs after delivering the prompt — at least one edge case. If the operator has run the prompt and it failed in a specific way, diagnose the failure mode and propose a targeted fix rather than a full redraft.
+Recommend 3 test inputs after delivering the prompt — normal, edge case, and near-miss/tricky variant, matching the deliverable template. If the operator has run the prompt and it failed in a specific way, diagnose the failure mode and propose a targeted fix rather than a full redraft.
 
 ---
 
@@ -269,14 +276,20 @@ Tell the operator in one line what you recorded. Respect the file's ~150-line so
 
 ### Layer 2 — gated self-revision
 
-When a learning hardens from a data point into an **always-applies rule** — typically signalled by the *same* default being overridden 2+ times, or the same failure mode recurring — propose editing **this skill's own body** (`~/.claude/commands/prompt-builder.md`) rather than just logging it again.
+When a learning hardens from a data point into an **always-applies rule** — typically signalled by the *same* default being overridden 2+ times, or the same failure mode recurring — propose editing **this skill's own body** rather than just logging it again.
 
-# Note: when installed as a plugin, the installed path differs — locate it via 'claude plugin path prompt-builder'.
+**Resolve the real install path first — never assume `~/.claude/commands/prompt-builder.md`.** How this command was installed changes both where the file lives and what "commit if tracked" means:
+
+- **Plugin-installed** (`claude plugin install prompt-builder@seankoji` — the only install path the README documents): run `claude plugin path prompt-builder` to find the installed command file. It lives under a plugin-cache directory, not `~/.claude/commands/`, and a later `claude plugin update` can silently overwrite local edits there. Do not hand-edit that file. Instead, propose the diff against the source in the `seankoji/claude-plugins` marketplace repo and offer to open a PR — that is this repo's real contribution model, and it's the only revision path that survives an update.
+- **Manually copied** to `~/.claude/commands/prompt-builder.md` (or a project's `.claude/commands/`): this is a plain file the operator owns directly. Edit it in place and commit if that directory is tracked in a dotfiles/project repo.
+
+If it's unclear which install this is, ask before proposing anything — don't guess and risk writing to a path `claude plugin update` will clobber.
+
 Protocol, strictly:
 
 1. **Never edit the skill body silently.** Show the proposed diff and state the evidence (which log entries justify it).
 2. Wait for explicit approval.
-3. On approval: apply the edit, remove the now-promoted entries from the learnings log, commit if tracked.
+3. On approval: apply the edit at the resolved path (or open the marketplace PR for a plugin install), remove the now-promoted entries from the learnings log, commit if tracked.
 4. If declined, leave both files as-is.
 
 Guardrails: keep edits surgical (change the specific default/rule, don't rewrite sections); everything is version-controlled so any bad revision is one `git revert` away. The honest limit — this only improves if the operator reports outcomes back; a run-and-forget session teaches it nothing.
