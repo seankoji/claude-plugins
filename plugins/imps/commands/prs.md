@@ -1,4 +1,5 @@
 ---
+name: imps:prs
 description: >
   Proactive PR monitor for /imps runs. Polls the main-branch PR for review comments,
   CI failures, and merge conflicts, then spawns agents to fix them automatically.
@@ -100,8 +101,12 @@ this check needs a fix (Step 4b). If attempts >= 2, flag it:
 gh api repos/<repo>/pulls/<pr_number>/comments \
   --jq '[.[] | {id: .id, body: .body, path: .path, line: .line, user: (.user.login)}]'
 ```
-Filter for comments whose `id` is NOT in `handled_comment_ids` and whose `user` is not
-the PR author (avoid self-review loops). Each unhandled comment needs a response (Step 4c).
+Filter for comments whose `id` is NOT in `handled_comment_ids` and whose `body` does NOT
+begin with the bot's own persona marker `[Persona:` — those are the panel's own comments,
+and skipping them is what avoids self-review loops. **Do not filter by author identity:**
+this plugin assumes a single `gh` identity opens the PR *and* leaves review feedback, so
+filtering out the PR author would hide a solo maintainer's own comments (the normal case).
+Each remaining unhandled comment needs a response (Step 4c).
 
 ---
 

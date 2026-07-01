@@ -34,7 +34,7 @@ Three entry modes, auto-detected from the argument:
 2. `/imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
 4. After plan approval, `/imps` dispatches a Workflow and starts the `/imps:status` heartbeat.
-5. When the Workflow completes, `/imps` merges code branches, runs gates, runs the persona panel, creates the endstate PR, and offers to push.
+5. When the Workflow completes, `/imps` merges code branches, runs gates, then opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, applies any fixes, and can hand the PR to the `/imps:prs` monitor.
 
 ### Issue-driven mode walkthrough
 
@@ -47,6 +47,21 @@ Three entry modes, auto-detected from the argument:
 ### Checklist-file mode
 
 Pass a single `.md` token that resolves to a file with `- [ ]` checklist items, each having `Verify:` and `Done when:` sub-lines. `/imps` fans out read-only verification imps and emits a pass/fail audit report, then offers to dispatch remediation.
+
+### Direct `/imps:issue-mode` invocation & handoff contract
+
+Issue-driven mode is also directly invokable as `/imps:issue-mode` — useful for an upstream
+audit or handoff tool that wants to skip `/imps`'s mode detection. It accepts either bare
+issue numbers (`/imps:issue-mode 42 43 51`) or a structured JSON input:
+
+```json
+{ "issues": [42, 43, 51, 60], "holdingBranch": "audit/2026-06-12" }
+```
+
+- `issues` (required) — the issue numbers to work (capped at `ISSUE_CAP=200`).
+- `holdingBranch` (optional) — the branch to integrate onto; defaults to
+  `swarm/<YYYY-MM-DD>` cut fresh from the repo's default branch. If the branch and its
+  tracking issue already exist, the run resumes from the first incomplete phase.
 
 ## Sub-commands
 
@@ -62,7 +77,7 @@ Both sub-commands are self-rescheduling via `ScheduleWakeup` — do NOT wrap the
 | **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
 | **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
 | **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
-| **`imp` agent type** | Preferred agent type for all tasks; falls back to `general-purpose` automatically. |
+| **`imp` agent type** (optional) | Used only if your runtime registers an `imp` agent type. This plugin does **not** ship one, so out of the box every task runs on `general-purpose` — the workflow detects the missing type and falls back automatically. The "atomic-task discipline / branch handling / structured-output" conventions are baked into the prompts either way. |
 
 Optional:
 

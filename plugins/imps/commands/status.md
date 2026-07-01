@@ -1,4 +1,5 @@
 ---
+name: imps:status
 description: Emit a heartbeat for active /imps runs. Self-reschedules via ScheduleWakeup; stops when the state dir is empty. Shows only still-working imps with a one-liner each.
 ---
 
@@ -137,6 +138,7 @@ for fname in files:
         started   = set(status_raw.get('started', [])) - completed
     tasks         = state.get('tasks', [])
 
+    secs = None
     try:
         dt      = datetime.fromisoformat(state['dispatched_at'].replace('Z', '+00:00'))
         secs    = int((datetime.now(timezone.utc) - dt).total_seconds())
@@ -168,6 +170,15 @@ for fname in files:
 
     prefix = f'{state.get("repo", slug)} · ' if multi else ''
     print(f'{bats}  {n}/{total} imps still out · {prefix}{elapsed} — {note}')
+
+    # Staleness guard: a hung/crashed workflow otherwise shows "still working" forever.
+    # Warn once elapsed passes a generous multiple of the poll interval (≈12 polls, min 1 h).
+    poll        = state.get('poll_interval_seconds', 300) or 300
+    stale_after = max(3600, poll * 12)
+    if active and secs is not None and secs > stale_after:
+        print(f'  ⚠ no completion after {secs / 3600:.1f}h (> {stale_after // 3600}h '
+              f'threshold) — workflow may be hung or crashed; check /workflows, or abandon '
+              f'the run via `/imps` to start fresh')
 
     # Show blocked-on-deps detail only for imps waiting on unmet deps
     for t in active:
