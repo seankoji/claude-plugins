@@ -67,7 +67,12 @@ OLLAMA_NO_THINK="${OLLAMA_NO_THINK:-true}"  # prepend /no_think to suppress the 
 # future agy renames the flag, override without editing this file:
 #   AGY_READONLY_FLAG='--whatever-the-new-flag-is' bash goldfish-judge.sh elephant.md
 AGY_READONLY_FLAG="${AGY_READONLY_FLAG:---sandbox}"
-AGY_JUDGE_FLAGS=(--model "$AGY_MODEL" $AGY_READONLY_FLAG)
+# --new-project forces a fresh, empty agy project/conversation for this invocation. Without
+# it, agy resolves project/conversation identity from its OWN persistent cross-session cache
+# (~/.gemini/antigravity-cli/cache/projects.json etc.), which lives outside the scratch dir
+# and is untouched by --sandbox — so a prior agy session tied to an ancestor path (even a
+# bare "/tmp" entry) can leak unrelated project context into the verdict.
+AGY_JUDGE_FLAGS=(--model "$AGY_MODEL" $AGY_READONLY_FLAG --new-project)
 
 [ -f "$DOC" ] || { echo "goldfish-judge: doc not found: $DOC" >&2; exit 1; }
 command -v agy >/dev/null 2>&1 || { echo "goldfish-judge: 'agy' not on PATH" >&2; exit 2; }
