@@ -5,9 +5,10 @@ description: >
   worktrees → holding branch → deterministic gates → persona-panel review
   (code=opus, browser=sonnet off a collector bundle) → operator handoff. Stack-agnostic
   — resolves the repo's conventions at startup. Self-tunes after every run.
+argument-hint: '<issue numbers...> | {"issues": [...], "holdingBranch": "..."}'
 ---
 
-# /imps — issue-driven mode
+# /imps:issue-mode — issue-driven mode
 
 **Before executing any steps**, output the following intro block so the user knows what's happening:
 
@@ -19,9 +20,9 @@ description: >
 
 ---
 
-This is the workflow `/imps` follows when its arguments are entirely GitHub issue
+This is the workflow `/imps:imps` follows when its arguments are entirely GitHub issue
 numbers (see the **Mode detection** section of [`../imps.md`](../imps.md)).
-`/imps 42 43` scouts those issues and drives them through implementation, gates, and a
+`/imps:imps 42 43` scouts those issues and drives them through implementation, gates, and a
 persona-review panel to an operator handoff.
 
 A stack-agnostic orchestrator. Nothing below assumes a language, framework, or
@@ -32,7 +33,7 @@ prompt; read it from the profile.
 
 ## Input
 
-`/imps 42 43 51 60` — or a structured input from an upstream audit/handoff:
+`/imps:imps 42 43 51 60` — or a structured input from an upstream audit/handoff:
 
 ```json
 { "issues": [42, 43, 51, 60], "holdingBranch": "audit/2026-06-12" }

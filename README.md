@@ -6,7 +6,7 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 
 | Plugin | Description |
 |---|---|
-| [elephant-goldfish](./plugins/elephant-goldfish/) | Self-validating `/elephant` design-doc command + Gemini goldfish judge |
+| [elephant-goldfish](./plugins/elephant-goldfish/) | Self-validating `/elephant-goldfish:elephant` design-doc command + Gemini goldfish judge |
 | [claude-tuneup](./plugins/claude-tuneup/) | Permission audit and settings tuneup for Claude Code |
 | [prompt-builder](./plugins/prompt-builder/) | Iterative prompt engineering assistant |
 | [imps](./plugins/imps/) | Swarm orchestrator — parallel model-routed agents, Workflow dispatch, deterministic gates, persona-review panel |

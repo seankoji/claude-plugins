@@ -1,7 +1,7 @@
 ---
 name: imps:prs
 description: >
-  Proactive PR monitor for /imps runs. Polls the main-branch PR for review comments,
+  Proactive PR monitor for /imps:imps runs. Polls the main-branch PR for review comments,
   CI failures, and merge conflicts, then spawns agents to fix them automatically.
   Self-reschedules via ScheduleWakeup; stops when the PR is merged, closed, or 48 h old.
 ---
@@ -18,9 +18,9 @@ description: >
 
 ---
 
-This command is a self-pacing monitor. It reads the PR state written by `/imps` Phase 5,
+This command is a self-pacing monitor. It reads the PR state written by `/imps:imps` Phase 5,
 inspects the open PR, dispatches fixing agents as needed, and reschedules itself.
-It is invoked by `/imps` after a successful push and self-terminates when done.
+It is invoked by `/imps:imps` after a successful push and self-terminates when done.
 
 **Autonomous push scope:** this command pushes fix commits to the PR branch without
 asking. It does NOT touch the main/master branch. If it cannot fix an issue confidently,

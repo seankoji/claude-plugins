@@ -97,6 +97,14 @@ Five things must change **together** — missing one breaks the marketplace:
 - Runtime state (logs, run state) goes under `~/.claude/` — never bundle it
 - Commands are auto-discovered from `commands/*.md` — no `commands` field in `plugin.json`
 - Fail-closed: scripts should exit non-zero on ambiguous/empty output, not treat silence as success
+- Invoke a plugin's own command with its fully namespaced form, `/<plugin-name>:<command-name>`
+  (e.g. `/imps:imps`, `/elephant-goldfish:elephant`) — Claude Code always namespaces plugin
+  commands this way, even when the command file name matches the plugin name; there is no bare
+  unqualified alias
+
+**Versioning:** bumps are a pure per-touching-PR patch counter (CI's "version bumped" check just
+requires the number to change), not semver — don't expect automatic minor/major bumps for larger
+changes.
 
 ---
 
@@ -108,6 +116,13 @@ Run CI checks locally first:
 # Validate JSON manifests
 jq . .claude-plugin/marketplace.json
 for f in plugins/*/.claude-plugin/plugin.json; do jq -e '.name' "$f"; done
+
+# Validate manifests against the JSON Schema contracts (same tool CI uses)
+pipx run check-jsonschema --schemafile schemas/marketplace.schema.json .claude-plugin/marketplace.json
+for f in plugins/*/.claude-plugin/plugin.json; do pipx run check-jsonschema --schemafile schemas/plugin.schema.json "$f"; done
+
+# Confirm every plugin has a README and a row in the root README
+for d in plugins/*/; do [ -f "${d}README.md" ] || echo "missing ${d}README.md"; done
 
 # Confirm no hardcoded machine paths in command files
 grep -rn --include="*.md" '~/.claude/' plugins/*/commands/
