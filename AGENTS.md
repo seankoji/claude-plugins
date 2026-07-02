@@ -14,6 +14,7 @@ Default branch: `master`.
 plugins/<name>/
   .claude-plugin/plugin.json      # this plugin's manifest
   commands/<name>.md              # the slash-command (its frontmatter is the source of truth)
+  agents/<name>.md                # optional: subagent types this plugin registers on install
   scripts/*.sh                    # helpers; must be chmod +x
   README.md                       # user-facing docs for this plugin
 README.md                         # marketplace overview + install table (one row per plugin)

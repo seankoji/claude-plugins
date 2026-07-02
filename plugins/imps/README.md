@@ -14,7 +14,7 @@ adversarial persona-review panel.
 | **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
 | **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
 | **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
-| **`imp` agent type** (optional) | Used only if your runtime registers an `imp` agent type. This plugin does **not** ship one, so out of the box every task runs on `general-purpose` — the workflow detects the missing type and falls back automatically. The "atomic-task discipline / branch handling / structured-output" conventions are baked into the prompts either way. |
+| **`imp` agent type** | Bundled with the plugin (`agents/imp.md`) — registered automatically once installed. If registration fails for any reason, the workflow detects the missing type and falls back to `general-purpose`. |
 
 Optional:
 
@@ -115,10 +115,16 @@ credentials required.
 | Asset | Location |
 | --- | --- |
 | Persona briefs (5) | `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md` |
+| `imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp.md` |
+| `head-imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/head-imp.md` |
 | Summon banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py` |
 
 No manual setup needed for any of these — the plugin installs them at
-`${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime.
+`${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The workflow
+script inlines its own copy of the Head Imp persona for calls made from inside
+a `Workflow` script (see below); the bundled `head-imp` agent type is what
+resolves when it, or anything else, invokes it directly via the `Agent` tool
+(`Agent(subagent_type: "head-imp", ...)`).
 
 ## Runtime state
 
