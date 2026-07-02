@@ -223,8 +223,8 @@ Print a one-block summary:
 ```
 
 - **Resume** — use the `tasks` array from the state file (it is the authoritative
-  source — GOAL.md is human-readable but the state file is what Phase 3's banner and
-  heartbeat read). Verify `git rev-parse --abbrev-ref HEAD` matches state `branch`;
+  source — GOAL.md is human-readable but the state file is what Phase 3's banner
+  reads). Verify `git rev-parse --abbrev-ref HEAD` matches state `branch`;
   warn the user if it doesn't and wait for confirmation before continuing. Ground the
   Workflow prompts via `scout` subagents (the prior planning context was cleared) rather
   than re-reading repo files into this context.
@@ -243,7 +243,8 @@ Print a one-block summary:
           ...
 ```
 
-- **Resume** — skip discovery and set up the status heartbeat against the existing run
+- **Resume** — skip discovery and re-enter Phase 3 dispatch against the existing run
+  (progress visible via `/workflows`)
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh
 
 Do not proceed past this check without an answer.
@@ -424,7 +425,7 @@ unresolvable.
 
 This file is the `/compact`-durable human-readable spine. The JSON state file
 (`~/.claude/imps/runs/<slug>.json`, written in Step 6) is the **authoritative** task
-table — Phase 3 and the heartbeat read from it, not from GOAL.md. If you hand-edit
+table — Phase 3 reads from it, not from GOAL.md. If you hand-edit
 GOAL.md's task table after approval, mirror the change into the state file (or re-run
 planning) or it will not take effect. Update the Status section at each major milestone.
 
@@ -561,7 +562,7 @@ Rules for the workflow script:
 - **Worktree base**: `isolation: 'worktree'` always creates the agent's worktree from the repo's last committed HEAD on the **default branch** — NOT the caller's working branch. Committing in-progress changes to a *side* working branch therefore does NOT make them visible to the worktree. If `code` tasks must see in-progress changes, those changes must first reach the default branch itself (merge or push them to the default branch before dispatch); committing to a non-default branch is not enough.
 - **Gate before commit**: every `code` agent resolves the repo's gate/lint commands (from `package.json` scripts, `Makefile`, `pyproject.toml`, CI config, or `AGENTS.md`/`CONTRIBUTING.md`) and runs them — plus the autofix command if one exists — before committing. It fixes failures it caused and leaves pre-existing failures noted. This mirrors issue-mode's per-agent `GATE_CMDS`/`LINT_FIX` discipline so agents never push gate-red (Phase 5 Step 3's aggregate gates are a backstop, not the first line).
 - Apply model routing per assignment above (see [Model selection reference](#model-selection-reference)): `agent(..., { agentType: 'imp', model: '<haiku|sonnet|opus model id from the session model table>' })`
-- Use `log()` to emit progress markers. Format **must** be: `log('imp:start #N')` when starting task N, `log('imp:done #N')` when task N completes. The integer N **must exactly match** the `id` field of the corresponding task in the state file — never combine multiple state-file tasks into one agent or split one task across agents. One agent = one task ID. Mismatches cause the heartbeat to show tasks as perpetually running.
+- Use `log()` to emit progress markers. Format **must** be: `log('imp:start #N')` when starting task N, `log('imp:done #N')` when task N completes. The integer N **must exactly match** the `id` field of the corresponding task in the state file — never combine multiple state-file tasks into one agent or split one task across agents. One agent = one task ID. These markers are debug breadcrumbs — no automated consumer reads them; mismatches only mislead a human manually tailing `workflow_output_file`.
 - Never create GitHub PRs from inside the workflow. PRs should be deferred to Phase 5, created from the main worktree branch after merge — not from isolated worktree branches whose names are non-deterministic.
 - Every agent returns structured output via `schema`. `status` is an enum —
   `"done"` (task completed) or `"failed"` (the agent could not complete it):
@@ -586,16 +587,16 @@ Rules for the workflow script:
 
 **Step 4:** Update `~/.claude/imps/runs/${SLUG}.json` with the identifiers returned by
 the Workflow tool — the tool result contains:
-- `workflow_task_id`: the task ID (`wp...`) — the `TaskOutput` fallback key
+- `workflow_task_id`: the task ID (`wp...`) — the `TaskOutput` lookup key
 - `workflow_run_id`: the run ID (`wf_...`) — used by the `/workflows` UI
 - `workflow_output_file`: the background task's **output file path**, if the tool result
   includes one (background tasks report where their output streams to). Record it
   verbatim; leave `null` if absent.
 
-The heartbeat prefers `workflow_output_file` — it greps the file for progress markers
-with zero log ingestion and it works across sessions (files outlive the session-scoped
-TaskOutput tool). `workflow_task_id` is the fallback; `workflow_run_id` is
-human-reference only.
+No automated process reads these back — they're captured for manual debugging only:
+`workflow_output_file` can be grepped by hand for `imp:start`/`imp:done` markers without
+ingesting the full log, `workflow_task_id` works with the session-scoped `TaskOutput`
+tool, and `workflow_run_id` is what you'd look up in the `/workflows` UI.
 
 **Step 5:** Print the dispatch banner by running this script (reads from the state file
 written in Step 2; substitute `$SLUG` with the actual slug):
@@ -646,12 +647,11 @@ print(f'Workflow: {wf}  ·  progress in /workflows  ·  type anything to keep wo
 PYEOF
 ```
 
-**Step 6:** Invoke the `/imps:status` skill directly (no args). It self-reschedules
-via `ScheduleWakeup` and stops cleanly when the state file is gone — do NOT use the
-`loop` skill here, as that creates a `CronCreate` job which cannot self-cancel.
-
-Return control to the user. Do not block. The merge phase is handled when the task
-notification arrives (see Phase 5 below).
+**Step 6:** Return control to the user. Do not block — the Workflow runs in the
+background (progress visible via `/workflows`) and the merge phase is handled when
+its task notification arrives (see Phase 5 below). There is no automated hang
+detector for this phase — if the notification never arrives, check `/workflows`
+for a stalled run.
 
 ---
 
@@ -661,10 +661,9 @@ notification arrives (see Phase 5 below).
 
 ## Phase 5 — Integration via the Imp Wrangler (triggered by task notification)
 
-When the Workflow's `<task-notification>` arrives, this is your cue. The status loop will
-stop on its own once the state file is deleted — do not wait for it, and do not merge from
-within /imps:status. This session is the sole integration owner — but it owns *decisions*,
-not mechanics: the merge, Head Imp diff review, gates, persona panel, and fix loop all run
+When the Workflow's `<task-notification>` arrives, this is your cue. This session is the
+sole integration owner — but it owns *decisions*, not mechanics: the merge, Head Imp diff
+review, gates, persona panel, and fix loop all run
 inside one **imp-wrangler** subagent (see `agents/imp-wrangler.md` for its full protocol)
 so that merge output, diffs, and gate logs never enter this context. Only compact JSON
 checkpoints come back; this session handles the operator gates between them.
@@ -789,9 +788,6 @@ survived 3 rounds, surface them to the user verbatim — they are the review rec
      󰭟 #5 Comment    → https://github.com/...
    ```
 3. Delete `~/.claude/imps/runs/${SLUG}.json` (the same path written in Phase 3 Step 2).
-   The status loop will detect this on its next tick (no run-state `.json` files left — it
-   ignores `/imps:prs`'s own `.prs.json` files, so writing one in the next item doesn't
-   revive the heartbeat) and stop.
 4. Print the final banner. Run this script for the header line (substitute `TASKS_JSON`
    with the JSON array of all tasks, each with `id` and `model` fields):
 
