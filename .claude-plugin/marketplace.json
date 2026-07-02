@@ -25,7 +25,7 @@
     },
     {
       "name": "imps",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "source": "./plugins/imps",
       "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, merges through gates and persona review."
     }
