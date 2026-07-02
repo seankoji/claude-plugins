@@ -131,7 +131,9 @@ jobs:
               # Escape ERE metacharacters in the asset basename before interpolating it
               # into the pattern — an unescaped '.', '*', etc. would match too loosely.
               asset_re=$(printf '%s' "$asset" | sed 's/[.[\*^$()+?{|]/\\&/g')
-              hits=$(grep -rn --include="*.md" -E "~/\.claude/[^)\`[:space:]]*${asset_re}" "$cmd_dir" 2>/dev/null || true)
+              # Require a path boundary around the asset name so e.g. asset "imp" doesn't
+              # false-positive on unrelated "~/.claude/imps/..." runtime-state paths.
+              hits=$(grep -rn --include="*.md" -E "~/\.claude/([^)\`[:space:]]*/)?${asset_re}(\.[A-Za-z0-9]+)?([^A-Za-z0-9_-]|\$)" "$cmd_dir" 2>/dev/null || true)
               if [ -n "$hits" ]; then
                 echo "ERROR: bundled-asset path leak in $plugin_name referencing '$asset' (use \${CLAUDE_PLUGIN_ROOT} instead):"
                 echo "$hits"
