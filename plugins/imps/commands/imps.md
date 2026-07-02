@@ -42,7 +42,7 @@ anything bulky that enters it is paid for again and again:
 
 ## Mode detection
 
-`/imps:imps` has **three modes**, checked in this order:
+`/imps:imps` has **four modes**, checked in this order:
 
 - **Checklist-file mode** — `$ARGUMENTS` is a single token ending in `.md`. Resolve the
   file in order: (1) as-is if it's an absolute path or exists relative to cwd, (2)
@@ -62,13 +62,84 @@ anything bulky that enters it is paid for again and again:
   full scout → rolling-dispatch → holding-branch → gates → persona-panel → handoff
   workflow. Do not continue with the phases below.
 
+- **Discussion-seed mode** — `$ARGUMENTS`, taken as a whole, is a GitHub Discussion
+  reference and nothing else: a full URL matching
+  `^https?://github\.com/[^/\s]+/[^/\s]+/discussions/\d+([/?#]\S*)?$`
+  (e.g. `https://github.com/seankoji-com/onebitemore/discussions/284`, also matching a
+  permalink-to-comment or `?sort=` suffix), or the two-token bare form matching
+  `^discussion:?\s*#?\d+$` (case-insensitive, resolved against the current repo, e.g.
+  `discussion 284` or `discussion #284`). Discussions live in a different GitHub API/ID
+  space than Issues (GraphQL only, no REST) — this is why a discussion reference needs
+  its own detection branch instead of falling into issue-driven mode. **→ Fetch the
+  discussion, then continue as free-text mode with the discussion as the seeded task**
+  — see [Discussion-seed mode](#discussion-seed-mode) below.
+
 - **Free-text mode** — `$ARGUMENTS` is a task description (anything that is not purely
-  issue numbers), or empty. This is the original `/imps:imps` behaviour. **→ Continue with
-  the phases below.**
+  issue numbers or a discussion reference), or empty. This is the original `/imps:imps`
+  behaviour. **→ Continue with the phases below.**
 
 Detection order: (1) single `.md` token that resolves to a file → checklist-file mode.
-(2) non-empty AND every token matches `^#?\d+$` → issue-driven mode. (3) everything
-else → free-text mode.
+(2) non-empty AND every token matches `^#?\d+$` → issue-driven mode. (3) the whole
+argument is a Discussion URL or bare `discussion N` reference → discussion-seed mode.
+(4) everything else → free-text mode.
+
+---
+
+## Discussion-seed mode
+
+*Only entered when Mode detection chose this branch. This is not a separate phase
+sequence like issue-driven mode — it's a fetch step that seeds free-text mode (Phase 0
+onward) with the discussion's content, then adds one obligation that survives to Phase 6.*
+
+**1. Resolve owner/repo/number.**
+- Full URL → strip any `?query` or `#fragment` first, then parse `owner`, `repo`, `number`
+  from the remaining path segments (a permalink like `.../discussions/284#discussioncomment-98765`
+  still resolves to discussion `284`).
+- Bare `discussion N` / `discussion #N` → resolve `owner/repo` from the current repo:
+  `gh repo view --json nameWithOwner -q .nameWithOwner`.
+
+**2. Fetch the discussion via GraphQL** (Discussions have no REST endpoint — this
+mirrors the `publish`-type convention already used for Discussion creation in
+`agents/imp.md`):
+
+```bash
+gh api graphql -f query='
+query($owner:String!,$repo:String!,$num:Int!){
+  repository(owner:$owner,name:$repo){
+    discussion(number:$num){
+      id title body url
+      category { name }
+      author { login }
+      comments(first:20){ nodes { body author { login } isAnswer } }
+    }
+  }
+}' -f owner="<owner>" -f repo="<repo>" -F num=<number>
+```
+
+Extract `id` (the GraphQL node ID — required later to post a reply, keep it verbatim,
+never re-derive it from the number), `title`, `body`, `url`, `category.name`, and the
+comment bodies.
+
+**3. Seed the task.** Build `<DISCUSSION_TASK_SEED>` from the title + body (+ any
+comments that add requirements or constraints — skip pure "+1"/social replies). This
+replaces `$ARGUMENTS` as the input to Phase 0's brief refinement: pass
+`<DISCUSSION_TASK_SEED>` to the `prompt-builder` skill instead of raw `$ARGUMENTS`, and
+skip the "What's the task?" prompt — the discussion body *is* the task description.
+Continue with Phase 0 onward exactly as free-text mode does from here.
+
+**4. Record the source.** Carry `owner`, `repo`, `number`, `id` (GraphQL node ID), and
+`url` as `source_discussion` in the durable state file (Phase 2 Step 6 / Phase 3 Step 2)
+so a `/clear` mid-run doesn't lose the reply target.
+
+**5. Mandatory reply obligation.** Regardless of what Phase 1 discovery answers for
+"expected output artifacts," a discussion-seeded run posts one summary comment back to
+the source discussion whenever Phase 6 Finalize is reached — this is not optional there
+and is not a dispatched task (it needs the finished run's outcome, which doesn't exist
+until Phase 5 completes). Phase 1 Q2 may still surface additional artifacts (PRs, code)
+on top of this. **This obligation cannot fire if the run never reaches Phase 6** — an
+early abort (Phase 5 Step 1's blocked-task pause, or Step 3's `abort` checkpoint) stops
+before Finalize; see Phase 5 Step 1 and Step 3 for the "post a short abort notice instead"
+handling this requires.
 
 ---
 
@@ -254,11 +325,18 @@ Do NOT auto-dispatch fixes without operator confirmation. Default is read-only.
 
 Before asking discovery questions, invoke the `prompt-builder` skill to sharpen the task brief (if installed). A well-refined brief reduces decomposition ambiguity and often pre-answers several Phase 1 questions. If `prompt-builder` is not available, refine the brief inline to 1–2 sharp sentences and continue.
 
-If `$ARGUMENTS` is empty AND the guard check (above) found no pending state file, ask "What's the task?" and wait — collect it here before invoking prompt-builder.
+**Discussion-seed mode:** skip the "What's the task?" prompt entirely — use
+`<DISCUSSION_TASK_SEED>` (built in [Discussion-seed mode](#discussion-seed-mode)) as the
+raw material below instead of `$ARGUMENTS`.
+
+If `$ARGUMENTS` is empty AND the guard check (above) found no pending state file AND
+this is not discussion-seed mode, ask "What's the task?" and wait — collect it here
+before invoking prompt-builder.
 
 Use the **Skill tool**:
 - `skill`: `prompt-builder:prompt-builder`
-- `args`: the raw task description alone (no framing preamble).
+- `args`: the raw task description alone (no framing preamble) — `<DISCUSSION_TASK_SEED>`
+  in discussion-seed mode, otherwise `$ARGUMENTS` or the collected answer.
 
   After prompt-builder's first response, steer if needed: "Skip model selection, test cases, and save-path guidance — I just need 1–2 sharp sentences I can decompose into parallel agents."
 
@@ -272,8 +350,10 @@ Task description: `<REFINED_TASK>`
 
 Ask the following in a **single AskUserQuestion call** (batch all five), **skipping any questions prompt-builder already answered** during Phase 0:
 
-1. Which repo and branch is this work in? (free text)
-2. What concrete output artifacts are expected? Be specific — e.g. Bash scripts, GitHub Discussion post, PR, code changes.
+1. Which repo and branch is this work in? (free text) — in discussion-seed mode, default
+   to the discussion's own repo (`owner/repo` resolved in step 1) and skip asking unless
+   the discussion implies a different target repo.
+2. What concrete output artifacts are expected? Be specific — e.g. Bash scripts, GitHub Discussion post, PR, code changes. In discussion-seed mode, a reply comment on the source discussion is posted automatically at Phase 6 regardless of the answer here (see [Discussion-seed mode](#discussion-seed-mode) step 5) — this question is only for artifacts *beyond* that reply.
 3. What data sources, APIs, or external access will agents need?
 4. How will you know this is done? (acceptance criteria)
 5. Any constraints? (e.g. don't touch prod, don't create PRs without review, specific files off-limits)
@@ -332,6 +412,11 @@ dispatch phase inherits — keep it lean. Then:
 Planned — dispatching now.
 ```
 
+Discussion-seed mode: add `- [ ] Outcome comment posted to the source Discussion` to the
+Definition of Done — Phase 6 fulfills this automatically, it is not a dispatched task.
+If the run later aborts before reaching Phase 6 Finalize (see Phase 5 Step 1/Step 3),
+this box is expected to stay unchecked — note that in the Status section rather than
+treating it as a bug.
 Add `- [ ] CI green on the PR` to the Definition of Done **only if this run will open a
 PR** (see Phase 5 Step 4 — the endstate PR is the default for runs that produce code
 changes). Omit it for query/publish-only runs that create no PR, or it stays permanently
@@ -376,9 +461,15 @@ SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
   "workflow_run_id": null,
   "workflow_output_file": null,
   "dispatched_at": null,
-  "poll_interval_seconds": 300
+  "poll_interval_seconds": 300,
+  "source_discussion": null
 }
 ```
+
+Discussion-seed mode: set `source_discussion` to
+`{ "owner": "...", "repo": "...", "number": <int>, "id": "<GraphQL node ID>", "url": "<discussion URL>" }`
+(fields fetched in [Discussion-seed mode](#discussion-seed-mode) step 2). Every other
+mode leaves it `null`.
 
 Then print this handoff prompt (verbatim — it is informational, not a question):
 
@@ -432,8 +523,8 @@ SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
 
 Update (or create) `~/.claude/imps/runs/${SLUG}.json`: set `phase` → `"dispatched"` and
 `dispatched_at` → current ISO timestamp (`date -u +%Y-%m-%dT%H:%M:%SZ`). Leave `task`,
-`repo`, `branch`, `tasks`, and `poll_interval_seconds` intact from Phase 2. Leave
-`workflow_task_id` and `workflow_run_id` null — they are filled in Step 4.
+`repo`, `branch`, `tasks`, `poll_interval_seconds`, and `source_discussion` intact from
+Phase 2. Leave `workflow_task_id` and `workflow_run_id` null — they are filled in Step 4.
 
 Full schema for the in-session create-from-scratch fallback (all values are in context):
 ```json
@@ -449,9 +540,14 @@ Full schema for the in-session create-from-scratch fallback (all values are in c
   "workflow_run_id": null,
   "workflow_output_file": null,
   "dispatched_at": "<ISO timestamp from Bash: date -u +%Y-%m-%dT%H:%M:%SZ>",
-  "poll_interval_seconds": 300
+  "poll_interval_seconds": 300,
+  "source_discussion": null
 }
 ```
+This fallback only fires when Phase 2 Step 6 was skipped in-session — `source_discussion`
+is recoverable from context in that case exactly like the other fields; set it from
+[Discussion-seed mode](#discussion-seed-mode) step 2 if this run is discussion-seeded,
+else `null`.
 Imps are unnamed — each one is identified by a themed Nerd Font glyph derived from its task ID (see the dispatch banner in Step 5), so the state file carries no `name` field.
 
 **Step 3:** Write and launch a **Workflow** that implements the full dependency graph in a
@@ -579,6 +675,18 @@ else). Any task with `"status": "failed"` is never merged. If a failed task bloc
 run's acceptance criteria, pause and ask the user how to proceed (retry, skip, or abort)
 before spawning the wrangler — do not silently integrate a partial result set.
 
+Before proceeding, pull two scalar fields out of the state file into context now — this
+is a cheap `jq` read, not the "fetch nothing else" bulk data the rule above guards
+against: `source_discussion` and `poll_interval_seconds`. Hold onto both for the rest of
+Phase 5/6 — `source_discussion` is the reply target for Phase 6 item 6 and the abort
+notice below; `poll_interval_seconds` is needed by Phase 6 item 7a. Both are read now
+because item 3 of Phase 6 deletes the state file before either is otherwise needed.
+
+**If the user chooses abort here and `source_discussion` is set:** post a short comment
+to the source discussion before stopping — "Run aborted: `<one-line reason>`. No changes
+were merged." via the same `addDiscussionComment` mutation used in Phase 6 item 6. Then
+stop; do not spawn the wrangler.
+
 **Step 2 — Spawn the Imp Wrangler (Segment A: merge → Head Imp review → gates):**
 Load SendMessage first (`ToolSearch: "select:SendMessage"`) — every checkpoint after the
 spawn is answered through it, and the wrangler keeps its context across resumes.
@@ -624,7 +732,10 @@ the wrangler's agentId:
   `retry <gate>: <guidance>` · `skip <gate>` · `reconciled, continue` · `abort`) — use
   them verbatim. If the user chooses abort, send `abort`; the wrangler returns an
   `aborted` checkpoint describing the tree state — surface it and stop Phase 5 (leave
-  the state file for a later resume decision).
+  the state file for a later resume decision). If `source_discussion` was captured in
+  Step 1, post the same short "Run aborted: `<reason>`" comment described there before
+  stopping — this is the other early-exit path that would otherwise skip the discussion
+  reply obligation entirely.
 - `gates_green` — print a one-block summary from the checkpoint fields (merged tasks,
   failed tasks, Head Imp verdict + amendment count, gate results, diff stat), then go
   to Step 4.
@@ -787,10 +898,33 @@ PYEOF
    "
    ```
 
-6. **Activate the PR monitor** — only if the run opened a PR (Step 5 with `PR: yes`).
+6. **Post the outcome comment to the source Discussion** — only if `source_discussion`
+   (read into context back in Phase 5 Step 1, before the state file was deleted in item
+   3) is non-null. Build a short summary (≤150 words: what shipped, PR/Discussion URLs
+   from item 2, any unresolved findings from Step 5) and write it to a temp file rather
+   than interpolating it into a shell string — the summary routinely contains backticks,
+   `$`, and quotes (findings text, code refs) that would otherwise be shell-expanded or
+   break the argument:
+   ```bash
+   printf '%s' "$SUMMARY" > "${CLAUDE_JOB_DIR:-/tmp}/imps-discussion-comment.md"
+   gh api graphql -f query='
+   mutation($discussionId:ID!,$body:String!){
+     addDiscussionComment(input:{discussionId:$discussionId, body:$body}){
+       comment { url }
+     }
+   }' -f discussionId="<source_discussion.id>" -F body=@"${CLAUDE_JOB_DIR:-/tmp}/imps-discussion-comment.md"
+   ```
+   Use `source_discussion.id` verbatim (the GraphQL node ID captured in
+   [Discussion-seed mode](#discussion-seed-mode) step 2) — never re-derive it from the
+   discussion number. Print the returned comment URL. This step runs whenever Finalize is
+   reached on a discussion-seeded run — it is not gated by the Push & PR decision in Step
+   4 or by whether any `publish` tasks ran (the two earlier abort paths that skip this
+   entirely are handled in Phase 5 Step 1 and Step 3, not here).
+
+7. **Activate the PR monitor** — only if the run opened a PR (Step 5 with `PR: yes`).
    The wrangler already pushed the branch, so no second push prompt is needed here.
-   a. Capture `poll_interval_seconds` from the state file read earlier in this phase
-      (before it was deleted in item 3). Fall back to `300` if unavailable.
+   a. Use `poll_interval_seconds` (read into context back in Phase 5 Step 1, before the
+      state file was deleted in item 3). Fall back to `300` if unavailable.
    b. Write `~/.claude/imps/runs/${SLUG}.prs.json` (substitute all values):
       ```json
       {
@@ -815,7 +949,7 @@ PYEOF
    only and no PR was opened — push and open a PR, then invoke `/imps:prs` to activate the
    monitor."
 
-7. **Learnings gate.** Identify non-trivial things that happened this run — anything
+8. **Learnings gate.** Identify non-trivial things that happened this run — anything
    surprising, wrong, or notably effective. Candidates include: wrong workflow IDs,
    task ID mismatches in log lines, Head Imp amendments that changed the plan, model
    escalations (or haiku tasks that needed sonnet), merge conflicts and how they

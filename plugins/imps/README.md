@@ -44,12 +44,13 @@ claude plugin install imps@seankoji
 
 ## Usage
 
-Three entry modes, auto-detected from the argument:
+Four entry modes, auto-detected from the argument:
 
 | Invocation | Mode | What it does |
 | --- | --- | --- |
 | `/imps:imps <free-text task>` | Free-text | Refine → plan (opus plan mode) → decompose → dispatch a Workflow → merge → gates → persona panel → endstate PR |
 | `/imps:imps 42 43 51` | Issue-driven | Scout issues → rolling dispatch in isolated worktrees → holding branch → gates → persona panel → operator handoff |
+| `/imps:imps https://github.com/<owner>/<repo>/discussions/284` | Discussion-seed | Fetch the discussion via GraphQL, seed it as the free-text task, run the normal free-text flow, and always post a summary comment back to the discussion at the end |
 | `/imps:imps path/to/checklist.md` | Checklist-file | Run each `Verify:`/`Done when:` item as a read-only audit, then offer remediation dispatch |
 
 ### Free-text mode walkthrough
@@ -67,6 +68,13 @@ Three entry modes, auto-detected from the argument:
 3. Implementation agents run in isolated worktrees up to `PARALLEL_CAP=6` concurrent; file-overlapping issues serialize naturally.
 4. After all issues merge into the holding branch, `/imps:imps` runs full gates, opens the integration PR, and runs the persona panel.
 5. Operator handoff — `/imps:imps` does NOT merge the integration PR.
+
+### Discussion-seed mode walkthrough
+
+1. `/imps:imps https://github.com/<owner>/<repo>/discussions/284` (or the bare `discussion 284` inside that repo).
+2. `/imps:imps` fetches the discussion's title, body, and comments via `gh api graphql` (Discussions have no REST endpoint) and uses that content as the task description, skipping the "what's the task?" prompt.
+3. Everything from there follows the free-text mode walkthrough above (discovery → plan → dispatch → integration).
+4. Regardless of what the discovery answers say about output artifacts, `/imps:imps` always posts one summary comment back to the source discussion once the run finishes — this is not optional and does not require a PR to exist.
 
 ### Checklist-file mode
 
