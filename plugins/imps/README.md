@@ -7,6 +7,12 @@ agents ("imps"), dispatches them via the Workflow tool, monitors progress throug
 self-rescheduling heartbeat, and integrates results through deterministic gates and an
 adversarial persona-review panel.
 
+The orchestrating session is deliberately thin: it holds decisions (plan approval, the
+push/PR gate, conflict resolution) while everything bulky — repo recon, merges, diffs,
+gate logs, persona traffic — runs inside subagents that return compact JSON. Free-text
+mode's whole integration phase is delegated to a single **Imp Wrangler** subagent that
+reports back in checkpoints, so long runs don't grind the main context down.
+
 ## Prerequisites
 
 | Requirement | Needed for |
@@ -14,7 +20,7 @@ adversarial persona-review panel.
 | **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
 | **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
 | **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
-| **`imp` agent type** | Bundled with the plugin (`agents/imp.md`) — registered automatically once installed. If registration fails for any reason, the workflow detects the missing type and falls back to `general-purpose`. |
+| **Bundled agent types** (`imp`, `head-imp`, `imp-wrangler`) | Registered automatically once installed (`agents/*.md`). If registration fails for any reason, the commands fall back to `general-purpose` (the wrangler fallback prepends its brief to the prompt). |
 
 Optional:
 
@@ -52,7 +58,7 @@ Three entry modes, auto-detected from the argument:
 2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
 4. After plan approval, `/imps:imps` dispatches a Workflow and starts the `/imps:status` heartbeat.
-5. When the Workflow completes, `/imps:imps` merges code branches, runs gates, then opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, applies any fixes, and can hand the PR to the `/imps:prs` monitor.
+5. When the Workflow completes, `/imps:imps` hands integration to the **Imp Wrangler** subagent: it merges code branches, drives the Head Imp diff review, runs gates, then — after you approve the push — opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, and applies any fixes. The main session only relays your decisions and can hand the PR to the `/imps:prs` monitor.
 
 ### Issue-driven mode walkthrough
 
@@ -117,6 +123,7 @@ credentials required.
 | Persona briefs (5) | `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md` |
 | `imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp.md` |
 | `head-imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/head-imp.md` |
+| `imp-wrangler` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp-wrangler.md` |
 | Summon banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py` |
 
 No manual setup needed for any of these — the plugin installs them at

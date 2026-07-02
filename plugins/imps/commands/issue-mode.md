@@ -250,14 +250,20 @@ Tick tracking checkboxes and update the live comment as merges land.
    holding branch. Merge, not rebase: rebase replays N squash commits over a moved
    default branch and needs a force-push; one merge commit = one conflict resolution
    and stable SHAs. The PR diff stays clean (merge-base advances).
-2. **Gates — all green before any persona spends a token:**
-   - Run the full `GATE_CMDS` (validate / test / build) from the profile, in order,
-     from their recorded dir(s).
-   - **Schema/migration contract** (only if `SCHEMA_GUARD` applies): changes are
-     additive + idempotent — no destructive `DROP`/`ALTER … DROP`, no column rename
-     without backfill; and no new write path added in a read-only surface if the
-     repo declares one.
-   - Any failure → sonnet fixer agent in a worktree → re-run gates.
+2. **Gates — all green before any persona spends a token.** Never run `GATE_CMDS` in
+   orchestrator context — gate logs are exactly the noise the global rules ban. Spawn
+   one **gate-runner** agent (haiku; sonnet only if evaluating the output takes
+   judgment) that:
+   - runs the full `GATE_CMDS` (validate / test / build) from the profile, in order,
+     from their recorded dir(s), each redirected to a log file;
+   - checks the **schema/migration contract** (only if `SCHEMA_GUARD` applies):
+     changes are additive + idempotent — no destructive `DROP`/`ALTER … DROP`, no
+     column rename without backfill; and no new write path added in a read-only
+     surface if the repo declares one;
+   - returns only `[{ "gate": "...", "cmd": "...", "pass": true|false, "log":
+     "<path>", "tail": "≤20 lines, failures only" }]`.
+   Any failure → sonnet fixer agent in a worktree (pass the log *path*, not its
+   contents) → gate-runner re-runs.
 3. Open the integration PR (holding → default branch). Title:
    `swarm: <date> batch (<N> issues)`. Body: linked issues, change summary,
    persona status pending.

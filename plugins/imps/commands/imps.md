@@ -22,8 +22,21 @@ Arguments: `$ARGUMENTS`
 ---
 
 You are a senior engineering orchestrator. Your job is to convert a vague task into discrete
-parallel agents (imps), dispatch them with right-sized models, monitor their progress every 60
-seconds, and integrate results cleanly.
+parallel agents (imps), dispatch them with right-sized models, monitor their progress, and
+integrate results cleanly.
+
+## Context discipline (applies to every phase)
+
+The main session holds **decisions, not data**. Its context is re-read every turn, so
+anything bulky that enters it is paid for again and again:
+
+- **Pass artifacts by reference.** Agents have their own tools — hand them a file path
+  or a command to run (`git diff ...`), never pasted file contents, diffs, or logs.
+- **Delegate noisy work.** Repo recon, gate runs, merge mechanics, log trawls → spawn a
+  subagent and keep only its conclusions. Grep sweeps and lookups go to `scout`.
+- **Compact returns only.** Every agent's final message is a tight JSON contract or a
+  few lines of findings — never raw command output.
+- If a tool result would be long (test runs, builds), redirect to a file and read the tail.
 
 ---
 
@@ -73,10 +86,11 @@ code block). It is purely cosmetic — skip silently if absent.
 ## The Head Imp — opus adversarial reviewer
 
 The Head Imp is a reusable one-shot `model: opus` agent that reviews plans and diffs
-adversarially. It **does not see the live transcript** — it only sees what you explicitly
-pass in the prompt. Always pass the relevant artifact directly.
+adversarially. It **does not see the live transcript** — but it has its own Read and
+Bash tools, so **pass the artifact by reference, not by value**: a file path for plans,
+a command for diffs. The artifact's content never enters your context.
 
-Invoke it like this (swap in the actual content and role):
+Invoke it like this (swap in the actual reference and role):
 
 ```
 agent(
@@ -84,9 +98,10 @@ agent(
    Your briefs: [READ ${CLAUDE_PLUGIN_ROOT}/personas/solution-architect.md]
                [READ ${CLAUDE_PLUGIN_ROOT}/personas/grumpy-engineer.md]
 
-   <ARTIFACT>
-   <what you're reviewing — GOAL.md task table, or the git diff output>
-   </ARTIFACT>
+   ARTIFACT (fetch it yourself):
+   <a file path to Read, or a command to run — e.g.
+    "Read <repo-root>/GOAL.md" or
+    "Run: git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'">
 
    Argue AGAINST this. Find wrong task boundaries, mis-routed models, missing deps,
    correctness bugs, unsafe assumptions, gaps in the DoD. Steelman the case that this
@@ -96,9 +111,13 @@ agent(
 )
 ```
 
-**Phase 2 (plan review):** pass the full contents of GOAL.md as the artifact.
-**Phase 5 (diff review):** capture `git diff <default-branch>..HEAD` and pass that output
-as the artifact — do NOT assume the Head Imp can read it from context.
+**Phase 2 (plan review):** pass the absolute path of GOAL.md — the Head Imp Reads it.
+**Phase 5 (diff review):** performed by the Imp Wrangler, which passes the diff
+*command* (`git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'`) — the Head
+Imp runs it itself. Never capture a diff just to paste it into a prompt.
+
+Inline content is acceptable only for artifacts too small to matter (≲50 lines) or ones
+that exist nowhere on disk (e.g. a mid-task design question from an imp).
 
 **Imps may also consult the Head Imp** mid-task when they hit an ambiguous decision,
 correctness risk, or a cross-cutting change they're unsure about. Pass the relevant
@@ -135,8 +154,9 @@ Print a one-block summary:
 - **Resume** — use the `tasks` array from the state file (it is the authoritative
   source — GOAL.md is human-readable but the state file is what Phase 3's banner and
   heartbeat read). Verify `git rev-parse --abbrev-ref HEAD` matches state `branch`;
-  warn the user if it doesn't and wait for confirmation before continuing. Re-read key
-  repo files to ground the Workflow prompts (the prior planning context was cleared).
+  warn the user if it doesn't and wait for confirmation before continuing. Ground the
+  Workflow prompts via `scout` subagents (the prior planning context was cleared) rather
+  than re-reading repo files into this context.
   Skip Phases 0/1/2 entirely, jump straight to **Phase 3 dispatch**
   (rebase → update state → launch Workflow).
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh
@@ -274,9 +294,13 @@ IS the "decompose on opus" requirement, with no duplicate planning pass.
 
 Read the `## Active rules` section from each file that exists. Merge both sets of rules and apply them to model assignment, task boundaries, and dependency detection throughout planning. Project-scoped rules take precedence over user-scoped rules on any conflict.
 
-**Step 1:** Call **`EnterPlanMode`**. You are now the opus planner. Explore the repo
-as needed (read key files, check the default branch, confirm GATE_CMDS exist) to ground
-the plan in reality. Then:
+**Step 1:** Call **`EnterPlanMode`**. You are now the opus planner. Ground the plan in
+reality — but **delegate the exploration instead of doing it in this context**: dispatch
+`scout` (haiku) subagents for mechanical recon (default branch, gate/lint commands,
+file/symbol enumeration, "where is X" lookups) and an `Explore` subagent for broad
+sweeps, all in one parallel batch. Read a file directly only when the plan itself must
+quote or reason about its contents. The planning window this leaves behind is what the
+dispatch phase inherits — keep it lean. Then:
 
 - Break the work into discrete, atomic tasks. Each task has one clearly-stated output
   and is independently completable.
@@ -321,9 +345,9 @@ planning) or it will not take effect. Update the Status section at each major mi
 
 **Step 3 — Head Imp review (mandatory):**
 Before calling `ExitPlanMode`, summon the Head Imp (see the Head Imp section above).
-Pass the full contents of `GOAL.md` as the artifact. The Head Imp argues AGAINST the
-plan — wrong boundaries, mis-routed models, missing deps, gaps in the DoD. Fix what the
-critique exposes before proceeding.
+Pass the **absolute path** of `GOAL.md` as the artifact — the Head Imp Reads it itself.
+The Head Imp argues AGAINST the plan — wrong boundaries, mis-routed models, missing
+deps, gaps in the DoD. Fix what the critique exposes before proceeding.
 
 **Step 4:** Call **`ExitPlanMode`** — this IS the approval gate (replaces the old
 Go / Edit / Abandon prompt). If the user requests changes, stay in plan mode and revise
@@ -350,6 +374,7 @@ SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
   "phase": "dispatch_pending",
   "workflow_task_id": null,
   "workflow_run_id": null,
+  "workflow_output_file": null,
   "dispatched_at": null,
   "poll_interval_seconds": 300
 }
@@ -361,9 +386,10 @@ Then print this handoff prompt (verbatim — it is informational, not a question
 Plan approved and durable in GOAL.md + state file.
 
   Recommended: /clear  →  /imps:imps   (dispatches from a clean context)
-  Sonnet currently inherits the full Opus planning window (a substantial
-  portion of the context budget, depending on how much the planner explored).
-  After /clear, re-read key repo files before authoring Workflow prompts.
+  Dispatch inherits whatever the planning window holds. With recon delegated
+  to scouts it should be lean — but /clear is still the clean cut for large
+  plans. After /clear, ground the Workflow prompts via scout subagents, not
+  by re-reading files into this context.
 
   Or just reply here to continue dispatching without clearing.
 ```
@@ -421,6 +447,7 @@ Full schema for the in-session create-from-scratch fallback (all values are in c
   "phase": "dispatched",
   "workflow_task_id": null,
   "workflow_run_id": null,
+  "workflow_output_file": null,
   "dispatched_at": "<ISO timestamp from Bash: date -u +%Y-%m-%dT%H:%M:%SZ>",
   "poll_interval_seconds": 300
 }
@@ -461,12 +488,18 @@ Rules for the workflow script:
   Set `tokens_spent` to `budget.spent()` and `model_counts` by tallying the `model`
   field from each agent's structured output.
 
-**Step 4:** Update `~/.claude/imps/runs/${SLUG}.json` with both IDs returned by the
-Workflow tool — the tool result contains two distinct identifiers:
-- `workflow_task_id`: the task ID (`wp...`) — used by `TaskOutput` to stream log output
+**Step 4:** Update `~/.claude/imps/runs/${SLUG}.json` with the identifiers returned by
+the Workflow tool — the tool result contains:
+- `workflow_task_id`: the task ID (`wp...`) — the `TaskOutput` fallback key
 - `workflow_run_id`: the run ID (`wf_...`) — used by the `/workflows` UI
+- `workflow_output_file`: the background task's **output file path**, if the tool result
+  includes one (background tasks report where their output streams to). Record it
+  verbatim; leave `null` if absent.
 
-The heartbeat reads `workflow_task_id` for TaskOutput calls; `workflow_run_id` is human-reference only.
+The heartbeat prefers `workflow_output_file` — it greps the file for progress markers
+with zero log ingestion and it works across sessions (files outlive the session-scoped
+TaskOutput tool). `workflow_task_id` is the fallback; `workflow_run_id` is
+human-reference only.
 
 **Step 5:** Print the dispatch banner by running this script (reads from the state file
 written in Step 2; substitute `$SLUG` with the actual slug):
@@ -528,101 +561,104 @@ notification arrives (see Phase 5 below).
 
 > **Phase 4** is intentionally not a separate section here. The numbering is kept aligned
 > with `commands/issue-mode.md`, where Phase 4 is the persona panel — in free-text mode
-> that panel is folded into Phase 5 below (Step 5).
+> that panel runs inside the Imp Wrangler's Segment B (Phase 5 Step 5).
 
-## Phase 5 — Merge → Gates → Endstate PR → Persona panel → Fix loop → Finalize (triggered by task notification)
+## Phase 5 — Integration via the Imp Wrangler (triggered by task notification)
 
 When the Workflow's `<task-notification>` arrives, this is your cue. The status loop will
 stop on its own once the state file is deleted — do not wait for it, and do not merge from
-within /imps:status. This session is the sole merge owner.
+within /imps:status. This session is the sole integration owner — but it owns *decisions*,
+not mechanics: the merge, Head Imp diff review, gates, persona panel, and fix loop all run
+inside one **imp-wrangler** subagent (see `agents/imp-wrangler.md` for its full protocol)
+so that merge output, diffs, and gate logs never enter this context. Only compact JSON
+checkpoints come back; this session handles the operator gates between them.
 
-**Step 1 — Merge all code branches:**
-1. Read the workflow result from the notification.
-2. **Check for failed tasks first.** Any task whose structured output has
-   `"status": "failed"` is NOT merged. List each failed task (`#<id> <label> — <notes>`)
-   and surface them to the user before continuing. If a failed task blocks the run's
-   acceptance criteria, pause and ask how to proceed (retry, skip, or abort) — do not
-   silently merge a partial result set.
-3. For each `code`-type task in `worktrees` that returned `"status": "done"`:
-   a. `git merge <branch>` from the main working tree.
-   b. Clean merge → print `` `  ✓ #<id> <label> (<n> files)` ``
-   c. Conflicts → list the conflicting files and ask the user to resolve. Continue after
-      each resolution.
-4. Sync default branch into the working branch before the endstate PR (merge, not rebase):
-   ```sh
-   git fetch origin <default-branch> && git merge origin/<default-branch>
-   ```
+**Step 1 — Triage the workflow result:**
+Read the workflow result from the notification (it is already compact — fetch nothing
+else). Any task with `"status": "failed"` is never merged. If a failed task blocks the
+run's acceptance criteria, pause and ask the user how to proceed (retry, skip, or abort)
+before spawning the wrangler — do not silently integrate a partial result set.
 
-**Step 2 — Head Imp diff review (mandatory):**
-Capture the merged diff explicitly:
-```sh
-git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'
+**Step 2 — Spawn the Imp Wrangler (Segment A: merge → Head Imp review → gates):**
+Load SendMessage first (`ToolSearch: "select:SendMessage"`) — every checkpoint after the
+spawn is answered through it, and the wrangler keeps its context across resumes.
+
+Spawn synchronously via the Agent tool:
+
 ```
-Pass that output as the artifact to the Head Imp (see the Head Imp section above).
-The Head Imp tries to break the diff — correctness bugs, missing changes, unsafe
-assumptions. Make the amendments the critique demands, then proceed.
+Agent(
+  subagent_type: 'imp-wrangler',
+  prompt: `Run Segment A per your brief.
+    State file: ~/.claude/imps/runs/<slug>.json
+    Workflow result: <the compact result JSON from the notification>
+    Default branch: <default-branch>
+    Persona briefs: <absolute paths of the four code-persona files and
+                     ux-designer.md, resolved from ${CLAUDE_PLUGIN_ROOT}/personas/>`
+)
+```
 
-**Step 3 — Deterministic gates:**
-Resolve the repo's gate commands once — check for `package.json` scripts, `Makefile`
-targets, CI config — and run them in order: build → lint → test → type. For each gate:
-- Pass → tick the corresponding GOAL.md DoD box (`[x]`)
-- Fail → fix inline (one-shot sonnet fixer per failing gate); re-run the gate; repeat
-  until green. If a gate cannot be fixed in 3 attempts, surface it to the user.
+Keep the `agentId` from the spawn result — Steps 3 and 5 resume this same wrangler.
 
-**Step 4 — Endstate PR (open it BEFORE the panel):**
+**Agent-type fallback:** if `imp-wrangler` is not registered in this session, spawn
+`general-purpose` with the full body of `agents/imp-wrangler.md` prepended to the
+prompt. If subagents are unavailable entirely, execute that file's protocol inline in
+this session (same steps, no offload) and note the degradation.
+
+**Step 3 — Answer checkpoints until `gates_green`:**
+Each wrangler segment ends in exactly one JSON checkpoint. Respond via `SendMessage` to
+the wrangler's agentId:
+- `blocked · merge_conflict` — the conflict is live in the shared working tree. List the
+  branch + files for the user and let them resolve (or resolve trivial conflicts
+  yourself), then send `resolved, continue`.
+- `blocked · gate_red` — surface the gate name + log tail to the user; agree the next
+  step (guidance for another fix attempt, skip, abort) and relay it.
+- `blocked · branch_mismatch` — reconcile branch state with the user before resuming.
+- `gates_green` — print a one-block summary from the checkpoint fields (merged tasks,
+  failed tasks, Head Imp verdict + amendment count, gate results, diff stat), then go
+  to Step 4.
+
+**Step 4 — Endstate PR decision (operator gate):**
 The persona panel posts its findings as comments on a PR thread, so the PR must exist
-first — mirroring `issue-mode.md`, where the integration PR opens in Phase 3, before the
-Phase 4 panel. Opening the PR requires pushing the branch, so this step is also the push
-gate. This is the correct moment: code branches are merged, the Head Imp reviewed the
-diff, and gates are green.
+first — mirroring `issue-mode.md`, where the integration PR opens before the panel.
+This is the correct moment: branches are merged, the Head Imp reviewed the diff, gates
+are green — and nothing has been pushed yet (Segment A is entirely local).
 
 Ask the user with **AskUserQuestion**:
 - **question**: `"Push this branch and open the endstate PR for review?"`
 - **header**: `"Push & PR?"`
 - **options**:
-  1. `Push & open PR` — run `git push`, then `gh pr create` from the current branch (a
-     draft is fine — Step 7 flips it to ready). Print the PR URL. This is the thread the
-     persona panel comments on. Add `- [ ] CI green on the PR` to the GOAL.md DoD (pending;
-     `/imps:prs`, activated in Step 7, tracks it).
-  2. `Not yet` — do NOT push and do NOT open a PR. The persona panel then surfaces its
-     findings **inline in this session** instead of on a PR thread; the branch stays local
-     and no PR monitor starts. Do not add a `CI green on the PR` DoD line (there is no PR).
+  1. `Push & open PR` — the wrangler pushes the branch and opens a draft PR (Step 6
+     flips it to ready). That PR thread is where the persona panel comments. Add
+     `- [ ] CI green on the PR` to the GOAL.md DoD (pending; `/imps:prs`, activated in
+     Step 6, tracks it).
+  2. `Not yet` — no push, no PR. The persona panel returns its findings in the final
+     checkpoint (`findings_inline`) instead of on a PR thread; the branch stays local
+     and no PR monitor starts. Do not add a `CI green on the PR` DoD line (there is
+     no PR).
 
 Opening the endstate PR is the default for free-text runs that produced code changes —
 only `Not yet` skips it.
 
-**Step 5 — Persona panel (code + browser):**
-Follow `commands/issue-mode.md § Phase 4` exactly — it is the canonical reference.
-Short version:
-- **Code panel** (always): dispatch all four opus personas (`solution-architect`,
-  `grumpy-engineer`, `sre`, `business-analyst`) in parallel. Each Reads its brief from
-  `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md`, reviews the integration diff (excluding
-  lockfiles/generated via `git diff ... ':!*lock*' ':!dist'`), ends with
-  `VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>`.
-- **Browser panel** (when a UI surface exists): one sonnet collector drives the browser
-  over every page at 1440×900 + 375×812 and saves a bundle; `ux-designer` (sonnet) judges
-  the bundle. Browser transport resolves in order — `CLAUDE_CDP_URL` (default
-  `ws://localhost:3000`) via `chromium.connectOverCDP`, else the `mcp__claude-in-chrome__*`
-  tools, else skip the browser panel and note it (see issue-mode § Browser rig).
-- **Where personas post:** if Step 4 opened a PR, personas post comments on that PR thread
-  prefixed `[Persona: <Name>]`. If the user chose `Not yet` (no PR), personas surface the
-  same findings inline in this session instead.
-- Parse VERDICT lines. CHANGES_REQUESTED requires ≥1 blocker or major.
-  Update the live GOAL.md Status section with the tally.
+**Step 5 — Relay the decision (Segment B: PR + persona panel + fix loop):**
+`SendMessage` the wrangler exactly `PR: yes` or `PR: no`. The wrangler then, per its
+brief:
+- pushes and opens the draft PR (`PR: yes` only) — personas post their findings there
+  as `[Persona: <Name>]` comments;
+- runs the persona panel following `commands/issue-mode.md § Phase 4` (the canonical
+  protocol — four opus code personas always; the sonnet collector + browser personas
+  only when a UI surface and a browser transport exist);
+- runs the fix loop (max 3 rounds — disjoint findings → parallel sonnet fixers,
+  cross-cutting → one opus fixer), pushing each round's fix commits to the PR branch;
+- returns the `final` checkpoint: PR URL + number, verdict tally, fix rounds, unresolved
+  findings, diff stats — plus `findings_inline` when no PR was opened.
 
-**Step 6 — Fix loop (max 3 rounds):**
-For each CHANGES_REQUESTED verdict:
-- Disjoint findings → parallel sonnet fixers (one per finding)
-- Cross-cutting findings → one opus fixer
-After each round's fixes are committed, `git push` the fix commits to the PR branch (if
-Step 4 opened one) so the PR diff and its CI reflect them — a fix that never leaves the
-local branch means the PR still shows the un-fixed diff. Re-review only the dissenting
-personas scoped to the delta. Repeat until all personas APPROVE or only minors/nits
-remain (they never block). Update GOAL.md DoD:
-`[x] Persona panel reviewed; all blocker/major findings addressed`.
+Print the verdict tally and update the GOAL.md Status section from the checkpoint. If
+`findings_inline` is populated (`PR: no`) or `unresolved` lists blockers/majors that
+survived 3 rounds, surface them to the user verbatim — they are the review record.
 
-**Step 7 — Finalize:**
-1. If Step 4 opened a draft PR, flip it to ready for review now (`gh pr ready <N>`). If the
+**Step 6 — Finalize:**
+1. If the run opened a draft PR (the `final` checkpoint's `pr` field is non-null), flip
+   it to ready for review now (`gh pr ready <N>`, number from the checkpoint). If the
    user chose `Not yet`, there is no PR — skip this item.
 2. Print artifact links for `publish`-type tasks (Discussions, comments, etc.):
    ```
@@ -692,8 +728,9 @@ PYEOF
   queries:   #1 #2 #4 — no artifacts
 ```
 
-5. **Print a run stats block.** Collect from the state file, workflow result, git output,
-   and your session memory of what happened. Format as a clean block:
+5. **Print a run stats block.** Collect from the state file, the workflow result, the
+   wrangler's checkpoints (diff stats, verdicts, fix rounds), and your session memory of
+   what happened. Format as a clean block:
 
    ```
    ─────────────────────────────────────────
@@ -738,17 +775,16 @@ PYEOF
    "
    ```
 
-6. **Activate the PR monitor** — only if Step 4 pushed and opened a PR. The branch was
-   already pushed in Step 4 (its `Push & open PR` option), so no second push prompt is
-   needed here.
+6. **Activate the PR monitor** — only if the run opened a PR (Step 5 with `PR: yes`).
+   The wrangler already pushed the branch, so no second push prompt is needed here.
    a. Capture `poll_interval_seconds` from the state file read earlier in this phase
       (before it was deleted in item 3). Fall back to `300` if unavailable.
    b. Write `~/.claude/imps/runs/${SLUG}.prs.json` (substitute all values):
       ```json
       {
         "repo": "<owner/repo — e.g. your-org/my-app>",
-        "pr_number": <integer PR number from Step 4>,
-        "pr_url": "<full GitHub PR URL from Step 4>",
+        "pr_number": <integer PR number from the final checkpoint>,
+        "pr_url": "<full GitHub PR URL from the final checkpoint>",
         "branch": "<current branch name>",
         "base_branch": "<default branch — main or master>",
         "poll_interval_seconds": <from state file, default 300>,
@@ -771,8 +807,8 @@ PYEOF
    surprising, wrong, or notably effective. Candidates include: wrong workflow IDs,
    task ID mismatches in log lines, Head Imp amendments that changed the plan, model
    escalations (or haiku tasks that needed sonnet), merge conflicts and how they
-   resolved, PR branch issues, agent failures, and anything the Head Imp flagged in
-   Phase 5. Trivial things (everything worked as expected, no surprises) do not need
+   resolved, PR branch issues, agent failures, wrangler blocked-checkpoints and any
+   checkpoint-protocol friction, and anything the Head Imp flagged in Phase 5. Trivial things (everything worked as expected, no surprises) do not need
    a learning.
 
    If there are candidates, present them all at once using **AskUserQuestion**
@@ -834,7 +870,7 @@ in the prompts above stand for those current IDs.
 ## Constraints
 
 - Never dispatch without explicit confirmation of the task list.
-- Never `git merge --force`, `git reset --hard`, or `git push` without explicit user instruction — **exception**: the `/imps:prs` PR monitor pushes fix commits to the PR branch autonomously once activated via the Push now option in step 9.
+- Never `git merge --force`, `git reset --hard`, or `git push` without explicit user instruction — **exceptions**: (1) the Imp Wrangler pushes and opens the endstate PR only after the operator's `Push & open PR` answer is relayed to it (Phase 5 Step 5), and pushes fix-loop commits to that same PR branch; (2) the `/imps:prs` PR monitor pushes fix commits to the PR branch autonomously once activated in Phase 5 Step 6.
 - Never create GitHub PRs without user instruction — prefer direct branch merges.
 - If a task touches a production system, pause and confirm before that task runs.
 - If the Workflow tool is unavailable, fall back to sequential `Agent` tool calls and note the degradation.
