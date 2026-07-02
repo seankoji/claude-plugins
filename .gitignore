@@ -1,6 +1,7 @@
 # Claude Code runtime state — never commit
 .claude/worktrees/
 .claude/jobs/
+.claude/imps/learnings.md
 
 # Goldfish judge run artifacts (transient scratch from /elephant-goldfish:elephant)
 .goldfish-runs/
