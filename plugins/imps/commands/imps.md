@@ -1,11 +1,12 @@
 ---
+name: imps
 description: >
   Decompose a vague task into dependency-mapped imps, dispatch with model routing,
   monitor progress, and merge code changes back to the current branch.
 argument-hint: '<task description>'
 ---
 
-# /imps — summon the swarm
+# /imps:imps — summon the swarm
 
 Arguments: `$ARGUMENTS`
 
@@ -28,7 +29,7 @@ seconds, and integrate results cleanly.
 
 ## Mode detection
 
-`/imps` has **three modes**, checked in this order:
+`/imps:imps` has **three modes**, checked in this order:
 
 - **Checklist-file mode** — `$ARGUMENTS` is a single token ending in `.md`. Resolve the
   file in order: (1) as-is if it's an absolute path or exists relative to cwd, (2)
@@ -43,13 +44,13 @@ seconds, and integrate results cleanly.
   free-text.
 
 - **Issue-driven mode** — `$ARGUMENTS` is *entirely* GitHub issue references: every
-  whitespace-separated token matches `^#?\d+$` (e.g. `/imps 42 43 51`, `/imps #42`).
+  whitespace-separated token matches `^#?\d+$` (e.g. `/imps:imps 42 43 51`, `/imps:imps #42`).
   **→ Follow [`commands/issue-mode.md`](./issue-mode.md)** for the
   full scout → rolling-dispatch → holding-branch → gates → persona-panel → handoff
   workflow. Do not continue with the phases below.
 
 - **Free-text mode** — `$ARGUMENTS` is a task description (anything that is not purely
-  issue numbers), or empty. This is the original `/imps` behaviour. **→ Continue with
+  issue numbers), or empty. This is the original `/imps:imps` behaviour. **→ Continue with
   the phases below.**
 
 Detection order: (1) single `.md` token that resolves to a file → checklist-file mode.
@@ -91,7 +92,7 @@ agent(
    correctness bugs, unsafe assumptions, gaps in the DoD. Steelman the case that this
    should NOT ship. Return a list of findings (blocker | major | minor | nit), then a
    one-line VERDICT: APPROVE | CHANGES_REQUESTED.`,
-  { model: 'claude-opus-4-8', label: 'head-imp' }
+  { model: '<opus model id>', label: 'head-imp' }
 )
 ```
 
@@ -280,8 +281,8 @@ the plan in reality. Then:
 - Break the work into discrete, atomic tasks. Each task has one clearly-stated output
   and is independently completable.
 - For each task assign:
-  - **Model** — assign by reasoning complexity: mechanical → haiku · judgment → sonnet ·
-    deep judgment → opus. Always set `model:` explicitly.
+  - **Model** — assign by reasoning complexity (see
+    [Model selection reference](#model-selection-reference)). Always set `model:` explicitly.
   - **Type** — `code` (file changes, worktree-isolated) · `query` (read-only) ·
     `publish` (GitHub artifacts; use `gh api graphql` for Discussions, not REST)
   - **Depends-on** — prerequisite task IDs, or `—` if independent
@@ -295,7 +296,6 @@ the plan in reality. Then:
 - [ ] <acceptance criterion 1>
 - [ ] <acceptance criterion 2 — one line each from discovery>
 - [ ] Gates green (build · lint · test · type — per GATE_CMDS)
-- [ ] CI green on the PR
 - [ ] Persona panel reviewed; all blocker/major findings addressed
 - [ ] No merge conflicts with the default branch
 
@@ -308,8 +308,16 @@ the plan in reality. Then:
 Planned — dispatching now.
 ```
 
-This file is the `/compact`-durable spine. Phase 3 reads the task table from here.
-Update the Status section at each major milestone.
+Add `- [ ] CI green on the PR` to the Definition of Done **only if this run will open a
+PR** (see Phase 5 Step 4 — the endstate PR is the default for runs that produce code
+changes). Omit it for query/publish-only runs that create no PR, or it stays permanently
+unresolvable.
+
+This file is the `/compact`-durable human-readable spine. The JSON state file
+(`~/.claude/imps/runs/<slug>.json`, written in Step 6) is the **authoritative** task
+table — Phase 3 and the heartbeat read from it, not from GOAL.md. If you hand-edit
+GOAL.md's task table after approval, mirror the change into the state file (or re-run
+planning) or it will not take effect. Update the Status section at each major milestone.
 
 **Step 3 — Head Imp review (mandatory):**
 Before calling `ExitPlanMode`, summon the Head Imp (see the Head Imp section above).
@@ -352,7 +360,7 @@ Then print this handoff prompt (verbatim — it is informational, not a question
 ```
 Plan approved and durable in GOAL.md + state file.
 
-  Recommended: /clear  →  /imps   (dispatches from a clean context)
+  Recommended: /clear  →  /imps:imps   (dispatches from a clean context)
   Sonnet currently inherits the full Opus planning window (a substantial
   portion of the context budget, depending on how much the planner explored).
   After /clear, re-read key repo files before authoring Workflow prompts.
@@ -427,14 +435,19 @@ Rules for the workflow script:
 - Every agent uses the `imp` agent type: `agent(..., { agentType: 'imp' })` — this bakes in atomic-task discipline, correct branch handling for publish tasks, and structured output conventions.
 - **Agent-type fallback**: If a workflow agent call errors with an agent-type registration failure, the `imp` type may not be registered in this session. Change `agentType: 'imp'` to `agentType: 'general-purpose'` in the workflow script and re-run.
 - Every `code`-type task adds `isolation: 'worktree'`: `agent(..., { agentType: 'imp', isolation: 'worktree' })`
-- **Worktree base**: `isolation: 'worktree'` always creates the agent's worktree from the repo's last committed HEAD on the default branch — NOT the caller's working branch. If `code` tasks must see in-progress changes, commit them to the current branch before dispatch.
-- Apply model routing per assignment above: `agent(..., { agentType: 'imp', model: 'claude-haiku-4-5-20251001' | 'claude-sonnet-5' | 'claude-opus-4-8' })`
+- **Worktree base**: `isolation: 'worktree'` always creates the agent's worktree from the repo's last committed HEAD on the **default branch** — NOT the caller's working branch. Committing in-progress changes to a *side* working branch therefore does NOT make them visible to the worktree. If `code` tasks must see in-progress changes, those changes must first reach the default branch itself (merge or push them to the default branch before dispatch); committing to a non-default branch is not enough.
+- **Gate before commit**: every `code` agent resolves the repo's gate/lint commands (from `package.json` scripts, `Makefile`, `pyproject.toml`, CI config, or `AGENTS.md`/`CONTRIBUTING.md`) and runs them — plus the autofix command if one exists — before committing. It fixes failures it caused and leaves pre-existing failures noted. This mirrors issue-mode's per-agent `GATE_CMDS`/`LINT_FIX` discipline so agents never push gate-red (Phase 5 Step 3's aggregate gates are a backstop, not the first line).
+- Apply model routing per assignment above (see [Model selection reference](#model-selection-reference)): `agent(..., { agentType: 'imp', model: '<haiku|sonnet|opus model id from the session model table>' })`
 - Use `log()` to emit progress markers. Format **must** be: `log('imp:start #N')` when starting task N, `log('imp:done #N')` when task N completes. The integer N **must exactly match** the `id` field of the corresponding task in the state file — never combine multiple state-file tasks into one agent or split one task across agents. One agent = one task ID. Mismatches cause the heartbeat to show tasks as perpetually running.
 - Never create GitHub PRs from inside the workflow. PRs should be deferred to Phase 5, created from the main worktree branch after merge — not from isolated worktree branches whose names are non-deterministic.
-- Every agent returns structured output via `schema`:
+- Every agent returns structured output via `schema`. `status` is an enum —
+  `"done"` (task completed) or `"failed"` (the agent could not complete it):
   ```json
-  { "id": 1, "label": "...", "type": "query", "status": "done", "branch": null, "artifacts": [] }
+  { "id": 1, "label": "...", "type": "query", "status": "done|failed", "branch": null, "artifacts": [], "notes": "if failed, why (≤50 words)" }
   ```
+  A `code` agent that fails (unresolvable error, gates it cannot get green) returns
+  `"status": "failed"` with a `notes` reason and leaves its branch unmerged — Phase 5
+  Step 1 surfaces failed tasks to the user and does NOT merge them.
 - The workflow's final `return` must be:
   ```json
   {
@@ -513,7 +526,11 @@ notification arrives (see Phase 5 below).
 
 ---
 
-## Phase 5 — Merge → Gates → Persona panel → Endstate PR (triggered by task notification)
+> **Phase 4** is intentionally not a separate section here. The numbering is kept aligned
+> with `commands/issue-mode.md`, where Phase 4 is the persona panel — in free-text mode
+> that panel is folded into Phase 5 below (Step 5).
+
+## Phase 5 — Merge → Gates → Endstate PR → Persona panel → Fix loop → Finalize (triggered by task notification)
 
 When the Workflow's `<task-notification>` arrives, this is your cue. The status loop will
 stop on its own once the state file is deleted — do not wait for it, and do not merge from
@@ -521,12 +538,17 @@ within /imps:status. This session is the sole merge owner.
 
 **Step 1 — Merge all code branches:**
 1. Read the workflow result from the notification.
-2. For each `code`-type task in `worktrees`:
+2. **Check for failed tasks first.** Any task whose structured output has
+   `"status": "failed"` is NOT merged. List each failed task (`#<id> <label> — <notes>`)
+   and surface them to the user before continuing. If a failed task blocks the run's
+   acceptance criteria, pause and ask how to proceed (retry, skip, or abort) — do not
+   silently merge a partial result set.
+3. For each `code`-type task in `worktrees` that returned `"status": "done"`:
    a. `git merge <branch>` from the main working tree.
    b. Clean merge → print `` `  ✓ #<id> <label> (<n> files)` ``
    c. Conflicts → list the conflicting files and ask the user to resolve. Continue after
       each resolution.
-3. Sync default branch into the working branch before the endstate PR (merge, not rebase):
+4. Sync default branch into the working branch before the endstate PR (merge, not rebase):
    ```sh
    git fetch origin <default-branch> && git merge origin/<default-branch>
    ```
@@ -547,45 +569,71 @@ targets, CI config — and run them in order: build → lint → test → type. 
 - Fail → fix inline (one-shot sonnet fixer per failing gate); re-run the gate; repeat
   until green. If a gate cannot be fixed in 3 attempts, surface it to the user.
 
-**Step 4 — Persona panel (code + browser):**
+**Step 4 — Endstate PR (open it BEFORE the panel):**
+The persona panel posts its findings as comments on a PR thread, so the PR must exist
+first — mirroring `issue-mode.md`, where the integration PR opens in Phase 3, before the
+Phase 4 panel. Opening the PR requires pushing the branch, so this step is also the push
+gate. This is the correct moment: code branches are merged, the Head Imp reviewed the
+diff, and gates are green.
+
+Ask the user with **AskUserQuestion**:
+- **question**: `"Push this branch and open the endstate PR for review?"`
+- **header**: `"Push & PR?"`
+- **options**:
+  1. `Push & open PR` — run `git push`, then `gh pr create` from the current branch (a
+     draft is fine — Step 7 flips it to ready). Print the PR URL. This is the thread the
+     persona panel comments on. Add `- [ ] CI green on the PR` to the GOAL.md DoD (pending;
+     `/imps:prs`, activated in Step 7, tracks it).
+  2. `Not yet` — do NOT push and do NOT open a PR. The persona panel then surfaces its
+     findings **inline in this session** instead of on a PR thread; the branch stays local
+     and no PR monitor starts. Do not add a `CI green on the PR` DoD line (there is no PR).
+
+Opening the endstate PR is the default for free-text runs that produced code changes —
+only `Not yet` skips it.
+
+**Step 5 — Persona panel (code + browser):**
 Follow `commands/issue-mode.md § Phase 4` exactly — it is the canonical reference.
 Short version:
 - **Code panel** (always): dispatch all four opus personas (`solution-architect`,
   `grumpy-engineer`, `sre`, `business-analyst`) in parallel. Each Reads its brief from
   `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md`, reviews the integration diff (excluding
-  lockfiles/generated via `git diff ... ':!*lock*' ':!dist'`), posts comments prefixed
-  `[Persona: <Name>]`, ends with `VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>`.
+  lockfiles/generated via `git diff ... ':!*lock*' ':!dist'`), ends with
+  `VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>`.
 - **Browser panel** (when a UI surface exists): one sonnet collector drives the browser
   over every page at 1440×900 + 375×812 and saves a bundle; `ux-designer` (sonnet) judges
   the bundle. Browser transport resolves in order — `CLAUDE_CDP_URL` (default
   `ws://localhost:3000`) via `chromium.connectOverCDP`, else the `mcp__claude-in-chrome__*`
   tools, else skip the browser panel and note it (see issue-mode § Browser rig).
+- **Where personas post:** if Step 4 opened a PR, personas post comments on that PR thread
+  prefixed `[Persona: <Name>]`. If the user chose `Not yet` (no PR), personas surface the
+  same findings inline in this session instead.
 - Parse VERDICT lines. CHANGES_REQUESTED requires ≥1 blocker or major.
   Update the live GOAL.md Status section with the tally.
 
-**Step 5 — Fix loop (max 3 rounds):**
+**Step 6 — Fix loop (max 3 rounds):**
 For each CHANGES_REQUESTED verdict:
 - Disjoint findings → parallel sonnet fixers (one per finding)
 - Cross-cutting findings → one opus fixer
-Re-review only the dissenting personas scoped to the delta. Repeat until all personas
-APPROVE or only minors/nits remain (they never block). Update GOAL.md DoD:
+After each round's fixes are committed, `git push` the fix commits to the PR branch (if
+Step 4 opened one) so the PR diff and its CI reflect them — a fix that never leaves the
+local branch means the PR still shows the un-fixed diff. Re-review only the dissenting
+personas scoped to the delta. Repeat until all personas APPROVE or only minors/nits
+remain (they never block). Update GOAL.md DoD:
 `[x] Persona panel reviewed; all blocker/major findings addressed`.
 
-**Step 6 — Endstate PR:**
-4. For any `publish`-type task whose label or prompt indicates a **PR** (pull request):
-   create the PR now from the current branch using `gh pr create`. PRs were intentionally
-   not created inside the workflow (isolated worktree branches are non-deterministic) — this
-   is the correct moment: after all code branches are merged, gates green, persona-reviewed,
-   from the stable main worktree branch. Print the PR URL when done.
-   Update GOAL.md: `[x] CI green on the PR` — pending; `/imps:prs` will close it.
-5. Print artifact links for remaining `publish`-type tasks (Discussions, comments, etc.):
+**Step 7 — Finalize:**
+1. If Step 4 opened a draft PR, flip it to ready for review now (`gh pr ready <N>`). If the
+   user chose `Not yet`, there is no PR — skip this item.
+2. Print artifact links for `publish`-type tasks (Discussions, comments, etc.):
    ```
      󰭟 #3 Discussion → https://github.com/...
      󰭟 #5 Comment    → https://github.com/...
    ```
-6. Delete `~/.claude/imps/runs/${SLUG}.json` (the same path written in Phase 3 Step 2).
-   The status loop will detect this on its next tick (when the directory is empty) and stop.
-7. Print the final banner. Run this script for the header line (substitute `TASKS_JSON`
+3. Delete `~/.claude/imps/runs/${SLUG}.json` (the same path written in Phase 3 Step 2).
+   The status loop will detect this on its next tick (no run-state `.json` files left — it
+   ignores `/imps:prs`'s own `.prs.json` files, so writing one in the next item doesn't
+   revive the heartbeat) and stop.
+4. Print the final banner. Run this script for the header line (substitute `TASKS_JSON`
    with the JSON array of all tasks, each with `id` and `model` fields):
 
 ```bash
@@ -644,7 +692,7 @@ PYEOF
   queries:   #1 #2 #4 — no artifacts
 ```
 
-8. **Print a run stats block.** Collect from the state file, workflow result, git output,
+5. **Print a run stats block.** Collect from the state file, workflow result, git output,
    and your session memory of what happened. Format as a clean block:
 
    ```
@@ -690,38 +738,36 @@ PYEOF
    "
    ```
 
-9. Ask the user whether to push using **AskUserQuestion**:
-   - **question**: `"Push these changes to remote?"`
-   - **header**: `"Push?"`
-   - **options**:
-     1. `Push now` — run `git push` and print the remote URL. Then, if a PR was created in
-        step 4, activate the PR monitor:
-        a. Capture `poll_interval_seconds` from the state file read earlier in this phase
-           (before it was deleted in step 6). Fall back to `300` if unavailable.
-        b. Write `~/.claude/imps/runs/${SLUG}.prs.json` (substitute all values):
-           ```json
-           {
-             "repo": "<owner/repo — e.g. your-org/my-app>",
-             "pr_number": <integer PR number from step 4>,
-             "pr_url": "<full GitHub PR URL from step 4>",
-             "branch": "<current branch name>",
-             "base_branch": "<default branch — main or master>",
-             "poll_interval_seconds": <from state file, default 300>,
-             "started_at": "<ISO timestamp: date -u +%Y-%m-%dT%H:%M:%SZ>",
-             "handled_comment_ids": [],
-             "ci_fix_attempts": {},
-             "max_age_hours": 48
-           }
-           ```
-        c. Invoke the `/imps:prs` skill (no args). It checks the PR immediately then
-           self-reschedules via `ScheduleWakeup` until the PR is merged, closed, or 48 h old.
-        d. Print: `PR monitor active — watching PR #<N>. I'll address comments, fix CI
-           failures, and resolve merge conflicts automatically.`
-     2. `Not yet` — do nothing; remind the user the branch is local only. If a PR was
-        created, note: "PR monitor not started — push and then invoke `/imps:prs` to
-        activate it."
+6. **Activate the PR monitor** — only if Step 4 pushed and opened a PR. The branch was
+   already pushed in Step 4 (its `Push & open PR` option), so no second push prompt is
+   needed here.
+   a. Capture `poll_interval_seconds` from the state file read earlier in this phase
+      (before it was deleted in item 3). Fall back to `300` if unavailable.
+   b. Write `~/.claude/imps/runs/${SLUG}.prs.json` (substitute all values):
+      ```json
+      {
+        "repo": "<owner/repo — e.g. your-org/my-app>",
+        "pr_number": <integer PR number from Step 4>,
+        "pr_url": "<full GitHub PR URL from Step 4>",
+        "branch": "<current branch name>",
+        "base_branch": "<default branch — main or master>",
+        "poll_interval_seconds": <from state file, default 300>,
+        "started_at": "<ISO timestamp: date -u +%Y-%m-%dT%H:%M:%SZ>",
+        "handled_comment_ids": [],
+        "ci_fix_attempts": {},
+        "max_age_hours": 48
+      }
+      ```
+   c. Invoke the `/imps:prs` skill (no args). It checks the PR immediately then
+      self-reschedules via `ScheduleWakeup` until the PR is merged, closed, or 48 h old.
+   d. Print: `PR monitor active — watching PR #<N>. I'll address comments, fix CI
+      failures, and resolve merge conflicts automatically.`
 
-10. **Learnings gate.** Identify non-trivial things that happened this run — anything
+   If the user chose `Not yet` in Step 4 (no PR opened), print instead: "Branch is local
+   only and no PR was opened — push and open a PR, then invoke `/imps:prs` to activate the
+   monitor."
+
+7. **Learnings gate.** Identify non-trivial things that happened this run — anything
    surprising, wrong, or notably effective. Candidates include: wrong workflow IDs,
    task ID mismatches in log lines, Head Imp amendments that changed the plan, model
    escalations (or haiku tasks that needed sonnet), merge conflicts and how they
@@ -778,6 +824,10 @@ mechanical (deterministic output, no judgment) → haiku ·
 judgment (context, decisions, synthesis) → sonnet ·
 deep judgment (large decision space, architectural tradeoffs) → opus.
 Always set `model:` explicitly on every `agent()` call.
+
+Model IDs (`claude-*`) vary by session — read the exact identifiers from the session's
+model table rather than hardcoding them. The `<haiku|sonnet|opus model id>` placeholders
+in the prompts above stand for those current IDs.
 
 ---
 

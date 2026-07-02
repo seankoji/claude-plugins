@@ -1,6 +1,7 @@
 ---
+name: imps:prs
 description: >
-  Proactive PR monitor for /imps runs. Polls the main-branch PR for review comments,
+  Proactive PR monitor for /imps:imps runs. Polls the main-branch PR for review comments,
   CI failures, and merge conflicts, then spawns agents to fix them automatically.
   Self-reschedules via ScheduleWakeup; stops when the PR is merged, closed, or 48 h old.
 ---
@@ -17,9 +18,9 @@ description: >
 
 ---
 
-This command is a self-pacing monitor. It reads the PR state written by `/imps` Phase 5,
+This command is a self-pacing monitor. It reads the PR state written by `/imps:imps` Phase 5,
 inspects the open PR, dispatches fixing agents as needed, and reschedules itself.
-It is invoked by `/imps` after a successful push and self-terminates when done.
+It is invoked by `/imps:imps` after a successful push and self-terminates when done.
 
 **Autonomous push scope:** this command pushes fix commits to the PR branch without
 asking. It does NOT touch the main/master branch. If it cannot fix an issue confidently,
@@ -100,8 +101,18 @@ this check needs a fix (Step 4b). If attempts >= 2, flag it:
 gh api repos/<repo>/pulls/<pr_number>/comments \
   --jq '[.[] | {id: .id, body: .body, path: .path, line: .line, user: (.user.login)}]'
 ```
-Filter for comments whose `id` is NOT in `handled_comment_ids` and whose `user` is not
-the PR author (avoid self-review loops). Each unhandled comment needs a response (Step 4c).
+Filter for comments whose `id` is NOT in `handled_comment_ids` and whose `body` does NOT
+begin with `[Persona:` (the panel's own comments), `[imps-status]` (the orchestrator's own
+handoff/status comments, e.g. issue-mode's Phase 6 final PR comment), or `[imps-fix]`
+(this command's own confirmation replies from Step 4c below) — skipping all three markers
+is what avoids self-review loops. Note that Step 4c's confirmation is a *reply* to the
+original comment, which gets its own `id` distinct from the one added to
+`handled_comment_ids` — without the `[imps-fix]` marker, every confirmation reply would
+itself show up as a fresh unhandled comment on the next poll and get "handled" again,
+forever. **Do not filter by author identity:** this plugin assumes a single `gh` identity
+opens the PR *and* leaves review feedback, so filtering out the PR author would hide a
+solo maintainer's own comments (the normal case). Each remaining unhandled comment needs a
+response (Step 4c).
 
 ---
 
@@ -196,7 +207,9 @@ Steps:
    git add -A && git commit -m "fix: address review comment from @<user>"
 6. git push origin HEAD:<branch>
 7. Reply to the comment using mcp__github__add_reply_to_pull_request_comment with a
-   one-line confirmation (e.g. "Done — <what changed>").
+   one-line confirmation prefixed with the `[imps-fix]` marker (e.g. "[imps-fix] Done —
+   <what changed>") — the marker is what keeps this reply from being picked up as a fresh
+   unhandled comment on the next poll (see Step 4d's filter above).
 
 Return JSON: { "addressed": true|false, "reason": "...", "pushed": true|false }
 ```

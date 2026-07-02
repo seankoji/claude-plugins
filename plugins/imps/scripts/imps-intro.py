@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Optional /imps summon banner: grey tower, coloured bats, italic title.
 
-Cosmetic only — /imps works without it. Install to ~/.claude/imps/imps-intro.py.
+Cosmetic only — /imps works without it. Bundled with the plugin and invoked in place at
+${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py — no separate install step.
 """
 import sys
 

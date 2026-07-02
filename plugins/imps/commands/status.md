@@ -1,5 +1,6 @@
 ---
-description: Emit a heartbeat for active /imps runs. Self-reschedules via ScheduleWakeup; stops when the state dir is empty. Shows only still-working imps with a one-liner each.
+name: imps:status
+description: Emit a heartbeat for active /imps:imps runs. Self-reschedules via ScheduleWakeup; stops when no run-state files remain (ignores /imps:prs's own .prs.json files). Shows only still-working imps with a one-liner each.
 ---
 
 # /imps:status — imp roll-call
@@ -21,7 +22,7 @@ When the run is over (state file deleted by the merge phase), it stops by not re
 cannot self-cancel. Invoke it directly; it owns its own rescheduling.
 
 This command does **not** merge. Merging is driven by the task notification in the main
-session that launched /imps.
+session that launched `/imps:imps`.
 
 ---
 
@@ -111,7 +112,14 @@ def colored_imp(t, dim=False):
     return f'{prefix}{IMPS[idx]}{RST}'
 
 try:
-    files = sorted(f for f in os.listdir(state_dir) if f.endswith('.json'))
+    # Exclude *.prs.json: those are /imps:prs PR-monitor state files, not run
+    # state, and can be written into this same dir moments after a run's own
+    # state file is deleted — matching them here would make the heartbeat
+    # treat an unrelated PR-monitor file as a still-running imps run.
+    files = sorted(
+        f for f in os.listdir(state_dir)
+        if f.endswith('.json') and not f.endswith('.prs.json')
+    )
 except FileNotFoundError:
     raise SystemExit(0)
 
@@ -137,6 +145,7 @@ for fname in files:
         started   = set(status_raw.get('started', [])) - completed
     tasks         = state.get('tasks', [])
 
+    secs = None
     try:
         dt      = datetime.fromisoformat(state['dispatched_at'].replace('Z', '+00:00'))
         secs    = int((datetime.now(timezone.utc) - dt).total_seconds())
@@ -168,6 +177,15 @@ for fname in files:
 
     prefix = f'{state.get("repo", slug)} · ' if multi else ''
     print(f'{bats}  {n}/{total} imps still out · {prefix}{elapsed} — {note}')
+
+    # Staleness guard: a hung/crashed workflow otherwise shows "still working" forever.
+    # Warn once elapsed passes a generous multiple of the poll interval (≈12 polls, min 1 h).
+    poll        = state.get('poll_interval_seconds', 300) or 300
+    stale_after = max(3600, poll * 12)
+    if active and secs is not None and secs > stale_after:
+        print(f'  ⚠ no completion after {secs / 3600:.1f}h (> {stale_after // 3600}h '
+              f'threshold) — workflow may be hung or crashed; check /workflows, or abandon '
+              f'the run via `/imps:imps` to start fresh')
 
     # Show blocked-on-deps detail only for imps waiting on unmet deps
     for t in active:

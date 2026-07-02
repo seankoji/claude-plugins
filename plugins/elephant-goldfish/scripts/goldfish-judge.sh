@@ -57,6 +57,22 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-}"             # optional: any model name accepted
 OLLAMA_NO_THINK="${OLLAMA_NO_THINK:-true}"  # prepend /no_think to suppress the <think> block on
                                              # qwen3 and other thinking models so VERDICT: is the
                                              # first output line; set false for non-thinking models
+JUDGE_TIMEOUT="${JUDGE_TIMEOUT:-180}"       # seconds; guards agy/ollama against hanging forever
+                                             # (auth prompt, network stall, model load)
+
+# Portable timeout wrapper: prefers GNU coreutils `timeout`, falls back to `gtimeout`
+# (Homebrew coreutils on macOS). If neither is on PATH, judge calls run unguarded — a warning
+# is printed rather than refusing to run, since the fail-closed VERDICT-line check below still
+# catches a hang's empty/partial output as ERROR once the process is eventually killed some
+# other way; this only loses the bounded-wait guarantee, not the fail-closed correctness.
+TIMEOUT_CMD=()
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=(timeout "$JUDGE_TIMEOUT")
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD=(gtimeout "$JUDGE_TIMEOUT")
+else
+  echo "goldfish-judge: no 'timeout'/'gtimeout' on PATH — judge calls are NOT time-bounded." >&2
+fi
 
 # Isolation flag for a scriptable, no-filesystem-access judge. The CLI's flags move between
 # releases, so it is env-overridable: AGY_READONLY_FLAG. As of agy 1.0.12 the sandboxed,
@@ -169,7 +185,7 @@ PROMPT_EOF
 )"
 
 # ── Judge 1: agy / Gemini (pseudo-TTY required; sanitize fixes the macOS PTY artifact) ──
-agy_raw="$(cd "$SCRATCH" && pty_run agy "${AGY_JUDGE_FLAGS[@]}" -p "$AGY_PROMPT" 2>&1 | sanitize || true)"
+agy_raw="$(cd "$SCRATCH" && pty_run "${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"}" agy "${AGY_JUDGE_FLAGS[@]}" -p "$AGY_PROMPT" 2>&1 | sanitize || true)"
 agy_class="$(classify "$agy_raw")"
 [ "$agy_class" = ERROR ] && echo "goldfish-judge: agy judge produced no usable verdict. NOT a pass." >&2
 
@@ -180,7 +196,7 @@ $agy_raw"
 ollama_class="READY"   # neutral default when Ollama is disabled; doesn't affect consensus
 if [ -n "$OLLAMA_MODEL" ]; then
   if command -v ollama >/dev/null 2>&1; then
-    ollama_raw="$(ollama run "$OLLAMA_MODEL" "$OLLAMA_PROMPT" 2>"$SCRATCH/ollama.err" | sanitize || true)"
+    ollama_raw="$("${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"}" ollama run "$OLLAMA_MODEL" "$OLLAMA_PROMPT" 2>"$SCRATCH/ollama.err" | sanitize || true)"
     ollama_class="$(classify "$ollama_raw")"
     if [ "$ollama_class" = ERROR ]; then
       echo "goldfish-judge: ollama judge produced no usable verdict. NOT a pass." >&2
