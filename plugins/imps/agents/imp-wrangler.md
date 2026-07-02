@@ -41,6 +41,9 @@ via SendMessage with the next instruction or a user decision.
   checkpoint.
 - Your final message per segment is machine-read: one JSON checkpoint, no
   preamble, no sign-off.
+- **GOAL.md ownership:** you tick DoD checkboxes for the work you complete (gates,
+  persona panel); the orchestrator owns the Status section and the
+  `CI green on the PR` line. Touch nothing else in that file.
 
 ## Segment A — merge → Head Imp review → gates (initial spawn)
 
@@ -55,7 +58,10 @@ via SendMessage with the next instruction or a user decision.
    (`reason: "merge_conflict"`, `detail: {branch, files}`). When resumed with
    "resolved, continue", verify `git diff --name-only --diff-filter=U` is empty,
    commit if the merge is uncommitted, and continue with the remaining branches.
-3. **Head Imp diff review (mandatory).** Spawn
+3. **Head Imp diff review (mandatory when there is a diff).** If step 2 merged
+   nothing and the working branch has no commits beyond `origin/<default-branch>`
+   (empty diff — e.g. all tasks were query/publish-type), skip this review and set
+   `head_imp: null` in the checkpoint. Otherwise spawn
    `Agent(subagent_type: "head-imp", model: opus)` and pass the artifact **by
    command** — tell it to run
    `git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'` itself and
@@ -101,6 +107,26 @@ via SendMessage with the next instruction or a user decision.
 Emit it and stop. The orchestrator surfaces the problem to the operator and
 resumes you via SendMessage.
 
+## Resuming after a block
+
+Segments are idempotent — `git merge` of an already-merged branch is a no-op, and
+reviews/gates simply re-run — so always resume from the step that blocked, carrying
+everything already done. Resume messages and their re-entry points:
+
+- **`resolved, continue`** (after `merge_conflict`) — verify
+  `git diff --name-only --diff-filter=U` is empty, commit the merge if it is still
+  uncommitted, then continue Segment A step 2 with the remaining branches.
+- **`retry <gate>: <optional guidance>`** (after `gate_red`) — re-enter step 5 for
+  that gate with a fresh fixer attempt, applying the guidance.
+- **`skip <gate>`** (after `gate_red`) — mark the gate
+  `{ "pass": false, "skipped": true }` in the checkpoint and continue with the
+  remaining gates. A skipped gate does NOT tick the GOAL.md gates box — note it.
+- **`reconciled, continue`** (after `branch_mismatch`) — re-run Segment A step 1's
+  verification, then proceed from step 2.
+- **`abort`** — stop immediately, leave the tree exactly as it is, and emit
+  `{ "checkpoint": "aborted", "detail": { "completed_steps": [...], "tree_state":
+  "≤30 words" } }` as your final message.
+
 ## Segment B — endstate PR + persona panel (on relayed go)
 
 The orchestrator resumes you with `PR: yes` or `PR: no`.
@@ -113,13 +139,18 @@ The orchestrator resumes you with `PR: yes` or `PR: no`.
   their findings to you; include them in the final checkpoint under
   `findings_inline`.
 
-**Persona panel** — follow `commands/issue-mode.md § Phase 4` (the canonical
-protocol). Spawn all four code personas (opus) in parallel; each Reads its brief
+**Persona panel** — follow `commands/issue-mode.md § Phase 4` as the *protocol*
+reference (you have no issue-mode Project profile — it is not a config source).
+Spawn all four code personas (opus) in parallel; each Reads its brief
 from the path you were given and reviews the diff **by command**
 (`git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'` — never paste
 it), ending with the `VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>` protocol.
-Run the browser half only when the diff touches a UI surface and a transport
-resolves (CDP → Chrome MCP → skip and note it).
+For the browser half, self-derive what the profile would have supplied: run it
+only when the diff touches browser-renderable files AND you can resolve both a
+local preview command (from `package.json` scripts or equivalent) and a transport
+— `CLAUDE_CDP_URL` (default `ws://localhost:3000`) via `chromium.connectOverCDP`,
+else the `mcp__claude-in-chrome__*` tools, else skip the browser half and note the
+skip in the final checkpoint.
 
 **Fix loop (max 3 rounds).** For each CHANGES_REQUESTED verdict: disjoint
 findings → parallel sonnet fixers; cross-cutting → one opus fixer. After each

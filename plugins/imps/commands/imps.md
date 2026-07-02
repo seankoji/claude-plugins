@@ -604,6 +604,12 @@ Keep the `agentId` from the spawn result — Steps 3 and 5 resume this same wran
 prompt. If subagents are unavailable entirely, execute that file's protocol inline in
 this session (same steps, no offload) and note the degradation.
 
+**Wrangler death mid-segment:** if SendMessage to the wrangler errors, or it returns
+malformed / non-JSON output, do not guess at the tree state — re-spawn a fresh
+`imp-wrangler` on the same segment. Segments are idempotent by design: already-merged
+branches no-op, the Head Imp review and gates simply re-run. If the re-spawn also
+fails, fall back to executing the protocol inline.
+
 **Step 3 — Answer checkpoints until `gates_green`:**
 Each wrangler segment ends in exactly one JSON checkpoint. Respond via `SendMessage` to
 the wrangler's agentId:
@@ -613,6 +619,12 @@ the wrangler's agentId:
 - `blocked · gate_red` — surface the gate name + log tail to the user; agree the next
   step (guidance for another fix attempt, skip, abort) and relay it.
 - `blocked · branch_mismatch` — reconcile branch state with the user before resuming.
+
+  The wrangler's brief defines the resume verbs it understands (`resolved, continue` ·
+  `retry <gate>: <guidance>` · `skip <gate>` · `reconciled, continue` · `abort`) — use
+  them verbatim. If the user chooses abort, send `abort`; the wrangler returns an
+  `aborted` checkpoint describing the tree state — surface it and stop Phase 5 (leave
+  the state file for a later resume decision).
 - `gates_green` — print a one-block summary from the checkpoint fields (merged tasks,
   failed tasks, Head Imp verdict + amendment count, gate results, diff stat), then go
   to Step 4.

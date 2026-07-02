@@ -50,19 +50,24 @@ a. Read the file: `tasks`, `workflow_task_id`, `workflow_run_id`, `workflow_outp
    `repo`, `dispatched_at`, `poll_interval_seconds`
 
 b. **Preferred — grep the output file (zero log ingestion, works cross-session).**
-   If `workflow_output_file` is non-null, extract only the marker lines with Bash:
+   If `workflow_output_file` is non-null, extract only the marker lines with Bash
+   (the explicit existence test is required — a bare grep cannot distinguish
+   "no markers yet" from "file missing", and they classify differently):
    ```bash
-   grep -oE 'imp:(start|done) #[0-9]+' "<workflow_output_file>" 2>/dev/null | sort -u
+   F="<workflow_output_file>"
+   if [ -e "$F" ]; then grep -oE 'imp:(start|done) #[0-9]+' "$F" 2>/dev/null | sort -u; else echo MISSING; fi
    ```
-   - Command succeeds with output → parse `imp:done #N` into `completed_ids` and
+   - Marker lines in output → parse `imp:done #N` into `completed_ids` and
      `imp:start #N` into `started_ids`; use
      `{"completed": completed_ids, "started": started_ids}`. Skip step c.
-   - File exists but no matches → use string `"not_ready"` (the workflow may still be
-     initializing). Skip step c.
-   - File missing/unreadable → fall through to step c.
+   - Empty output (file exists, no markers) → use string `"not_ready"` (the workflow
+     may still be initializing). Skip step c.
+   - `MISSING` → the recorded path doesn't exist (yet, or on this host) — fall
+     through to step c.
 
-   Never `cat`, `Read`, or otherwise ingest the output file — the grep above is the
-   only permitted access; workflow logs must not enter this context.
+   Never `cat`, `Read`, or otherwise ingest the output file — the existence test and
+   marker grep above are the only permitted access; workflow logs must not enter
+   this context.
 
 c. **Fallback — TaskOutput** (session-scoped; only when step b was unavailable).
    If `workflow_task_id` is non-null:
