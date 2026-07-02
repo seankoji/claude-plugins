@@ -132,11 +132,11 @@ slugs whose brief exists (or whose Lens you can improvise) — don't invent slug
 
 | Slug                | Name   | Type    | Model  | Lens                                            |
 | ------------------- | ------ | ------- | ------ | ----------------------------------------------- |
-| solution-architect  | Alex   | code    | opus   | boundaries, contracts, coupling                 |
-| grumpy-engineer     | Jordan | code    | opus   | edge cases, error paths, lazy shortcuts         |
-| sre                 | Riley  | code    | opus   | failure modes, ops, idempotency, resource limits|
-| business-analyst    | Morgan | code    | opus   | diff satisfies each issue's acceptance criteria |
-| ux-designer         | Sam    | browser | sonnet | hierarchy, affordance, consistency, mobile      |
+| solution-architect  | Bramble | code    | opus   | boundaries, contracts, coupling                 |
+| grumpy-engineer     | Grudge  | code    | opus   | edge cases, error paths, lazy shortcuts         |
+| sre                 | Klaxon  | code    | opus   | failure modes, ops, idempotency, resource limits|
+| business-analyst    | Ledger  | code    | opus   | diff satisfies each issue's acceptance criteria |
+| ux-designer         | Glint   | browser | sonnet | hierarchy, affordance, consistency, mobile      |
 
 - **Code panel** = the four code personas above. Always runs.
 - **Browser panel** = `ux-designer` + any **project-specific browser personas** the

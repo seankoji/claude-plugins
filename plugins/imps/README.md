@@ -109,11 +109,11 @@ Bundled at `${CLAUDE_PLUGIN_ROOT}/personas/` — no manual setup needed.
 
 | Slug | Name | Lens | Type | Model |
 | --- | --- | --- | --- | --- |
-| `solution-architect` | Alex | Boundaries, contracts, coupling — "should this exist, in this shape?" | code | opus |
-| `grumpy-engineer` | Jordan | Edge cases, error paths, lazy shortcuts — "is this line correct?" | code | opus |
-| `sre` | Riley | Failure modes, ops, idempotency, resource limits — "what does the operator see at 3am?" | code | opus |
-| `business-analyst` | Morgan | Diff satisfies each issue's acceptance criteria — "did we build the right thing?" | code | opus |
-| `ux-designer` | Sam | Hierarchy, affordance, consistency, mobile — "what does the user actually see?" | browser | sonnet |
+| `solution-architect` | Bramble | Boundaries, contracts, coupling — "should this exist, in this shape?" | code | opus |
+| `grumpy-engineer` | Grudge | Edge cases, error paths, lazy shortcuts — "is this line correct?" | code | opus |
+| `sre` | Klaxon | Failure modes, ops, idempotency, resource limits — "what does the operator see at 3am?" | code | opus |
+| `business-analyst` | Ledger | Diff satisfies each issue's acceptance criteria — "did we build the right thing?" | code | opus |
+| `ux-designer` | Glint | Hierarchy, affordance, consistency, mobile — "what does the user actually see?" | browser | sonnet |
 
 Each persona ends its review with a parseable verdict line:
 ```
