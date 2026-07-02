@@ -35,14 +35,21 @@ def first_real_token(cmd):
     caller can fold them back into the reported pattern. Stripping them
     entirely (as this used to do) produced allowlist rules like
     `Bash(systemctl restart *)` that never match the real `sudo systemctl
-    restart ...` invocation that prompted in the first place."""
+    restart ...` invocation that prompted in the first place.
+
+    `timeout`/`env` are walked past but NOT folded into `leaders`: each carries
+    a variable argument (duration, VAR=val pairs) that isn't part of the
+    invocation's stable shape, so folding just the bare leader word back in
+    would reconstruct a pattern (`timeout systemctl restart`) that is not a
+    prefix of the real command (`timeout 180 systemctl restart ...`) and would
+    never match Claude's exact-prefix permission matcher. Falling through to
+    the bare head+sub keeps the rule at least prefix-matching."""
     cmd = PREFIX_STRIP.sub("", cmd.strip())
     parts = cmd.split()
     leaders = []
     if not parts:
         return ([], "", None)
     while parts and parts[0] in LEADERS:
-        leaders.append(parts[0])
         if parts[0] == "timeout" and len(parts) >= 2:
             parts = parts[2:]
         elif parts[0] == "env":
@@ -50,6 +57,7 @@ def first_real_token(cmd):
             while parts and "=" in parts[0] and not parts[0].startswith("-"):
                 parts = parts[1:]
         else:
+            leaders.append(parts[0])
             parts = parts[1:]
     if not parts:
         return (leaders, "", None)

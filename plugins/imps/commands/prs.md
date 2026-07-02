@@ -102,9 +102,10 @@ gh api repos/<repo>/pulls/<pr_number>/comments \
   --jq '[.[] | {id: .id, body: .body, path: .path, line: .line, user: (.user.login)}]'
 ```
 Filter for comments whose `id` is NOT in `handled_comment_ids` and whose `body` does NOT
-begin with the bot's own persona marker `[Persona:` — those are the panel's own comments,
-and skipping them is what avoids self-review loops. **Do not filter by author identity:**
-this plugin assumes a single `gh` identity opens the PR *and* leaves review feedback, so
+begin with `[Persona:` (the panel's own comments) or `[imps-status]` (the orchestrator's
+own handoff/status comments, e.g. issue-mode's Phase 6 final PR comment) — skipping both
+markers is what avoids self-review loops. **Do not filter by author identity:** this
+plugin assumes a single `gh` identity opens the PR *and* leaves review feedback, so
 filtering out the PR author would hide a solo maintainer's own comments (the normal case).
 Each remaining unhandled comment needs a response (Step 4c).
 

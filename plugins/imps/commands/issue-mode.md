@@ -312,9 +312,13 @@ Update the live comment with the verdict table once all personas have posted.
 
 ## Phase 6 — Operator handoff
 
-Final PR comment (list the actual gate names you ran):
+Final PR comment (list the actual gate names you ran). Lead the body with the
+`[imps-status]` marker — `/imps:prs`'s comment filter (see `commands/prs.md`) skips any
+body starting with `[Persona:` or `[imps-status]` so its own status comments never get
+treated as unhandled review feedback needing a fix:
 
 ```
+[imps-status]
 ## /imps complete
 Personas approved: [...]    Unresolved after N rounds: [... | none]
 Gates: <gate-cmd-1> ✓  <gate-cmd-2> ✓  contracts ✓  CI ✓  security ✓

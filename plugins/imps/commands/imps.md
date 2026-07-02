@@ -614,8 +614,11 @@ Short version:
 For each CHANGES_REQUESTED verdict:
 - Disjoint findings → parallel sonnet fixers (one per finding)
 - Cross-cutting findings → one opus fixer
-Re-review only the dissenting personas scoped to the delta. Repeat until all personas
-APPROVE or only minors/nits remain (they never block). Update GOAL.md DoD:
+After each round's fixes are committed, `git push` the fix commits to the PR branch (if
+Step 4 opened one) so the PR diff and its CI reflect them — a fix that never leaves the
+local branch means the PR still shows the un-fixed diff. Re-review only the dissenting
+personas scoped to the delta. Repeat until all personas APPROVE or only minors/nits
+remain (they never block). Update GOAL.md DoD:
 `[x] Persona panel reviewed; all blocker/major findings addressed`.
 
 **Step 7 — Finalize:**
@@ -627,7 +630,9 @@ APPROVE or only minors/nits remain (they never block). Update GOAL.md DoD:
      󰭟 #5 Comment    → https://github.com/...
    ```
 3. Delete `~/.claude/imps/runs/${SLUG}.json` (the same path written in Phase 3 Step 2).
-   The status loop will detect this on its next tick (when the directory is empty) and stop.
+   The status loop will detect this on its next tick (no run-state `.json` files left — it
+   ignores `/imps:prs`'s own `.prs.json` files, so writing one in the next item doesn't
+   revive the heartbeat) and stop.
 4. Print the final banner. Run this script for the header line (substitute `TASKS_JSON`
    with the JSON array of all tasks, each with `id` and `model` fields):
 

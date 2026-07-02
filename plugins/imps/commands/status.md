@@ -1,6 +1,6 @@
 ---
 name: imps:status
-description: Emit a heartbeat for active /imps:imps runs. Self-reschedules via ScheduleWakeup; stops when the state dir is empty. Shows only still-working imps with a one-liner each.
+description: Emit a heartbeat for active /imps:imps runs. Self-reschedules via ScheduleWakeup; stops when no run-state files remain (ignores /imps:prs's own .prs.json files). Shows only still-working imps with a one-liner each.
 ---
 
 # /imps:status — imp roll-call
@@ -112,7 +112,14 @@ def colored_imp(t, dim=False):
     return f'{prefix}{IMPS[idx]}{RST}'
 
 try:
-    files = sorted(f for f in os.listdir(state_dir) if f.endswith('.json'))
+    # Exclude *.prs.json: those are /imps:prs PR-monitor state files, not run
+    # state, and can be written into this same dir moments after a run's own
+    # state file is deleted — matching them here would make the heartbeat
+    # treat an unrelated PR-monitor file as a still-running imps run.
+    files = sorted(
+        f for f in os.listdir(state_dir)
+        if f.endswith('.json') and not f.endswith('.prs.json')
+    )
 except FileNotFoundError:
     raise SystemExit(0)
 
