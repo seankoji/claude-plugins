@@ -46,14 +46,31 @@ Do **not** call `ScheduleWakeup`. Return immediately. The loop is now dead.
 
 For each state file, build a `completed_ids` set for that run:
 
-a. Read the file: `tasks`, `workflow_task_id`, `workflow_run_id`, `repo`, `dispatched_at`, `poll_interval_seconds`
+a. Read the file: `tasks`, `workflow_task_id`, `workflow_run_id`, `workflow_output_file`,
+   `repo`, `dispatched_at`, `poll_interval_seconds`
 
-b. If `workflow_task_id` is non-null:
+b. **Preferred — grep the output file (zero log ingestion, works cross-session).**
+   If `workflow_output_file` is non-null, extract only the marker lines with Bash:
+   ```bash
+   grep -oE 'imp:(start|done) #[0-9]+' "<workflow_output_file>" 2>/dev/null | sort -u
+   ```
+   - Command succeeds with output → parse `imp:done #N` into `completed_ids` and
+     `imp:start #N` into `started_ids`; use
+     `{"completed": completed_ids, "started": started_ids}`. Skip step c.
+   - File exists but no matches → use string `"not_ready"` (the workflow may still be
+     initializing). Skip step c.
+   - File missing/unreadable → fall through to step c.
+
+   Never `cat`, `Read`, or otherwise ingest the output file — the grep above is the
+   only permitted access; workflow logs must not enter this context.
+
+c. **Fallback — TaskOutput** (session-scoped; only when step b was unavailable).
+   If `workflow_task_id` is non-null:
    1. Load `TaskOutput` schema: call `ToolSearch` with `query: "select:TaskOutput"`
-   2. Call `TaskOutput` with `{ taskId: "<workflow_task_id>" }`
-   3. Scan the returned text for:
-      - Lines matching `imp:done #(\d+)` — collect integer N values as `completed_ids`
-      - Lines matching `imp:start #(\d+)` — collect integer N values as `started_ids`
+   2. Call `TaskOutput` with `{ taskId: "<workflow_task_id>", block: false }`
+   3. Scan the returned text for `imp:done #(\d+)` → `completed_ids` and
+      `imp:start #(\d+)` → `started_ids`. Discard the rest — never quote workflow log
+      text in your reply.
    4. Classify the result:
       - **"No task found"** or any cross-session error: use string `"cross-session"`.
         TaskOutput is session-scoped — it cannot query workflow IDs started in a different
@@ -67,7 +84,8 @@ b. If `workflow_task_id` is non-null:
       - **Any other error** (timeout, transient): use `{"completed": [], "started": []}` —
         show all imps as active.
 
-c. If `workflow_task_id` is null: use `{"completed": [], "started": []}`
+d. If both `workflow_output_file` and `workflow_task_id` are null: use
+   `{"completed": [], "started": []}`
 
 Build a JSON object mapping each slug to its value — a dict with `completed`/`started`
 lists, or one of the sentinel strings `"cross-session"` or `"not_ready"`. For example:
