@@ -3,9 +3,8 @@
 ## What it does
 
 `/imps:imps` decomposes a task (or a batch of GitHub issues) into parallel, model-routed
-agents ("imps"), dispatches them via the Workflow tool, monitors progress through a
-self-rescheduling heartbeat, and integrates results through deterministic gates and an
-adversarial persona-review panel.
+agents ("imps"), dispatches them via the Workflow tool, and integrates results through
+deterministic gates and an adversarial persona-review panel.
 
 The orchestrating session is deliberately thin: it holds decisions (plan approval, the
 push/PR gate, conflict resolution) while everything bulky — repo recon, merges, diffs,
@@ -58,7 +57,7 @@ Four entry modes, auto-detected from the argument:
 1. `/imps:imps` with a task description (or empty — it will ask).
 2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
-4. After plan approval, `/imps:imps` dispatches a Workflow and starts the `/imps:status` heartbeat.
+4. After plan approval, `/imps:imps` dispatches a Workflow and returns control — progress is visible via `/workflows`.
 5. When the Workflow completes, `/imps:imps` hands integration to the **Imp Wrangler** subagent: it merges code branches, drives the Head Imp diff review, runs gates, then — after you approve the push — opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, and applies any fixes. The main session only relays your decisions and can hand the PR to the `/imps:prs` monitor.
 
 ### Issue-driven mode walkthrough
@@ -95,11 +94,10 @@ issue numbers (`/imps:issue-mode 42 43 51`) or a structured JSON input:
   `swarm/<YYYY-MM-DD>` cut fresh from the repo's default branch. If the branch and its
   tracking issue already exist, the run resumes from the first incomplete phase.
 
-## Sub-commands
+## Sub-command
 
-Both sub-commands are self-rescheduling via `ScheduleWakeup` — do NOT wrap them with `/loop`.
+Self-rescheduling via `ScheduleWakeup` — do NOT wrap it with `/loop`.
 
-- **`/imps:status`** — heartbeat for active runs. Shows which imps are still out, elapsed time, and dependency-waiting detail. Stops automatically when the state directory is empty (run complete).
 - **`/imps:prs`** — proactive PR monitor. After `/imps:imps` pushes and creates the endstate PR, activate this to automatically address review comments, fix CI failures, and resolve merge conflicts. Stops when the PR is merged, closed, or 48 h old.
 
 ## The persona panel
@@ -147,7 +145,7 @@ Written to `~/.claude/imps/` on first run — not bundled:
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/imps/runs/<slug>.json` | Per-project dispatch state — resume spine + heartbeat source |
+| `~/.claude/imps/runs/<slug>.json` | Per-project dispatch state — resume + integration spine |
 | `~/.claude/imps/runs/<slug>.prs.json` | Per-PR monitor state for `/imps:prs` |
 | `~/.claude/imps/learnings.md` | Self-tuning `## Active rules` (≤10 bullets) + per-run notes |
 
