@@ -6,7 +6,7 @@ description: >
 argument-hint: '<task description>'
 ---
 
-# /imps — summon the swarm
+# /imps:imps — summon the swarm
 
 Arguments: `$ARGUMENTS`
 
@@ -29,7 +29,7 @@ seconds, and integrate results cleanly.
 
 ## Mode detection
 
-`/imps` has **three modes**, checked in this order:
+`/imps:imps` has **three modes**, checked in this order:
 
 - **Checklist-file mode** — `$ARGUMENTS` is a single token ending in `.md`. Resolve the
   file in order: (1) as-is if it's an absolute path or exists relative to cwd, (2)
@@ -44,13 +44,13 @@ seconds, and integrate results cleanly.
   free-text.
 
 - **Issue-driven mode** — `$ARGUMENTS` is *entirely* GitHub issue references: every
-  whitespace-separated token matches `^#?\d+$` (e.g. `/imps 42 43 51`, `/imps #42`).
+  whitespace-separated token matches `^#?\d+$` (e.g. `/imps:imps 42 43 51`, `/imps:imps #42`).
   **→ Follow [`commands/issue-mode.md`](./issue-mode.md)** for the
   full scout → rolling-dispatch → holding-branch → gates → persona-panel → handoff
   workflow. Do not continue with the phases below.
 
 - **Free-text mode** — `$ARGUMENTS` is a task description (anything that is not purely
-  issue numbers), or empty. This is the original `/imps` behaviour. **→ Continue with
+  issue numbers), or empty. This is the original `/imps:imps` behaviour. **→ Continue with
   the phases below.**
 
 Detection order: (1) single `.md` token that resolves to a file → checklist-file mode.
@@ -360,7 +360,7 @@ Then print this handoff prompt (verbatim — it is informational, not a question
 ```
 Plan approved and durable in GOAL.md + state file.
 
-  Recommended: /clear  →  /imps   (dispatches from a clean context)
+  Recommended: /clear  →  /imps:imps   (dispatches from a clean context)
   Sonnet currently inherits the full Opus planning window (a substantial
   portion of the context budget, depending on how much the planner explored).
   After /clear, re-read key repo files before authoring Workflow prompts.

@@ -1,9 +1,27 @@
 # imps — swarm orchestrator for Claude Code
 
-`/imps` decomposes a task (or a batch of GitHub issues) into parallel, model-routed
+## What it does
+
+`/imps:imps` decomposes a task (or a batch of GitHub issues) into parallel, model-routed
 agents ("imps"), dispatches them via the Workflow tool, monitors progress through a
 self-rescheduling heartbeat, and integrates results through deterministic gates and an
 adversarial persona-review panel.
+
+## Prerequisites
+
+| Requirement | Needed for |
+| --- | --- |
+| **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
+| **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
+| **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
+| **`imp` agent type** (optional) | Used only if your runtime registers an `imp` agent type. This plugin does **not** ship one, so out of the box every task runs on `general-purpose` — the workflow detects the missing type and falls back automatically. The "atomic-task discipline / branch handling / structured-output" conventions are baked into the prompts either way. |
+
+Optional:
+
+| Requirement | Needed for |
+| --- | --- |
+| **`CLAUDE_CDP_URL`** env var | Browser panel via CDP (default `ws://localhost:3000`). Point at a headless-Chrome container, local or LAN. |
+| **Claude-in-Chrome MCP** | Browser panel fallback if no CDP endpoint is reachable. |
 
 ## Install
 
@@ -24,34 +42,34 @@ Three entry modes, auto-detected from the argument:
 
 | Invocation | Mode | What it does |
 | --- | --- | --- |
-| `/imps <free-text task>` | Free-text | Refine → plan (opus plan mode) → decompose → dispatch a Workflow → merge → gates → persona panel → endstate PR |
-| `/imps 42 43 51` | Issue-driven | Scout issues → rolling dispatch in isolated worktrees → holding branch → gates → persona panel → operator handoff |
-| `/imps path/to/checklist.md` | Checklist-file | Run each `Verify:`/`Done when:` item as a read-only audit, then offer remediation dispatch |
+| `/imps:imps <free-text task>` | Free-text | Refine → plan (opus plan mode) → decompose → dispatch a Workflow → merge → gates → persona panel → endstate PR |
+| `/imps:imps 42 43 51` | Issue-driven | Scout issues → rolling dispatch in isolated worktrees → holding branch → gates → persona panel → operator handoff |
+| `/imps:imps path/to/checklist.md` | Checklist-file | Run each `Verify:`/`Done when:` item as a read-only audit, then offer remediation dispatch |
 
 ### Free-text mode walkthrough
 
-1. `/imps` with a task description (or empty — it will ask).
-2. `/imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
+1. `/imps:imps` with a task description (or empty — it will ask).
+2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
-4. After plan approval, `/imps` dispatches a Workflow and starts the `/imps:status` heartbeat.
-5. When the Workflow completes, `/imps` merges code branches, runs gates, then opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, applies any fixes, and can hand the PR to the `/imps:prs` monitor.
+4. After plan approval, `/imps:imps` dispatches a Workflow and starts the `/imps:status` heartbeat.
+5. When the Workflow completes, `/imps:imps` merges code branches, runs gates, then opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, applies any fixes, and can hand the PR to the `/imps:prs` monitor.
 
 ### Issue-driven mode walkthrough
 
-1. `/imps 42 43 51` — all tokens are issue numbers.
+1. `/imps:imps 42 43 51` — all tokens are issue numbers.
 2. Scouts (haiku) fan out in parallel per issue; results seed the implementation queue.
 3. Implementation agents run in isolated worktrees up to `PARALLEL_CAP=6` concurrent; file-overlapping issues serialize naturally.
-4. After all issues merge into the holding branch, `/imps` runs full gates, opens the integration PR, and runs the persona panel.
-5. Operator handoff — `/imps` does NOT merge the integration PR.
+4. After all issues merge into the holding branch, `/imps:imps` runs full gates, opens the integration PR, and runs the persona panel.
+5. Operator handoff — `/imps:imps` does NOT merge the integration PR.
 
 ### Checklist-file mode
 
-Pass a single `.md` token that resolves to a file with `- [ ]` checklist items, each having `Verify:` and `Done when:` sub-lines. `/imps` fans out read-only verification imps and emits a pass/fail audit report, then offers to dispatch remediation.
+Pass a single `.md` token that resolves to a file with `- [ ]` checklist items, each having `Verify:` and `Done when:` sub-lines. `/imps:imps` fans out read-only verification imps and emits a pass/fail audit report, then offers to dispatch remediation.
 
 ### Direct `/imps:issue-mode` invocation & handoff contract
 
 Issue-driven mode is also directly invokable as `/imps:issue-mode` — useful for an upstream
-audit or handoff tool that wants to skip `/imps`'s mode detection. It accepts either bare
+audit or handoff tool that wants to skip `/imps:imps`'s mode detection. It accepts either bare
 issue numbers (`/imps:issue-mode 42 43 51`) or a structured JSON input:
 
 ```json
@@ -68,23 +86,7 @@ issue numbers (`/imps:issue-mode 42 43 51`) or a structured JSON input:
 Both sub-commands are self-rescheduling via `ScheduleWakeup` — do NOT wrap them with `/loop`.
 
 - **`/imps:status`** — heartbeat for active runs. Shows which imps are still out, elapsed time, and dependency-waiting detail. Stops automatically when the state directory is empty (run complete).
-- **`/imps:prs`** — proactive PR monitor. After `/imps` pushes and creates the endstate PR, activate this to automatically address review comments, fix CI failures, and resolve merge conflicts. Stops when the PR is merged, closed, or 48 h old.
-
-## Prerequisites
-
-| Requirement | Needed for |
-| --- | --- |
-| **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
-| **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
-| **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
-| **`imp` agent type** (optional) | Used only if your runtime registers an `imp` agent type. This plugin does **not** ship one, so out of the box every task runs on `general-purpose` — the workflow detects the missing type and falls back automatically. The "atomic-task discipline / branch handling / structured-output" conventions are baked into the prompts either way. |
-
-Optional:
-
-| Requirement | Needed for |
-| --- | --- |
-| **`CLAUDE_CDP_URL`** env var | Browser panel via CDP (default `ws://localhost:3000`). Point at a headless-Chrome container, local or LAN. |
-| **Claude-in-Chrome MCP** | Browser panel fallback if no CDP endpoint is reachable. |
+- **`/imps:prs`** — proactive PR monitor. After `/imps:imps` pushes and creates the endstate PR, activate this to automatically address review comments, fix CI failures, and resolve merge conflicts. Stops when the PR is merged, closed, or 48 h old.
 
 ## The persona panel
 
@@ -129,7 +131,7 @@ Written to `~/.claude/imps/` on first run — not bundled:
 | `~/.claude/imps/learnings.md` | Self-tuning `## Active rules` (≤10 bullets) + per-run notes |
 
 The `learnings.md` `## Active rules` section is read at startup on every run and applied
-to model routing, task boundaries, and dependency detection. `/imps` appends a new run
+to model routing, task boundaries, and dependency detection. `/imps:imps` appends a new run
 entry after each completed run; confirmed learnings are promoted into Active rules.
 
 ## Browser review (optional)

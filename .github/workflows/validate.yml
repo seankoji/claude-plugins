@@ -29,6 +29,25 @@ jobs:
             echo "  OK: $plugin_json (name=$name version=$version)"
           done
 
+      - name: Validate manifests against JSON Schema contracts
+        run: |
+          pipx run check-jsonschema --schemafile schemas/marketplace.schema.json .claude-plugin/marketplace.json
+          for plugin_json in plugins/*/.claude-plugin/plugin.json; do
+            echo "Schema-checking $plugin_json..."
+            pipx run check-jsonschema --schemafile schemas/plugin.schema.json "$plugin_json"
+          done
+
+      - name: Check every plugin has a README and is listed in the root README
+        run: |
+          fail=0
+          for plugin_dir in plugins/*/; do
+            plugin_name=$(basename "$plugin_dir")
+            [ -f "${plugin_dir}README.md" ] || { echo "ERROR: missing plugins/${plugin_name}/README.md"; fail=1; }
+            grep -q "(\./plugins/${plugin_name}/)" README.md || { echo "ERROR: $plugin_name not listed in root README.md 'Available plugins' table"; fail=1; }
+          done
+          [ "$fail" = "0" ] || exit 1
+          echo "All plugins have READMEs and are listed in the root README"
+
       - name: Validate marketplace name-to-source consistency
         run: |
           jq -r '.plugins[] | "\(.name) \(.source)"' .claude-plugin/marketplace.json | while IFS=" " read -r name source; do
@@ -90,12 +109,32 @@ jobs:
 
       - name: Check for bundled-asset path leaks
         run: |
-          if grep -rn --include="*.md" \
-              -e '~/.claude/scripts/scan_perms' \
-              -e '~/.claude/imps/imps-intro' \
-              -e '~/.claude/imps/personas/' \
-              plugins/*/commands/ 2>/dev/null; then
-            echo "ERROR: bundled-asset ~/.claude/ paths found — use CLAUDE_PLUGIN_ROOT instead"
-            exit 1
-          fi
+          # Structural rule (not a hardcoded allowlist): any file shipped inside a
+          # plugin's own non-commands directories (scripts/, personas/, etc.) is a
+          # bundled asset that must be resolved via ${CLAUDE_PLUGIN_ROOT} at runtime,
+          # never hardcoded under ~/.claude/. Build the set of bundled-asset basenames
+          # across every plugin, then flag any commands/*.md that references one of
+          # them under a literal ~/.claude/ path.
+          fail=0
+          assets=$(find plugins/*/* -maxdepth 0 -type d 2>/dev/null \
+            | grep -Ev '/(commands|\.claude-plugin)$' \
+            | xargs -I{} find {} -type f 2>/dev/null \
+            | xargs -n1 basename \
+            | sed 's/\.[^.]*$//' \
+            | sort -u)
+
+          for plugin_dir in plugins/*/; do
+            plugin_name=$(basename "$plugin_dir")
+            cmd_dir="${plugin_dir}commands"
+            [ -d "$cmd_dir" ] || continue
+            for asset in $assets; do
+              hits=$(grep -rn --include="*.md" -E "~/\.claude/[^)\`[:space:]]*${asset}" "$cmd_dir" 2>/dev/null || true)
+              if [ -n "$hits" ]; then
+                echo "ERROR: bundled-asset path leak in $plugin_name referencing '$asset' (use \${CLAUDE_PLUGIN_ROOT} instead):"
+                echo "$hits"
+                fail=1
+              fi
+            done
+          done
+          [ "$fail" = "0" ] || exit 1
           echo "No bundled-asset path leaks"

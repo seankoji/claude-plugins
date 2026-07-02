@@ -1,6 +1,6 @@
 ---
 name: imps:status
-description: Emit a heartbeat for active /imps runs. Self-reschedules via ScheduleWakeup; stops when the state dir is empty. Shows only still-working imps with a one-liner each.
+description: Emit a heartbeat for active /imps:imps runs. Self-reschedules via ScheduleWakeup; stops when the state dir is empty. Shows only still-working imps with a one-liner each.
 ---
 
 # /imps:status — imp roll-call
@@ -22,7 +22,7 @@ When the run is over (state file deleted by the merge phase), it stops by not re
 cannot self-cancel. Invoke it directly; it owns its own rescheduling.
 
 This command does **not** merge. Merging is driven by the task notification in the main
-session that launched /imps.
+session that launched `/imps:imps`.
 
 ---
 
@@ -178,7 +178,7 @@ for fname in files:
     if active and secs is not None and secs > stale_after:
         print(f'  ⚠ no completion after {secs / 3600:.1f}h (> {stale_after // 3600}h '
               f'threshold) — workflow may be hung or crashed; check /workflows, or abandon '
-              f'the run via `/imps` to start fresh')
+              f'the run via `/imps:imps` to start fresh')
 
     # Show blocked-on-deps detail only for imps waiting on unmet deps
     for t in active:

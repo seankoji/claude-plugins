@@ -1,6 +1,6 @@
 {
   "name": "imps",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Swarm orchestrator for Claude Code — decomposes tasks into parallel model-routed agents, dispatches via Workflow, monitors progress, merges through deterministic gates, and runs a persona-review panel.",
   "author": {
     "name": "seankoji",
