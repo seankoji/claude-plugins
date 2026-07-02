@@ -185,7 +185,7 @@ PROMPT_EOF
 )"
 
 # ── Judge 1: agy / Gemini (pseudo-TTY required; sanitize fixes the macOS PTY artifact) ──
-agy_raw="$(cd "$SCRATCH" && pty_run "${TIMEOUT_CMD[@]}" agy "${AGY_JUDGE_FLAGS[@]}" -p "$AGY_PROMPT" 2>&1 | sanitize || true)"
+agy_raw="$(cd "$SCRATCH" && pty_run "${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"}" agy "${AGY_JUDGE_FLAGS[@]}" -p "$AGY_PROMPT" 2>&1 | sanitize || true)"
 agy_class="$(classify "$agy_raw")"
 [ "$agy_class" = ERROR ] && echo "goldfish-judge: agy judge produced no usable verdict. NOT a pass." >&2
 
@@ -196,7 +196,7 @@ $agy_raw"
 ollama_class="READY"   # neutral default when Ollama is disabled; doesn't affect consensus
 if [ -n "$OLLAMA_MODEL" ]; then
   if command -v ollama >/dev/null 2>&1; then
-    ollama_raw="$("${TIMEOUT_CMD[@]}" ollama run "$OLLAMA_MODEL" "$OLLAMA_PROMPT" 2>"$SCRATCH/ollama.err" | sanitize || true)"
+    ollama_raw="$("${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"}" ollama run "$OLLAMA_MODEL" "$OLLAMA_PROMPT" 2>"$SCRATCH/ollama.err" | sanitize || true)"
     ollama_class="$(classify "$ollama_raw")"
     if [ "$ollama_class" = ERROR ]; then
       echo "goldfish-judge: ollama judge produced no usable verdict. NOT a pass." >&2
