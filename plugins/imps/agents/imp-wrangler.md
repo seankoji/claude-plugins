@@ -1,7 +1,7 @@
 ---
 name: imp-wrangler
 model: sonnet
-color: magenta
+color: purple
 description: >
   Integration wrangler for /imps Phase 5 — herds the returning imps' branches into
   the working tree, drives the Head Imp diff review, runs deterministic gates, and
