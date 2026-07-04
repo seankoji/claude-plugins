@@ -19,7 +19,7 @@
     },
     {
       "name": "prompt-builder",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "source": "./plugins/prompt-builder",
       "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
     },
