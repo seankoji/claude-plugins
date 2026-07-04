@@ -214,16 +214,18 @@ Present this as the final output. Ask: "Good enough, or shall we refine?" Loop u
 
 ## Saving guidance
 
-After finalising the prompt, suggest the right save path based on intended use:
+Every finished prompt gets written to a markdown file — never leave the deliverable sitting only in chat. Determine the save path based on intended use, then actually write it with the `Write` tool before presenting the deliverable as final:
 
 | Use | Save path |
 |---|---|
 | Global command (any project) | `~/.claude/commands/<name>.md` |
 | Project command (flat) | `<project>/.claude/commands/<name>.md` → `/name` |
 | Project command (scoped) | `<project>/.claude/commands/<scope>/<name>.md` → `/<scope>:<name>` |
-| Run inline / copy-paste | No file — just the prompt text |
+| Run inline / copy-paste | `~/.claude/prompt-builder/prompts/<slug>.md` (archive copy, not a runnable command) |
 
-For **global commands**: after writing the file, the operator should commit and push if `~/.claude/` is tracked in a dotfiles repo.
+If intended use is ambiguous, ask; if the operator has no preference, default to the archive path so the prompt is never lost. State the path you saved to in the final message.
+
+For **global commands** (and the archive path, since it also lives under `~/.claude/`): after writing the file, the operator should commit and push if `~/.claude/` is tracked in a dotfiles repo.
 
 For **Claude Code command files**: the frontmatter needs at minimum:
 ```
