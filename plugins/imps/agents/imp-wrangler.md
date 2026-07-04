@@ -133,8 +133,11 @@ The orchestrator resumes you with `PR: yes` or `PR: no`.
 
 - **`PR: yes`** → `git push -u origin <branch>`, then `gh pr create --draft`
   (title from the run's task, body: change summary + the GOAL.md DoD). Capture
-  the PR number and URL. Personas post their findings as PR comments prefixed
-  `[Persona: <Name>]`.
+  the PR number and URL. Personas post their findings per
+  `commands/issue-mode.md § Personas → Posting identity` — a real GitHub review under
+  each persona's own dedicated GitHub App identity by default (`persona-post.sh`),
+  falling back to an orchestrator-identity `[Persona: <Name>]` comment, clearly marked
+  degraded, only if that script fails for a given persona.
 - **`PR: no`** → no push, no PR, nothing leaves the machine. Personas return
   their findings to you; include them in the final checkpoint under
   `findings_inline`.

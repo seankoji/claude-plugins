@@ -765,7 +765,8 @@ only `Not yet` skips it.
 `SendMessage` the wrangler exactly `PR: yes` or `PR: no`. The wrangler then, per its
 brief:
 - pushes and opens the draft PR (`PR: yes` only) — personas post their findings there
-  as `[Persona: <Name>]` comments;
+  per `commands/issue-mode.md § Personas → Posting identity` (dedicated GitHub App
+  identity by default, orchestrator-identity `[Persona: <Name>]` comment as fallback);
 - runs the persona panel following `commands/issue-mode.md § Phase 4` (the canonical
   protocol — four opus code personas always; the sonnet collector + browser personas
   only when a UI surface and a browser transport exist);
