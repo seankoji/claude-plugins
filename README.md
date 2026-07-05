@@ -10,7 +10,7 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 | [claude-tuneup](./plugins/claude-tuneup/) | Permission audit and settings tuneup for Claude Code |
 | [prompt-builder](./plugins/prompt-builder/) | Iterative prompt engineering assistant |
 | [imps](./plugins/imps/) | Swarm orchestrator — parallel model-routed agents, Workflow dispatch, deterministic gates, persona-review panel |
-| [ape](./plugins/ape/) | Mines OSS repos for transferable techniques — parallel gibbon discovery, orangutan deep analysis, silverback synthesis |
+| [ape](./plugins/ape/) | Forages OSS repos for transferable techniques — parallel gibbon discovery, orangutan deep analysis, silverback synthesis |
 
 ---
 

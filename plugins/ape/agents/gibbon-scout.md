@@ -22,15 +22,12 @@ You will receive: a project fingerprint, a focus area, and ONE search axis. Stay
 
 **Method — `gh` CLI only:**
 
-1. Derive 3–5 search queries from fingerprint + focus + axis. Put qualifiers inline in the query string (most portable form):
-   `gh search repos "<terms> language:<lang> stars:>100 pushed:>YYYY-MM-DD" --limit 15 --json fullName,description,stargazersCount,updatedAt,license,url`
-   Use a pushed date roughly 12 months before today unless the axis justifies older.
-2. HARD BUDGET: max 5 search calls. The GitHub search API allows ~30 requests/min shared across ALL scouts running in parallel. On a 403/rate-limit response, wait 20 seconds and narrow scope — do not hammer.
-3. Triage finalists with one metadata call each:
-   `gh repo view <fullName> --json isArchived,pushedAt,diskUsage,licenseInfo,description`
+1. Derive 3–5 search queries from fingerprint + focus + axis, each with qualifiers inline (most portable form): `<terms> language:<lang> stars:>100 pushed:>YYYY-MM-DD`. Use a pushed date roughly 12 months before today unless the axis justifies older.
+   Run ALL of them in ONE call to `${CLAUDE_PLUGIN_ROOT}/scripts/search-repos.sh "<query 1>" "<query 2>" ...` — a single preapprovable command, instead of a multi-line block of separate `gh search` calls the permission system can't statically analyze.
+2. HARD BUDGET: max 5 queries per call. The GitHub search API allows ~30 requests/min shared across ALL scouts running in parallel. On a 403/rate-limit response, wait 20 seconds and narrow scope — do not hammer.
+3. Triage all finalists in ONE call to `${CLAUDE_PLUGIN_ROOT}/scripts/triage-repos.sh "<owner/repo 1>" "<owner/repo 2>" ...` — a single preapprovable command, instead of a shell for-loop over `gh repo view` calls the permission system can't statically analyze.
    Drop anything archived, unpushed for 12+ months, or clearly off-fingerprint.
-4. Only if a candidate's purpose is still unclear, peek at its README headline:
-   `gh api repos/<owner>/<repo>/readme -q .content | base64 -d | head -40`
+4. Only if a candidate's purpose is still unclear, peek at its README headline with `${CLAUDE_PLUGIN_ROOT}/scripts/readme-peek.sh <owner/repo>` — a single preapprovable command instead of a multi-stage pipe chain.
 
 **Return format — nothing else, no preamble, no methodology narration:**
 

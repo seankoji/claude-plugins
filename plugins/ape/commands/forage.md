@@ -1,15 +1,15 @@
 ---
-description: Mine OSS repos for techniques transferable to this codebase
+description: Forage through OSS repos for techniques transferable to this codebase
 argument-hint: [focus area, e.g. testing | architecture | dx — optional]
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(gh:*), Bash(git clone:*), Bash(mkdir:*), Bash(tree:*), Bash(ls:*), Bash(cat:*), Bash(du:*), Bash(basename:*), Bash(date:*)
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(gh:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh:*), Bash(tree:*), Bash(ls:*), Bash(cat:*), Bash(du:*)
 disable-model-invocation: true
 ---
 
-Mine open-source repositories for techniques transferable to this project.
+Forage open-source repositories for techniques transferable to this project.
 
 Focus area: $ARGUMENTS (if empty: architecture, testing, and developer experience broadly).
 
-Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current directory's basename. Create `repos/` and `reports/` under it now. Every phase writes its artifacts here so synthesis can be re-run later without re-mining, and so the user can inspect raw outputs.
+Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current directory's basename. Every phase writes its artifacts here so synthesis can be re-run later without re-foraging, and so the user can inspect raw outputs.
 
 Open every phase heading you narrate to the user with its icon below, so a scan of the transcript reads at a glance:
 
@@ -25,8 +25,9 @@ Open every phase heading you narrate to the user with its icon below, so a scan 
 ##  Phase 0 — Preflight + fingerprint (you; no subagents)
 
 1. Run `gh auth status`. If unauthenticated, stop and tell the user to run `gh auth login` — nothing downstream works without it.
-2. If `fingerprint.md` already exists in the workspace and is under 30 days old, reuse it. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
-3. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
+2. Run `${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh` — a single preapprovable command that creates `repos/` and `reports/` under the workspace and reports whether `fingerprint.md` already exists (with its `ls -la` timestamp).
+3. If the script reported an existing `fingerprint.md` and its timestamp is under 30 days old, reuse it. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
+4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 ## 🐒 Phase 1 — Discovery (3 gibbon-scout agents)
 
@@ -40,16 +41,13 @@ Dispatch all three in ONE message so they run in parallel. Each gibbon gets the 
 
 Merge scout results. Dedupe. Drop archived, stale (>12 months), or licence-problematic candidates. Rank by expected learning value **against the fingerprint's weaknesses**, not by stars. Select the top 6 (hard cap 8). Write `candidates.md` recording the ranking, plus what you rejected and why.
 
- Clone the selection yourself in ONE bash call with backgrounded jobs, redirecting output to a log so raw clone progress doesn't spill into the conversation — report only the tail / exit status:
+ Clone the selection with ONE call to `${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh` — a single preapprovable command that clones everything in the background, waits, and reports only the tail of a log instead of raw clone progress spilling into the conversation:
 
 ```
-git clone --depth 1 --filter=blob:none <url> ~/tmp/repo-research/<slug>/repos/<name> >> clone.log 2>&1 &
-...
-wait
-tail -n 20 clone.log
+${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh <workspace-dir> <url1> <name1> <sparse1:0|1> <url2> <name2> <sparse2:0|1> ...
 ```
 
-Add `--sparse` for anything over ~300MB diskUsage. Do NOT delete these clones afterwards — `/ape:clean` is the only sanctioned deletion path.
+Pass `1` for the sparse flag on anything over ~300MB diskUsage, `0` otherwise. Do NOT delete these clones afterwards — `/ape:clean` is the only sanctioned deletion path.
 
 ## 🦧 Phase 2 — Analysis (one orangutan-analyst per repo)
 

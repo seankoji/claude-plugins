@@ -31,7 +31,7 @@
     },
     {
       "name": "ape",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./plugins/ape",
       "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, silverback synthesis."
     }

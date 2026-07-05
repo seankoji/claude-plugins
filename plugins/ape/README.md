@@ -11,13 +11,18 @@ Imitation is the sincerest form of engineering. Apes techniques from open-source
 | Agent | `agents/gibbon-scout.md` | haiku, `Bash` only — gh search + metadata triage, one axis each, hard 5-search budget. Brachiates fast across many candidates, never stops to read code. |
 | Agent | `agents/orangutan-analyst.md` | sonnet, `Read/Grep/Glob/Bash/Write` — one repo each, budgeted read order, ≤400-word report to disk, 3-line return. Sits alone with one repo until it really understands it. |
 | Agent | `agents/silverback-synthesist.md` | opus, `Read/Glob/Write` — reads every report plus the fingerprint itself, writes the ranked `RECOMMENDATIONS.md`, and returns only the top picks. The troop leader everyone reports back to. |
+| Script | `scripts/init-workspace.sh` | Phase 0 helper — creates the workspace and reports whether a fingerprint already exists, as one command. |
+| Script | `scripts/clone-candidates.sh` | Gate-phase helper — clones the selected candidates in the background and returns only a log tail. |
+| Script | `scripts/search-repos.sh` | gibbon-scout's Phase 1 helper — runs several `gh search` queries as one command. |
+| Script | `scripts/triage-repos.sh` | gibbon-scout's Phase 1 helper — runs several `gh repo view` metadata checks as one command instead of a shell for-loop. |
+| Script | `scripts/readme-peek.sh` | gibbon-scout's Phase 1 helper — peeks at one repo's README as one command instead of a multi-stage pipe chain. |
 
 ## Install
 
 Drop this directory into your plugin marketplace repo and add an entry:
 
 ```json
-{ "name": "ape", "source": "./ape", "description": "Mine OSS repos for transferable techniques" }
+{ "name": "ape", "source": "./ape", "description": "Forage OSS repos for transferable techniques" }
 ```
 
 ## Usage
@@ -30,7 +35,7 @@ Drop this directory into your plugin marketplace repo and add an entry:
 ```
 
 All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
-`fingerprint.md` (cached ≤30 days), `candidates.md`, `repos/`, `reports/*.md`, `RECOMMENDATIONS.md`. Reports persisting on disk means you can re-run synthesis, or argue with a ranking, without re-mining.
+`fingerprint.md` (cached ≤30 days), `candidates.md`, `repos/`, `reports/*.md`, `RECOMMENDATIONS.md`. Reports persisting on disk means you can re-run synthesis, or argue with a ranking, without re-foraging.
 
 ## Design rationale
 
@@ -43,7 +48,12 @@ All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
 
 ## Known wrinkles
 
-- The backgrounded multi-clone is a compound bash command; depending on your permission settings the `Bash(git clone:*)` matcher may still prompt once. Approve it — or pre-allow in project settings.
+- All multi-command bash (workspace init, backgrounded cloning, gibbon-scout's batched `gh search`/`gh repo view` calls and README pipe chain) is bundled into `scripts/*.sh` specifically because Claude Code's permission analyzer can't statically verify a compound/multi-line bash block (a for-loop, a multi-stage pipe, several sequential commands) against an `allowed-tools` prefix — it prompts regardless of whether every sub-command would individually match. A single script invocation with args, by contrast, is a plain matchable command.
+- `allowed-tools` in `commands/forage.md` only pre-approves the orchestrator's own script/`gh` calls. It does **not** extend into `Task`-dispatched subagents (`gibbon-scout`, `orangutan-analyst`, `silverback-synthesist`) — those run under the ambient permission system, so `gibbon-scout`'s calls to `scripts/*.sh` will still prompt once per session unless you add your own rule, e.g. in `.claude/settings.json`:
+  ```json
+  { "permissions": { "allow": ["Bash(/absolute/path/to/.claude/plugins/cache/seankoji/ape/*)"] } }
+  ```
+  Claude Code's permission matcher only supports a *trailing* wildcard on a literal prefix, not a mid-path glob — since the installed version number sits before `scripts/<name>.sh` in the path, the rule has to cover the whole `ape/` cache directory (any version, any file) rather than pinning to one script name.
 - `disable-model-invocation` is a recent command frontmatter key (keeps Claude from auto-firing a 10-agent burn mid-session via the SlashCommand tool). Unknown keys are ignored, so it's harmless on older builds.
 - GitHub's search API budget (~30 req/min) is shared across all three scouts; each is capped at 5 searches and told to back off on 403 rather than hammer.
 - Cowork's plugin tooling treats `commands/` as legacy in favour of `skills/*/SKILL.md`. For Claude Code orchestration with `$ARGUMENTS`, a command is still the right shape; if you ever port this to Cowork, move the `forage.md` body into a SKILL.md.
