@@ -110,7 +110,10 @@ sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
 classify() {
   local report="$1" verdict
   if [ -z "${report//[[:space:]]/}" ]; then echo ERROR; return; fi
-  verdict="$(printf '%s\n' "$report" | grep -m1 -E '^[[:space:]]*VERDICT:' || true)"
+  # Match VERDICT anywhere on its line, not only at line start: macOS `script` sometimes
+  # renders the PTY EOT as the literal 2-char text "^D" (0x5E 0x44 — printable, so the
+  # control-byte sanitize() cannot strip it) prepended to the verdict line.
+  verdict="$(printf '%s\n' "$report" | grep -m1 -iE 'VERDICT:[[:space:]]*(NOT[[:space:]]+)?READY' || true)"
   if [ -z "$verdict" ]; then echo ERROR; return; fi
   if   printf '%s' "$verdict" | grep -qiE 'NOT[[:space:]]+READY'; then echo NOT_READY
   elif printf '%s' "$verdict" | grep -qiE 'READY';                then echo READY
