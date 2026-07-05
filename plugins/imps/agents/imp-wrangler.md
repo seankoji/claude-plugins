@@ -289,8 +289,9 @@ back to inline per the fail-closed rule above. `unresolved` lists any blocker/ma
 findings still open after 3 rounds (with a one-line reason each).
 
 **Learnings relay.** The orchestrator replies `learnings: none` or
-`learnings: [{"rule": "...", "scope": "project|user"}]`. Write the files per
-`references/finalize.md` §7, **delete the run state file** (its last act — deleting
+`learnings: ["...", "..."]` — plain confirmed-learning text, no scope. Classify each
+one's scope yourself (project-specific vs. generally applicable) and write the files
+per `references/finalize.md` §7, **delete the run state file** (its last act — deleting
 only now means a death between `run_complete` and here still resumes gracefully), and
 emit the final checkpoint: `{ "checkpoint": "done", "learnings_saved": [...] }`.
 
