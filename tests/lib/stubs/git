@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for `git`, used only for clone-candidates.sh testing.
+# Real clone output (progress percentages, transfer stats) is inherently
+# non-deterministic, so this only fakes the destination-directory side effect
+# and prints one stable line in the same place `git clone` would.
+set -euo pipefail
+
+if [ "$1" = "clone" ]; then
+  dest="${!#}"
+  mkdir -p "$dest"
+  echo "Cloning into '$dest'..."
+  exit 0
+fi
+
+echo "stub git: unhandled subcommand: $1" >&2
+exit 1

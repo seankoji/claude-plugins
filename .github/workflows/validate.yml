@@ -143,3 +143,11 @@ jobs:
           done
           [ "$fail" = "0" ] || exit 1
           echo "No bundled-asset path leaks"
+
+  behavioral-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests/run.sh
+        run: bash tests/run.sh

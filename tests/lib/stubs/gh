@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for the real `gh` CLI. tests/run.sh prepends this
+# stub's directory to PATH so scripts under test see fixed output instead of
+# making live network calls.
+set -euo pipefail
+
+case "$1" in
+  search)
+    echo '[{"fullName":"acme/example","description":"stub result","stargazersCount":42,"updatedAt":"2026-01-01T00:00:00Z","license":{"key":"mit"},"url":"https://github.com/acme/example"}]'
+    ;;
+  repo)
+    echo '{"isArchived":false,"pushedAt":"2026-01-01T00:00:00Z","diskUsage":1234,"licenseInfo":{"key":"mit"},"description":"stub repo"}'
+    ;;
+  api)
+    # readme-peek.sh: gh api repos/OWNER/REPO/readme -q .content
+    printf 'Stub README\n\nHello from the stub gh command.\n' | base64
+    ;;
+  *)
+    echo "stub gh: unhandled subcommand: $1" >&2
+    exit 1
+    ;;
+esac

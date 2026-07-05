@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "elephant-goldfish",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "source": "./plugins/elephant-goldfish",
       "description": "Self-validating /elephant-goldfish:elephant design-doc command + Gemini goldfish judge."
     },
@@ -31,7 +31,7 @@
     },
     {
       "name": "ape",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./plugins/ape",
       "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, silverback synthesis, all run by one ape-wrangler so the orchestrator only sees the fingerprint and final recommendations."
     }
