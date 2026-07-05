@@ -21,7 +21,7 @@ argument-hint: '<issue numbers...> | {"issues": [...], "holdingBranch": "..."}'
 ---
 
 This is the workflow `/imps:imps` follows when its arguments are entirely GitHub issue
-numbers (see the **Mode detection** section of [`../imps.md`](../imps.md)).
+numbers (see the **Mode detection** section of [`./imps.md`](./imps.md)).
 `/imps:imps 42 43` scouts those issues and drives them through implementation, gates, and a
 persona-review panel to an operator handoff.
 
