@@ -1,15 +1,15 @@
 ---
-description: Mine OSS repos for techniques transferable to this codebase
+description: Forage through OSS repos for techniques transferable to this codebase
 argument-hint: [focus area, e.g. testing | architecture | dx — optional]
 allowed-tools: Task, Read, Write, Glob, Grep, Bash(gh:*), Bash(git clone:*), Bash(mkdir:*), Bash(tree:*), Bash(ls:*), Bash(cat:*), Bash(du:*), Bash(basename:*), Bash(date:*)
 disable-model-invocation: true
 ---
 
-Mine open-source repositories for techniques transferable to this project.
+Forage open-source repositories for techniques transferable to this project.
 
 Focus area: $ARGUMENTS (if empty: architecture, testing, and developer experience broadly).
 
-Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current directory's basename. Create `repos/` and `reports/` under it now. Every phase writes its artifacts here so synthesis can be re-run later without re-mining, and so the user can inspect raw outputs.
+Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current directory's basename. Create `repos/` and `reports/` under it now. Every phase writes its artifacts here so synthesis can be re-run later without re-foraging, and so the user can inspect raw outputs.
 
 Open every phase heading you narrate to the user with its icon below, so a scan of the transcript reads at a glance:
 

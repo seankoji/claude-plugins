@@ -17,7 +17,7 @@ Imitation is the sincerest form of engineering. Apes techniques from open-source
 Drop this directory into your plugin marketplace repo and add an entry:
 
 ```json
-{ "name": "ape", "source": "./ape", "description": "Mine OSS repos for transferable techniques" }
+{ "name": "ape", "source": "./ape", "description": "Forage OSS repos for transferable techniques" }
 ```
 
 ## Usage
@@ -30,7 +30,7 @@ Drop this directory into your plugin marketplace repo and add an entry:
 ```
 
 All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
-`fingerprint.md` (cached ≤30 days), `candidates.md`, `repos/`, `reports/*.md`, `RECOMMENDATIONS.md`. Reports persisting on disk means you can re-run synthesis, or argue with a ranking, without re-mining.
+`fingerprint.md` (cached ≤30 days), `candidates.md`, `repos/`, `reports/*.md`, `RECOMMENDATIONS.md`. Reports persisting on disk means you can re-run synthesis, or argue with a ranking, without re-foraging.
 
 ## Design rationale
 
