@@ -56,7 +56,7 @@ Four entry modes, auto-detected from the argument:
 ### Free-text mode walkthrough
 
 1. `/imps:imps` with a task description (or empty — it will ask).
-2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md`.
+2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md` (to `~/.claude/imps/runs/<slug>.md`, not the repo — see [Runtime state](#runtime-state)).
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
 4. After plan approval, `/imps:imps` dispatches a Workflow and returns control — progress is visible via `/workflows`.
 5. When the Workflow completes, `/imps:imps` hands integration to the **Imp Wrangler** subagent: it merges code branches, drives the Head Imp diff review, runs gates, then — after you approve the push — opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, and applies any fixes. The main session only relays your decisions and can hand the PR to the `/imps:prs` monitor.
@@ -159,6 +159,7 @@ Written to `~/.claude/imps/` on first run — not bundled:
 | Path | Purpose |
 | --- | --- |
 | `~/.claude/imps/runs/<slug>.json` | Per-project dispatch state — resume + integration spine |
+| `~/.claude/imps/runs/<slug>.md` | Per-run `GOAL.md` spine (`/compact`-durable) — lives here, not in the repo, so writing it never needs project-directory permission |
 | `~/.claude/imps/runs/<slug>.prs.json` | Per-PR monitor state for `/imps:prs` |
 | `~/.claude/imps/learnings.md` | Self-tuning `## Active rules` (≤10 bullets) + per-run notes |
 

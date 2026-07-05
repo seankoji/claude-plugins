@@ -171,7 +171,7 @@ agent(
 
    ARTIFACT (fetch it yourself):
    <a file path to Read, or a command to run — e.g.
-    "Read <repo-root>/GOAL.md" or
+    "Read ~/.claude/imps/runs/<slug>.md" or
     "Run: git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'">
 
    Argue AGAINST this. Find wrong task boundaries, mis-routed models, missing deps,
@@ -301,7 +301,9 @@ Do not proceed to step 3 without an explicit yes — this is the gate that preve
 arbitrary shell execution from an unexpected file match.
 
 **3. Build a query-only task table (Type=`query`).**
-Create a GOAL.md in the repo root using the standard spine format (see Phase 2), with:
+Create `GOAL.md` at `~/.claude/imps/runs/<slug>.md` (`slug` = `basename
+"${CLAUDE_PROJECT_DIR:-$(pwd)}"`, `mkdir -p ~/.claude/imps/runs` first) using the
+standard spine format (see Phase 2), with:
 - Task = each unchecked checklist item (label = first 60 chars of the claim)
 - Model = haiku for shell/grep checks; sonnet for items marked `[JUDGMENT — sonnet]`
 - Type = `query` for all (read-only; no code changes)
@@ -415,7 +417,15 @@ dispatch phase inherits — keep it lean. Then:
     `publish` (GitHub artifacts; use `gh api graphql` for Discussions, not REST)
   - **Depends-on** — prerequisite task IDs, or `—` if independent
 
-**Step 2:** Write **`GOAL.md`** to the repo root with this structure:
+**Step 2:** Write **`GOAL.md`** to `~/.claude/imps/runs/${SLUG}.md` — not the repo root,
+so the write never prompts for project-directory access. Derive the slug and ensure the
+directory exists:
+```sh
+mkdir -p ~/.claude/imps/runs
+SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+```
+Step 6 re-derives the same `SLUG` independently (same one-liner) — shell state doesn't
+carry across tool calls. Write with this structure:
 
 ```markdown
 # GOAL — <REFINED_TASK (one line)>
@@ -446,17 +456,20 @@ PR** (see Phase 5 Step 4 — the endstate PR is the default for runs that produc
 changes). Omit it for query/publish-only runs that create no PR, or it stays permanently
 unresolvable.
 
-This file is the `/compact`-durable human-readable spine. The JSON state file
-(`~/.claude/imps/runs/<slug>.json`, written in Step 6) is the **authoritative** task
-table — Phase 3 reads from it, not from GOAL.md. If you hand-edit
-GOAL.md's task table after approval, mirror the change into the state file (or re-run
-planning) or it will not take effect. Update the Status section at each major milestone.
+This file is the `/compact`-durable human-readable spine. It lives outside the project
+on purpose — the plugin's own run state (this file plus the JSON below) never needs
+write access to the calling repo. The JSON state file (`~/.claude/imps/runs/<slug>.json`,
+written in Step 6) is the **authoritative** task table — Phase 3 reads from it, not from
+GOAL.md. If you hand-edit GOAL.md's task table after approval, mirror the change into the
+state file (or re-run planning) or it will not take effect. Update the Status section at
+each major milestone.
 
 **Step 3 — Head Imp review (mandatory):**
 Before calling `ExitPlanMode`, summon the Head Imp (see the Head Imp section above).
-Pass the **absolute path** of `GOAL.md` as the artifact — the Head Imp Reads it itself.
-The Head Imp argues AGAINST the plan — wrong boundaries, mis-routed models, missing
-deps, gaps in the DoD. Fix what the critique exposes before proceeding.
+Pass the **absolute path** of `GOAL.md` (`~/.claude/imps/runs/${SLUG}.md`) as the
+artifact — the Head Imp Reads it itself. The Head Imp argues AGAINST the plan — wrong
+boundaries, mis-routed models, missing deps, gaps in the DoD. Fix what the critique
+exposes before proceeding.
 
 **Step 4:** Call **`ExitPlanMode`** — this IS the approval gate (replaces the old
 Go / Edit / Abandon prompt). If the user requests changes, stay in plan mode and revise
@@ -467,7 +480,8 @@ Go / Edit / Abandon prompt). If the user requests changes, stay in plan mode and
 **Step 6:** Write the durable state file **now** — the task table is final in `GOAL.md`
 and the poll interval was just captured. This makes the run resumable across a `/clear`.
 
-Derive the slug, ensure the directory exists, and write to `~/.claude/imps/runs/${SLUG}.json`:
+Derive the slug (same derivation as Step 2 — do not assume shell state persisted across
+tool calls), ensure the directory exists, and write to `~/.claude/imps/runs/${SLUG}.json`:
 ```sh
 mkdir -p ~/.claude/imps/runs
 SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
