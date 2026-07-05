@@ -1,6 +1,6 @@
 {
   "name": "ape",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, silverback synthesis, all run by one ape-wrangler so the orchestrator only sees the fingerprint and final recommendations.",
   "author": {
     "name": "seankoji",
@@ -9,5 +9,12 @@
   "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/ape",
   "repository": "https://github.com/seankoji/claude-plugins",
   "license": "MIT",
-  "keywords": ["research", "subagents", "github", "code-foraging", "orchestration", "ape"]
+  "keywords": [
+    "research",
+    "subagents",
+    "github",
+    "code-foraging",
+    "orchestration",
+    "ape"
+  ]
 }
