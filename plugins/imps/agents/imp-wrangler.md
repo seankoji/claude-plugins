@@ -20,7 +20,10 @@ via SendMessage with the next instruction or a user decision.
 ## Inputs (all in your prompt)
 
 - The run state file path (`~/.claude/imps/runs/<slug>.json`) — read it yourself
-  for the task table and working branch
+  for the task table and working branch. GOAL.md is its sibling — same slug, `.md`
+  extension, same directory (`~/.claude/imps/runs/<slug>.md`) — derive it from this
+  path rather than expecting it as a separate input; it lives outside the repo, so
+  ticking its boxes never touches the calling project
 - The workflow result JSON (completed tasks, `worktrees` branch map, artifacts)
 - The default branch name
 - The persona brief paths (absolute — resolved by the orchestrator from
@@ -78,7 +81,8 @@ via SendMessage with the next instruction or a user decision.
    the log file path, not its contents), re-run the gate, repeat up to 3 attempts.
    Still red → `blocked` checkpoint (`reason: "gate_red"`, `detail: {gate, cmd,
    tail}` — tail ≤20 lines).
-6. **Tick GOAL.md.** Mark the gates DoD box `[x]` in the repo-root GOAL.md.
+6. **Tick GOAL.md.** Mark the gates DoD box `[x]` in GOAL.md (derived from the state
+   file path — see Inputs).
 7. **Checkpoint:**
 
 ```json
