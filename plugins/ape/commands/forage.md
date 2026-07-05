@@ -20,7 +20,7 @@ Open every phase heading you narrate to the user with its icon below, so a scan 
 |  | Gate — triage / dedupe / rank |
 |  | Cloning candidates |
 | 🦧 | Phase 2 — analysis (orangutan-analyst) |
-| 🦍 | Phase 3 — synthesis |
+| 🦍 | Phase 3 — synthesis (silverback-synthesist) |
 
 ##  Phase 0 — Preflight + fingerprint (you; no subagents)
 
@@ -55,9 +55,8 @@ Add `--sparse` for anything over ~300MB diskUsage. Do NOT delete these clones af
 
 Dispatch ALL analysts in ONE message so they run in parallel — one repo each, 8 maximum. Each gets: the fingerprint, the focus area, its repo path, and its report path (`reports/<name>.md`). The per-analyst read budget and ≤400-word report cap are enforced in the agent definition; your job is only to pass clean inputs.
 
-## 🦍 Phase 3 — Synthesis (you)
+## 🦍 Phase 3 — Synthesis (one silverback-synthesist)
 
-1. Read every `reports/*.md`.
-2. Verify each candidate technique against THIS codebase: already present? incompatible with an existing pattern? Kill anything that matches the already-in-use list — an analyst missing that is a defect worth noting.
-3. Write `RECOMMENDATIONS.md`, ranked. Per technique: what it is — source repo + file:line — the specific modules HERE it would land in — effort (S/M/L) — tradeoffs and risks. Costs and failure modes are mandatory, not just advantages.
-4. Present the top 2–3 inline with a one-paragraph case each, and briefly note near-miss rejections so the user can overrule your ranking.
+Dispatch ONE silverback-synthesist with the workspace path and the focus area. It reads `fingerprint.md`, `candidates.md`, and every `reports/*.md` itself, cross-checks techniques against the already-in-use list and against each other, and writes `RECOMMENDATIONS.md` to the workspace root.
+
+Do NOT read the reports into your own context first — the whole point of this phase being agent-shaped is that the orchestrator never absorbs the raw report bodies. It returns only the top 2–3 recommendations (one paragraph each) plus near-miss notes; present that response to the user directly.
