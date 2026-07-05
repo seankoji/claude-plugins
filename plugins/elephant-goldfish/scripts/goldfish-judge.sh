@@ -90,9 +90,6 @@ AGY_READONLY_FLAG="${AGY_READONLY_FLAG:---sandbox}"
 # bare "/tmp" entry) can leak unrelated project context into the verdict.
 AGY_JUDGE_FLAGS=(--model "$AGY_MODEL" $AGY_READONLY_FLAG --new-project)
 
-[ -f "$DOC" ] || { echo "goldfish-judge: doc not found: $DOC" >&2; exit 1; }
-command -v agy >/dev/null 2>&1 || { echo "goldfish-judge: 'agy' not on PATH" >&2; exit 2; }
-
 # Portable pseudo-TTY (BSD `script` and GNU `script` take different argument orders).
 pty_run() {
   if [ "$(uname)" = "Darwin" ]; then
@@ -119,6 +116,13 @@ classify() {
   elif printf '%s' "$verdict" | grep -qiE 'READY';                then echo READY
   else echo ERROR; fi
 }
+
+# tests/run.sh sources this file with __SOURCED__=1 to unit-test pty_run/sanitize/classify
+# without running the judges below. Everything past this line is the "do the thing" tail.
+${__SOURCED__:+false} : || return 0
+
+[ -f "$DOC" ] || { echo "goldfish-judge: doc not found: $DOC" >&2; exit 1; }
+command -v agy >/dev/null 2>&1 || { echo "goldfish-judge: 'agy' not on PATH" >&2; exit 2; }
 
 # Cold-read isolation via a virtual workspace. We copy ONLY the doc into a fresh scratch
 # dir and run agy sandboxed from inside it, so the judge's workspace contains nothing but

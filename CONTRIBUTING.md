@@ -18,6 +18,7 @@ plugins/<name>/
   scripts/*.sh                      # bundled helpers — must be chmod +x
   README.md                         # user-facing docs
 schemas/                            # JSON Schema contracts for manifests
+tests/                              # behavioral tests for plugins/*/scripts/*.sh
 .github/workflows/validate.yml      # CI gate
 ```
 
@@ -129,6 +130,9 @@ grep -rn --include="*.md" '~/.claude/' plugins/*/commands/
 
 # Check all .sh files are executable
 git ls-files plugins/**/*.sh | xargs ls -la | grep -v '^-rwx'
+
+# Run behavioral tests for plugins/*/scripts/*.sh
+bash tests/run.sh
 ```
 
 CI runs all of these automatically on push. See `.github/workflows/validate.yml` for the full suite.
