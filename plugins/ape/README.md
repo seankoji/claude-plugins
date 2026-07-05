@@ -1,13 +1,14 @@
 # ape
 
-Imitation is the sincerest form of engineering. Apes techniques from open-source GitHub repos into your codebase: parallel gibbon discovery → metadata gate → shallow clones → parallel orangutan deep analysis → silverback synthesis.
+Imitation is the sincerest form of engineering. Apes techniques from open-source GitHub repos into your codebase: parallel gibbon discovery → metadata gate → shallow clones → parallel orangutan deep analysis → silverback synthesis — the whole expedition run by one ape-wrangler subagent so the orchestrator's context only ever sees the fingerprint and the final recommendations.
 
 ## Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Command | `commands/forage.md` | `/ape:forage [focus]` — full orchestration |
+| Command | `commands/forage.md` | `/ape:forage [focus]` — Phase 0 (fingerprint) itself, then hands Phases 1–3 to the ape-wrangler |
 | Command | `commands/clean.md` | `/ape:clean [--all]` — sanctioned deletion of clones (keeps reports) |
+| Agent | `agents/ape-wrangler.md` | sonnet, full tool access — runs discovery, triage/rank, cloning, analysis, and synthesis inside its own context, resumed via SendMessage across two segments (`candidates_ready`, `final`). The field researcher who dispatches the troop and carries the findings out. |
 | Agent | `agents/gibbon-scout.md` | haiku, `Bash` only — gh search + metadata triage, one axis each, hard 5-search budget. Brachiates fast across many candidates, never stops to read code. |
 | Agent | `agents/orangutan-analyst.md` | sonnet, `Read/Grep/Glob/Bash/Write` — one repo each, budgeted read order, ≤400-word report to disk, 3-line return. Sits alone with one repo until it really understands it. |
 | Agent | `agents/silverback-synthesist.md` | opus, `Read/Glob/Write` — reads every report plus the fingerprint itself, writes the ranked `RECOMMENDATIONS.md`, and returns only the top picks. The troop leader everyone reports back to. |
@@ -45,11 +46,12 @@ All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
 - **Context hygiene**: orangutans write full reports to disk and return three lines. Eight analysts returning prose would blow the orchestrator's synthesis budget. Synthesis carries this all the way through: the silverback reads every report itself and hands the orchestrator only a finished top-2–3 pitch — the orchestrator's context never absorbs the ~3,000+ words of raw report bodies that reading eight reports directly would cost.
 - **Parallelism spent where it pays**: one analyst per repo, all dispatched in one message. Claude Code runs parallel tasks up to a cap (~10 in current builds; extras queue), so waves are sized to fit.
 - **Opus for synthesis, not analysis**: the silverback is the one place a wrong call is expensive — it's the last filter before a recommendation reaches the user, weighing convergent/conflicting analyst findings against the fingerprint in one shot with no chance to course-correct downstream. That judgment call gets the strongest model in the pipeline.
+- **One wrangler, two checkpoints**: dispatching 3 scouts, then N analysts, then a synthesist directly from the orchestrator means every one of those dispatch/completion events narrates into the orchestrator's own context — the exact noise the per-agent context-hygiene points above are trying to avoid, just one layer up. The `ape-wrangler` runs Phases 1–3 in its own context and only ever hands back two compact JSON checkpoints (`candidates_ready`, `final`), the same pattern `imps:imp-wrangler` uses for its integration phase.
 
 ## Known wrinkles
 
 - All multi-command bash (workspace init, backgrounded cloning, gibbon-scout's batched `gh search`/`gh repo view` calls and README pipe chain) is bundled into `scripts/*.sh` specifically because Claude Code's permission analyzer can't statically verify a compound/multi-line bash block (a for-loop, a multi-stage pipe, several sequential commands) against an `allowed-tools` prefix — it prompts regardless of whether every sub-command would individually match. A single script invocation with args, by contrast, is a plain matchable command.
-- `allowed-tools` in `commands/forage.md` only pre-approves the orchestrator's own script/`gh` calls. It does **not** extend into `Task`-dispatched subagents (`gibbon-scout`, `orangutan-analyst`, `silverback-synthesist`) — those run under the ambient permission system, so `gibbon-scout`'s calls to `scripts/*.sh` will still prompt once per session unless you add your own rule, e.g. in `.claude/settings.json`:
+- `allowed-tools` in `commands/forage.md` only pre-approves the orchestrator's own Phase 0 script/`gh` calls. It does **not** extend into the `Task`-dispatched `ape-wrangler` or the agents it in turn dispatches (`gibbon-scout`, `orangutan-analyst`, `silverback-synthesist`, `clone-candidates.sh`) — those run under the ambient permission system, so they'll still prompt once per session unless you add your own rule, e.g. in `.claude/settings.json`:
   ```json
   { "permissions": { "allow": ["Bash(/absolute/path/to/.claude/plugins/cache/seankoji/ape/*)"] } }
   ```

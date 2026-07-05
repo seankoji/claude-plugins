@@ -1,7 +1,7 @@
 ---
 description: Forage through OSS repos for techniques transferable to this codebase
 argument-hint: [focus area, e.g. testing | architecture | dx — optional]
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(gh:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh:*), Bash(tree:*), Bash(ls:*), Bash(cat:*), Bash(du:*)
+allowed-tools: Task, SendMessage, Read, Write, Glob, Grep, Bash(gh:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh:*), Bash(tree:*), Bash(ls:*), Bash(cat:*), Bash(du:*)
 disable-model-invocation: true
 ---
 
@@ -16,11 +16,7 @@ Open every phase heading you narrate to the user with its icon below, so a scan 
 |  | Phase |
 |---|---|
 |  | Phase 0 — preflight + fingerprint |
-| 🐒 | Phase 1 — discovery (gibbon-scout) |
-|  | Gate — triage / dedupe / rank |
-|  | Cloning candidates |
-| 🦧 | Phase 2 — analysis (orangutan-analyst) |
-| 🦍 | Phase 3 — synthesis (silverback-synthesist) |
+| 🧭 | Phases 1–3 — expedition (ape-wrangler) |
 
 ##  Phase 0 — Preflight + fingerprint (you; no subagents)
 
@@ -29,32 +25,56 @@ Open every phase heading you narrate to the user with its icon below, so a scan 
 3. If the script reported an existing `fingerprint.md` and its timestamp is under 30 days old, reuse it. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
-## 🐒 Phase 1 — Discovery (3 gibbon-scout agents)
+## 🧭 Phases 1–3 — Expedition (ape-wrangler)
 
-Dispatch all three in ONE message so they run in parallel. Each gibbon gets the fingerprint, the focus area, and exactly ONE axis:
+Discovery, triage/rank, cloning, analysis, and synthesis all run inside ONE `ape-wrangler`
+subagent — none of the per-scout dispatches, clone progress, or per-analyst completions
+should reach your context. Load `SendMessage` first (`ToolSearch: "select:SendMessage"`) —
+every checkpoint after the initial spawn is answered through it, and the wrangler keeps its
+context across resumes.
 
-- **Axis A** — same domain
-- **Axis B** — same stack/architecture in adjacent domains
-- **Axis C** — curated sources: awesome-lists, "production-grade <X>" indexes, org accounts known for the domain
-
-##  Gate (you)
-
-Merge scout results. Dedupe. Drop archived, stale (>12 months), or licence-problematic candidates. Rank by expected learning value **against the fingerprint's weaknesses**, not by stars. Select the top 6 (hard cap 8). Write `candidates.md` recording the ranking, plus what you rejected and why.
-
- Clone the selection with ONE call to `${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh` — a single preapprovable command that clones everything in the background, waits, and reports only the tail of a log instead of raw clone progress spilling into the conversation:
+**Spawn synchronously** via the Agent tool:
 
 ```
-${CLAUDE_PLUGIN_ROOT}/scripts/clone-candidates.sh <workspace-dir> <url1> <name1> <sparse1:0|1> <url2> <name2> <sparse2:0|1> ...
+Agent(
+  subagent_type: 'ape-wrangler',
+  prompt: `Run Segment A per your brief.
+    Fingerprint: <the full fingerprint content>
+    Focus area: <focus area, or "broad" if empty>
+    Workspace: <workspace-dir>`
+)
 ```
 
-Pass `1` for the sparse flag on anything over ~300MB diskUsage, `0` otherwise. Do NOT delete these clones afterwards — `/ape:clean` is the only sanctioned deletion path.
+Keep the `agentId` from the spawn — you resume this same wrangler for Segment B.
 
-## 🦧 Phase 2 — Analysis (one orangutan-analyst per repo)
+**Agent-type fallback:** if `ape-wrangler` is not registered in this session, spawn
+`general-purpose` with the full body of `agents/ape-wrangler.md` prepended to the prompt. If
+subagents are unavailable entirely, execute that file's protocol inline in this session (same
+steps, no offload) and note the degradation.
 
-Dispatch ALL analysts in ONE message so they run in parallel — one repo each, 8 maximum. Each gets: the fingerprint, the focus area, its repo path, and its report path (`reports/<name>.md`). The per-analyst read budget and ≤400-word report cap are enforced in the agent definition; your job is only to pass clean inputs.
+**Answering checkpoints:**
 
-## 🦍 Phase 3 — Synthesis (one silverback-synthesist)
+- **`candidates_ready`** — narrate it to the user in 1–2 sentences (candidate count, names,
+  disk footprint from the checkpoint fields), then `SendMessage` the wrangler `continue` to
+  start analysis + synthesis.
+- **`blocked` (`reason: "no_candidates"`)** — nothing survived triage. Tell the user and stop;
+  there is no resume verb for this one.
+- **`blocked` (`reason: "clone_failed"`)** — surface the `detail.failed` list to the user;
+  once they've addressed the cause (auth, rate-limit, disk space), `SendMessage` the same
+  wrangler `retry clone` — per its brief, it re-clones only the failed repos and re-checks.
+- **`final`** — this is the expedition's deliverable, not a status update. Present the
+  `recommendations` field to the user directly, verbatim — do not re-summarize it, and do not
+  read `candidates.md` or `reports/*.md` yourself to "check" it. That re-absorbs exactly what
+  handing this off was meant to avoid.
 
-Dispatch ONE silverback-synthesist with the workspace path and the focus area. It reads `fingerprint.md`, `candidates.md`, and every `reports/*.md` itself, cross-checks techniques against the already-in-use list and against each other, and writes `RECOMMENDATIONS.md` to the workspace root.
+**Wrangler death mid-segment:** if `SendMessage` to the wrangler errors, or it returns
+malformed/non-JSON output, re-spawn a fresh `ape-wrangler`:
 
-Do NOT read the reports into your own context first — the whole point of this phase being agent-shaped is that the orchestrator never absorbs the raw report bodies. It returns only the top 2–3 recommendations (one paragraph each) plus near-miss notes; present that response to the user directly.
+- **Died before `candidates_ready`** (mid Segment A) — re-spawn with the original Segment A
+  prompt. This re-burns each gibbon-scout's search budget and may surface a different
+  candidate set than the lost attempt — note that to the user, it isn't silent.
+- **Died after `candidates_ready`, before `final`** (mid Segment B) — re-spawn with just
+  `Run Segment B per your brief. Workspace: <workspace-dir>`. Its brief has it re-read
+  `fingerprint.md` and `candidates.md` from disk itself, so nothing else needs re-supplying.
+
+If the re-spawn also fails, fall back to executing the protocol inline.
