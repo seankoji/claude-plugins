@@ -73,8 +73,10 @@ Read `<plugin-root>/references/dispatch.md` and follow it exactly. In outline:
    carrying each imp's structured JSON.
 4. `segment: "monitor"` — wait via Monitor (timeout = `poll_interval_seconds`),
    writing a heartbeat (`last_heartbeat`, `tasks_done`, incremental `worktrees` /
-   `artifacts`) each wake; launch the next stage as its deps complete. Past
-   `max_dispatch_hours` → `blocked · dispatch_timeout`.
+   `artifacts`) each wake; launch the next stage as its deps complete. A failed imp
+   fails its not-yet-dispatched transitive dependents — never dispatch onto a failed
+   base, and never wait out the timeout on a drained pipeline (go straight to triage).
+   Past `max_dispatch_hours` → `blocked · dispatch_timeout`.
 5. When the last stage completes: consolidate the state file, triage failed tasks
    against GOAL.md's DoD — blocking failures → `blocked · imps_failed`. Assemble the
    dispatch summary for the `gates_green` checkpoint's `dispatch` block.

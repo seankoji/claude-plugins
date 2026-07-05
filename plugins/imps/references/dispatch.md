@@ -107,6 +107,15 @@ orchestrator cannot see them; your heartbeat is the only progress signal anyone 
   re-arm.
 - When every imp of the current stage has completed, launch the next stage (§3). After
   the last stage, go to §5.
+- **Dependency-failure propagation**: a `failed` imp does NOT count as a satisfied
+  dependency. The moment an imp returns `"status": "failed"`, mark every
+  not-yet-dispatched task that transitively depends on it as failed too
+  (`notes: "dependency #<id> failed"`) — never dispatch onto a failed base. If that
+  cascade leaves nothing still running and nothing dispatchable, do not sit out the
+  timeout valve — jump straight to §5 triage (`imps_failed`). List cascade-failed
+  dependents alongside the root failure in the `failed` array so the operator can name
+  them in a `retry tasks` verb; retrying a root task whose retry succeeds makes its
+  cascade-failed dependents eligible for retry as well.
 - **Timeout valve**: if elapsed time since `dispatched_at` exceeds
   `max_dispatch_hours` (state file, default 6), stop waiting and emit
   `blocked · dispatch_timeout` with `{ elapsed, tasks_done, pending }`. Resume verbs:
@@ -131,9 +140,11 @@ When the last stage completes:
 
 Assemble the dispatch summary for the `gates_green` checkpoint's `dispatch` block —
 elapsed since `dispatched_at`, `model_counts` tallied from the task table, and
-`tokens_spent` totalled from the per-imp usage figures in their completion results
-(best-effort; null if unavailable), plus the `artifacts` list. The orchestrator never
-saw any of this — the checkpoint is where it learns what ran.
+`tokens_spent` totalled from the usage metadata the harness attaches to each imp's
+completion (the `subagent_tokens` figure in the task-notification / Agent tool result —
+NOT the imp's own JSON, which carries no usage field; null if the metadata is absent),
+plus the `artifacts` list. The orchestrator never saw any of this — the checkpoint is
+where it learns what ran.
 
 Then set `segment: "integrate"` and proceed directly into Segment A. **No checkpoint is
 emitted between your spawn and Segment A's outcome** unless something above blocked.
@@ -170,7 +181,9 @@ instead:
    and gates re-run); `publish_finalize` → Segment B+C from the top, honoring every
    state-file marker (`pr`, `verdicts`, `discussion_comment_url` — see your brief);
    `complete` → the run already finalized: re-emit `run_complete` from what the state
-   file holds, noting the recovery.
+   file holds, noting the recovery. (The orchestrator re-running its `run_complete`
+   handling in this window is expected and safe: `/imps:prs` re-activation self-dedupes
+   off the same `.prs.json`, and the learnings were genuinely never saved.)
 
 ## Protocol notes (hard-won)
 
