@@ -199,12 +199,21 @@ before invoking prompt-builder.
 
 Use the **Skill tool**:
 - `skill`: `prompt-builder:prompt-builder`
-- `args`: the raw task description alone (no framing preamble) — `<DISCUSSION_TASK_SEED>`
-  in discussion-seed mode, otherwise `$ARGUMENTS` or the collected answer.
+- `args`: `MODE: brief-only` as the first line, then a blank line, then the raw task
+  description alone (no framing preamble) — `<DISCUSSION_TASK_SEED>` in
+  discussion-seed mode, otherwise `$ARGUMENTS` or the collected answer. This sentinel
+  opts into prompt-builder's own embedded/brief-only mode (defined in its command
+  file), which skips the intro banner, the one-off-vs-reusable reframe, framework
+  selection, and the full deliverable template — no steering needed on our side, and
+  no diagnosis logic duplicated here. If the installed `prompt-builder` predates this
+  mode (ignores the sentinel and runs its full standalone flow), steer once after its
+  first response: "Skip model selection, test cases, and save-path guidance — I just
+  need 1–2 sharp sentences I can decompose into parallel agents."
 
-  After prompt-builder's first response, steer if needed: "Skip model selection, test cases, and save-path guidance — I just need 1–2 sharp sentences I can decompose into parallel agents."
-
-When the user confirms a refined description, store it as `<REFINED_TASK>`. Use `<REFINED_TASK>` in place of `$ARGUMENTS` for all subsequent phases.
+Take prompt-builder's `Refined brief: ...` line as `<REFINED_TASK>` directly. If it
+instead ran an interactive session (see fallback above), wait for the user to confirm a
+refined description before storing it as `<REFINED_TASK>`. Use `<REFINED_TASK>` in
+place of `$ARGUMENTS` for all subsequent phases.
 
 ---
 
