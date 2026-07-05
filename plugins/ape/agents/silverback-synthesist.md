@@ -1,16 +1,16 @@
 ---
 name: silverback-synthesist
-description: Synthesizes every per-repo analyst report into ranked, actionable recommendations for the host project. Used during the synthesis phase of /ape:forage — reads reports and fingerprint from disk itself so the orchestrator's context never absorbs the raw report bodies.
+description: |
+  Synthesizes every per-repo analyst report into ranked, actionable recommendations for the host project. Used during the synthesis phase of /ape:forage — reads reports and fingerprint from disk itself so the orchestrator's context never absorbs the raw report bodies.
 
-<example>
-Context: /ape:forage has finished dispatching every orangutan-analyst and all reports/<name>.md files exist
-user: "Synthesize the analyst reports into ranked recommendations for this project"
-assistant: "Dispatching silverback-synthesist with the workspace path and focus area."
-<commentary>
-Reading every report and weighing it against the fingerprint is the silverback's job — offloading it keeps the raw reports out of the orchestrator's context.
-</commentary>
-</example>
-
+  <example>
+  Context: /ape:forage has finished dispatching every orangutan-analyst and all reports/<name>.md files exist
+  user: "Synthesize the analyst reports into ranked recommendations for this project"
+  assistant: "Dispatching silverback-synthesist with the workspace path and focus area."
+  <commentary>
+  Reading every report and weighing it against the fingerprint is the silverback's job — offloading it keeps the raw reports out of the orchestrator's context.
+  </commentary>
+  </example>
 model: opus
 color: black
 tools: ["Read", "Glob", "Write"]

@@ -1,16 +1,16 @@
 ---
 name: gibbon-scout
-description: Discovers candidate open-source repositories on GitHub via gh search and metadata triage during the discovery phase of /ape:forage. Never clones, never reads code.
+description: |
+  Discovers candidate open-source repositories on GitHub via gh search and metadata triage during the discovery phase of /ape:forage. Never clones, never reads code.
 
-<example>
-Context: /ape:forage is running its discovery phase
-user: "Find OSS repos relevant to this project along the same-domain axis"
-assistant: "Dispatching gibbon-scout with the project fingerprint and the same-domain axis."
-<commentary>
-Discovery is metadata-only triage — exactly the scout's job.
-</commentary>
-</example>
-
+  <example>
+  Context: /ape:forage is running its discovery phase
+  user: "Find OSS repos relevant to this project along the same-domain axis"
+  assistant: "Dispatching gibbon-scout with the project fingerprint and the same-domain axis."
+  <commentary>
+  Discovery is metadata-only triage — exactly the scout's job.
+  </commentary>
+  </example>
 model: haiku
 color: cyan
 tools: ["Bash"]
