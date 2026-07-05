@@ -206,9 +206,14 @@ Before anything else:
 2. Check whether `~/.claude/imps/runs/<slug>.json` exists.
 
 State files from other projects are independent — only the current project's file matters.
+Archived files (`<slug>.archived-*.json`, see **New** below) are not "the current project's
+file" for this check — only the canonical `<slug>.json` triggers the guard.
 
 If the current project's file exists, read it and check the `phase` field.
 If the `phase` field is absent (written by an older revision), treat it as `"dispatched"`.
+Also check whether the run described in the file looks unrelated to what the user is
+asking for now (different task, different feature area) — a stale run from a past,
+finished task is the common case this guard exists for, not just a same-task interruption.
 
 **Case A — `phase: "dispatch_pending"` (plan approved, not yet dispatched):**
 
@@ -230,6 +235,14 @@ Print a one-block summary:
   than re-reading repo files into this context.
   Skip Phases 0/1/2 entirely, jump straight to **Phase 3 dispatch**
   (rebase → update state → launch Workflow).
+- **New** — start the task the user is asking for now, and leave the existing run
+  completely alone: do NOT delete, edit, or touch `~/.claude/imps/runs/<slug>.json` in
+  any way. Instead, move it out of the canonical slot so it stops colliding with the new
+  run: `mv ~/.claude/imps/runs/<slug>.json ~/.claude/imps/runs/<slug>.archived-$(date +%Y%m%dT%H%M%S).json`.
+  This is a rename, not an edit — the archived file is byte-for-byte the old state, so
+  nothing about the old run is lost; if the user later wants it back they can `mv` it
+  back to `<slug>.json` and re-invoke `/imps` to resume it. Then proceed through Phases
+  0–2 normally for the new task.
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh
 
 **Case B — `phase: "dispatched"` or absent (workflow running, completed, or pre-change file):**
@@ -245,6 +258,16 @@ Print a one-block summary:
 
 - **Resume** — skip discovery and re-enter Phase 3 dispatch against the existing run
   (progress visible via `/workflows`)
+- **New** — start the task the user is asking for now, and leave the existing run
+  completely alone: do NOT delete, edit, or touch `~/.claude/imps/runs/<slug>.json` in
+  any way. Instead, move it out of the canonical slot so it stops colliding with the new
+  run: `mv ~/.claude/imps/runs/<slug>.json ~/.claude/imps/runs/<slug>.archived-$(date +%Y%m%dT%H%M%S).json`.
+  This is a rename, not an edit — the archived file is byte-for-byte the old state, so
+  nothing about the old run is lost; if the user later wants it back they can `mv` it
+  back to `<slug>.json` and re-invoke `/imps` to resume it. Its Workflow run (if still
+  active) keeps running independently in the background either way — this only affects
+  which state file `/imps` tracks as canonical. Then proceed through Phases 0–2 normally
+  for the new task.
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh
 
 Do not proceed past this check without an answer.
