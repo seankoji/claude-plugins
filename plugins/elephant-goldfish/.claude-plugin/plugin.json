@@ -1,6 +1,6 @@
 {
   "name": "elephant-goldfish",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Self-validating /elephant-goldfish:elephant design-doc command + Gemini goldfish judge.",
   "author": {
     "name": "seankoji",
