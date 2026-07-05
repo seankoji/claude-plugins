@@ -411,7 +411,8 @@ notification. You relay operator decisions back via `SendMessage` to the wrangle
 `agentId`, using its resume verbs **verbatim** (`resolved, continue` ·
 `retry <gate>: <guidance>` · `skip <gate>` · `reconciled, continue` ·
 `retry tasks #N,#M: <guidance>` · `skip tasks #N,#M` · `wait <hours>` ·
-`integrate partial` · `PR: yes` · `PR: no` · `learnings: <json|none>` · `abort`).
+`integrate partial` · `PR: yes` · `PR: yes, no-post` · `PR: no` ·
+`learnings: <json|none>` · `abort`).
 
 **Wrangler death:** if SendMessage errors, the wrangler returns malformed/non-JSON
 output, or the state-file heartbeat goes stale mid-run, do not guess at the tree state —
@@ -444,19 +445,36 @@ operator gate:
 **Push & PR decision.** The persona panel posts its findings as comments on a PR
 thread, so the PR must exist first. This is the correct moment: branches are merged,
 the Head Imp reviewed the diff, gates are green — and nothing has been pushed yet.
+
+**Self-review disclosure.** If the `gates_green` checkpoint's `head_imp.amendments` is
+non-zero, this session wrote code directly into the diff during the Head Imp fix-loop —
+say so before asking below. Persona posting through each's dedicated GitHub App identity
+(`commands/issue-mode.md § Personas → Posting identity`) is attribution/audit-trail
+only; it is not an independent review of content this same session authored, and
+pushing/PR-creation is a separate authorization from letting personas post live GitHub
+reviews — one does not imply the other.
+
 Ask with **AskUserQuestion**:
 - **question**: `"Push this branch and open the endstate PR for review?"`
 - **header**: `"Push & PR?"`
 - **options**:
-  1. `Push & open PR` — the wrangler pushes the branch, opens a draft PR (flipped to
-     ready at finalize), runs the persona panel on that PR thread, and activates the
-     handoff for the `/imps:prs` monitor.
-  2. `Not yet` — no push, no PR. The persona panel returns its findings in
+  1. `Push & open PR, personas post live reviews` — the wrangler pushes the branch,
+     opens a draft PR (flipped to ready at finalize), and personas post real GitHub
+     reviews on that thread under their own identities. Activates the handoff for the
+     `/imps:prs` monitor.
+  2. `Push & open PR, findings only (no persona posts)` — same push/PR as above, but no
+     persona calls `persona-post.sh`; every verdict returns in
+     `run_complete.findings_inline` for you to read or post yourself. Use this when the
+     disclosure above applies and you'd rather a human than a bot identity be the first
+     to put a verdict on the record.
+  3. `Not yet` — no push, no PR. The persona panel returns its findings in
      `run_complete.findings_inline`; the branch stays local and no PR monitor starts.
 
 Opening the endstate PR is the default for free-text runs that produced code changes —
-only `Not yet` skips it. Relay exactly `PR: yes` or `PR: no`. The wrangler then runs
-the PR + persona panel + fix loop + finalize as one segment.
+only `Not yet` skips it. Option 2 exists specifically for the self-review case named in
+the disclosure above — offer it deliberately, not as a throwaway third choice. Relay
+exactly `PR: yes`, `PR: yes, no-post`, or `PR: no`. The wrangler then runs the PR +
+persona panel + fix loop + finalize as one segment.
 
 **`run_complete`** — the run is done (PR ready, panel + fix loop finished, Discussion
 comment posted; the wrangler deletes the state file at `done`). In order:
@@ -533,11 +551,15 @@ in the prompts above stand for those current IDs.
 - Never `git merge --force`, `git reset --hard`, or `git push` without explicit user
   instruction — **exceptions**: (1) after plan approval the Imp Wrangler dispatches
   the imps, rebases the working branch, and merges imp branches autonomously, and it
-  pushes + opens the endstate PR only after the operator's `Push & open PR` answer is
-  relayed to it (pushing fix-loop commits to that same PR branch); (2) the `/imps:prs`
-  PR monitor pushes fix commits to the PR branch autonomously once activated.
+  pushes + opens the endstate PR only after one of the operator's `Push & open PR ...`
+  answers is relayed to it (pushing fix-loop commits to that same PR branch); (2) the
+  `/imps:prs` PR monitor pushes fix commits to the PR branch autonomously once activated.
 - Never create GitHub PRs without user instruction — the Push & PR gate in Phase 4 is
   that instruction for the endstate PR.
+- Persona live-posting is a separate authorization from push/PR creation, not implied by
+  it — only the `Push & open PR, personas post live reviews` answer (relayed as
+  `PR: yes`) authorizes personas to post real GitHub reviews; `PR: yes, no-post` and
+  `PR: no` both forbid it.
 - If a task touches a production system, pause and confirm before that task runs.
 - The wrangler owns the run state file and `.prs.json` from handover onward; this
   session's last state-file write is Phase 2 Step 6.
