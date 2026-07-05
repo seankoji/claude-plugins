@@ -121,10 +121,12 @@ PR branch issues, agent failures, checkpoint-protocol friction. Phrase each as a
 worked, no surprises) → `learnings_candidates: []`.
 
 The orchestrator replies `learnings: none` (→ emit
-`{ "checkpoint": "done", "learnings_saved": [] }`) or
-`learnings: [{"rule": "...", "scope": "project|user"}]`. For each confirmed learning
-append to the scoped file — `scope: "project"` → `.claude/imps/learnings.md` in the repo
-root; `scope: "user"` → `~/.claude/imps/learnings.md` — using this format:
+`{ "checkpoint": "done", "learnings_saved": [] }`) or `learnings: ["...", "..."]` — plain
+confirmed-learning text, no scope. Classify each one's scope yourself:
+**project-specific** (mentions this repo's stack, commands, file paths, or conventions)
+→ `.claude/imps/learnings.md` in the repo root; **generally applicable** (model routing,
+task boundaries, agent/dispatch patterns, checkpoint protocol) → stack-agnostic →
+`~/.claude/imps/learnings.md`. Append each to its scoped file using this format:
 
 ```markdown
 ## Active rules
@@ -143,7 +145,7 @@ file's Active rules instead of appending a new run note. Keep each file's Active
 ≤10 bullets.
 
 Finally, delete the run state file — `rm ~/.claude/imps/runs/<slug>.json` — and emit
-the final checkpoint:
+the final checkpoint, including the scope you classified each learning into:
 `{ "checkpoint": "done", "learnings_saved": [{"rule": "...", "scope": "..."}] }`.
 (The GOAL.md spine at `~/.claude/imps/runs/<slug>.md` stays — it is the human-readable
 record.)

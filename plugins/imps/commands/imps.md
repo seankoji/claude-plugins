@@ -511,18 +511,14 @@ comment posted; the wrangler deletes the state file at `done`). In order:
    - **options**: one option per candidate (each already phrased as a rule to apply
      next time)
 
-   If any were confirmed, immediately follow with a second **AskUserQuestion**
-   (`multiSelect: true`):
-   - **question**: `"Which of these are project-specific? (the rest will be saved globally)"`
-   - **header**: `"Scope"`
-   - **options**: one option per confirmed learning (same text)
-
    Relay the outcome verbatim as one message:
-   `learnings: [{"rule": "<text>", "scope": "project"}, {"rule": "<text>", "scope": "user"}]`
+   `learnings: ["<text 1>", "<text 2>"]`
    — or `learnings: none` if nothing was confirmed (or there were no candidates; still
-   send it so the wrangler can close out).
+   send it so the wrangler can close out). The wrangler classifies each confirmed
+   learning's scope (project vs. user) itself — no scope question needed.
 
-**`done`** — the wrangler wrote the learnings files. Print the closing line:
+**`done`** — the wrangler wrote the learnings files. Print the closing line using the
+scope each learning was auto-classified into (from `learnings_saved`):
 ```
 Learnings saved: "<rule 1>" [project] · "<rule 2>" [user]
 ```
