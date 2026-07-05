@@ -1,9 +1,9 @@
 ---
 name: orangutan-analyst
-description: Deep-reads ONE already-cloned repository to extract techniques transferable to the host project, grounded in file:line evidence. Used during the analysis phase of /ape:mine.
+description: Deep-reads ONE already-cloned repository to extract techniques transferable to the host project, grounded in file:line evidence. Used during the analysis phase of /ape:forage.
 
 <example>
-Context: /ape:mine has cloned candidate repos and is dispatching analysis
+Context: /ape:forage has cloned candidate repos and is dispatching analysis
 user: "Analyse ~/tmp/repo-research/myproj/repos/some-repo against the fingerprint"
 assistant: "Dispatching orangutan-analyst for some-repo with the fingerprint, focus area, and report path."
 <commentary>

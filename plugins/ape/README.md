@@ -6,7 +6,7 @@ Imitation is the sincerest form of engineering. Apes techniques from open-source
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Command | `commands/mine.md` | `/ape:mine [focus]` — full orchestration |
+| Command | `commands/forage.md` | `/ape:forage [focus]` — full orchestration |
 | Command | `commands/clean.md` | `/ape:clean [--all]` — sanctioned deletion of clones (keeps reports) |
 | Agent | `agents/gibbon-scout.md` | haiku, `Bash` only — gh search + metadata triage, one axis each, hard 5-search budget. Brachiates fast across many candidates, never stops to read code. |
 | Agent | `agents/orangutan-analyst.md` | sonnet, `Read/Grep/Glob/Bash/Write` — one repo each, budgeted read order, ≤400-word report to disk, 3-line return. Sits alone with one repo until it really understands it. |
@@ -22,8 +22,8 @@ Drop this directory into your plugin marketplace repo and add an entry:
 ## Usage
 
 ```
-/ape:mine testing        # focus the run
-/ape:mine                # broad: architecture, testing, DX
+/ape:forage testing        # focus the run
+/ape:forage                # broad: architecture, testing, DX
 /ape:clean               # delete clones, keep fingerprint + reports
 /ape:clean --all         # full wipe
 ```
@@ -44,5 +44,5 @@ All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
 - The backgrounded multi-clone is a compound bash command; depending on your permission settings the `Bash(git clone:*)` matcher may still prompt once. Approve it — or pre-allow in project settings.
 - `disable-model-invocation` is a recent command frontmatter key (keeps Claude from auto-firing a 10-agent burn mid-session via the SlashCommand tool). Unknown keys are ignored, so it's harmless on older builds.
 - GitHub's search API budget (~30 req/min) is shared across all three scouts; each is capped at 5 searches and told to back off on 403 rather than hammer.
-- Cowork's plugin tooling treats `commands/` as legacy in favour of `skills/*/SKILL.md`. For Claude Code orchestration with `$ARGUMENTS`, a command is still the right shape; if you ever port this to Cowork, move the `mine.md` body into a SKILL.md.
+- Cowork's plugin tooling treats `commands/` as legacy in favour of `skills/*/SKILL.md`. For Claude Code orchestration with `$ARGUMENTS`, a command is still the right shape; if you ever port this to Cowork, move the `forage.md` body into a SKILL.md.
 - Discovery decays: rerunning next quarter tends to resurface the same repos. The durable asset is the analyst + fingerprint pattern; refresh axis C's curated sources rather than adding scouts.
