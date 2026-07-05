@@ -25,8 +25,8 @@ Extract 1–3 techniques from this repo that would transfer to the fingerprinted
 **Read budget — in this order, stop as soon as you have enough:**
 
 1. README, then anything under `docs/`, `ARCHITECTURE*`, ADR directories
-2. `tree -L 2 -I 'node_modules|dist|build|vendor|.git'` — Bash is for read-only structure commands (tree/ls/wc) only: no git operations, no network, no writes outside your report path
-3. Targeted dives ONLY into directories where a transferable technique looks plausible
+2. `tree -L 2 -I 'node_modules|dist|build|vendor|.git' <repo-path>` — Bash is for read-only structure commands (tree/ls/wc) only: no git operations, no network, no writes outside your report path. Pass `<repo-path>` as an argument, never `cd <repo-path> && <cmd>` — a `cd`-then-chain compound triggers a manual approval prompt every time (path-traversal guardrail); a single command with the path as an argument does not
+3. Targeted dives ONLY into directories where a transferable technique looks plausible — use the **Grep** and **Glob** tools for content and filename search, not Bash `grep`/`find`: they're already granted to you, never need a `cd`, and give cleaner auto-truncated output than a hand-rolled pipe chain
 4. Never read: vendored code, lockfiles, generated files, snapshots/fixtures, minified assets
 
 **Honesty requirements:**

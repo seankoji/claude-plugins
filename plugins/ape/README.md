@@ -6,29 +6,36 @@ Imitation is the sincerest form of engineering. Apes techniques from open-source
 
 ```mermaid
 flowchart TD
-    A["Phase 0 — Preflight + fingerprint<br/>(you; no subagents)"] --> B
+    A["Phase 0 — Preflight + fingerprint<br/>(orchestrator; no subagents)"] --> W
 
-    subgraph B["🐒 Phase 1 — Discovery (parallel)"]
-        direction LR
-        B1["gibbon-scout<br/>Axis A: same domain"]
-        B2["gibbon-scout<br/>Axis B: adjacent stack"]
-        B3["gibbon-scout<br/>Axis C: curated sources"]
+    subgraph W["ape-wrangler — Phases 1-3 run in its own context"]
+        direction TD
+
+        subgraph P1["🐒 Phase 1 — Discovery (parallel)"]
+            direction LR
+            B1["gibbon-scout<br/>Axis A: same domain"]
+            B2["gibbon-scout<br/>Axis B: adjacent stack"]
+            B3["gibbon-scout<br/>Axis C: curated sources"]
+        end
+
+        P1 --> C["Gate — triage, dedupe, rank<br/>(top 6, hard cap 8)"]
+        C --> D["Clone + verify candidates"]
+        D --> CK1["checkpoint: candidates_ready"]
+
+        subgraph P2["🦧 Phase 2 — Analysis (parallel, one per repo)"]
+            direction LR
+            E1["orangutan-analyst<br/>repo 1"]
+            E2["orangutan-analyst<br/>repo 2"]
+            E3["orangutan-analyst<br/>…"]
+            E4["orangutan-analyst<br/>repo N"]
+        end
+
+        P2 --> F["🦍 Phase 3 — Synthesis<br/>silverback-synthesist"]
+        F --> CK2["checkpoint: final"]
     end
 
-    B --> C["Gate — triage, dedupe, rank<br/>(you; top 6, hard cap 8)"]
-    C --> D["Clone candidates<br/>(one backgrounded script call)"]
-    D --> E
-
-    subgraph E["🦧 Phase 2 — Analysis (parallel, one per repo)"]
-        direction LR
-        E1["orangutan-analyst<br/>repo 1"]
-        E2["orangutan-analyst<br/>repo 2"]
-        E3["orangutan-analyst<br/>…"]
-        E4["orangutan-analyst<br/>repo N"]
-    end
-
-    E --> F["🦍 Phase 3 — Synthesis<br/>silverback-synthesist"]
-    F --> G["RECOMMENDATIONS.md<br/>+ top 2-3 picks returned to you"]
+    CK1 -. "SendMessage: continue" .-> P2
+    CK2 --> G["RECOMMENDATIONS.md<br/>+ top 2-3 picks returned to you"]
 ```
 
 ## Components
@@ -81,6 +88,7 @@ All artifacts land in `~/tmp/repo-research/<project-dir-name>/`:
 
 - All multi-command bash (workspace init, backgrounded cloning, gibbon-scout's batched `gh search`/`gh repo view` calls and README pipe chain) is bundled into `scripts/*.sh` specifically because Claude Code's permission analyzer can't statically verify a compound/multi-line bash block (a for-loop, a multi-stage pipe, several sequential commands) against an `allowed-tools` prefix — it prompts regardless of whether every sub-command would individually match. A single script invocation with args, by contrast, is a plain matchable command.
 - `allowed-tools` in `commands/forage.md` only pre-approves the orchestrator's own Phase 0 script/`gh` calls. It does **not** extend into the `Task`-dispatched `ape-wrangler` or the agents it in turn dispatches (`gibbon-scout`, `orangutan-analyst`, `silverback-synthesist`, `clone-candidates.sh`) — those run under the ambient permission system, so they'll still prompt once per session unless you add your own rule, e.g. in `.claude/settings.json`:
+- orangutan-analyst's repo exploration hits a related but distinct guardrail: `cd <repo-path> && <cmd>` is specifically flagged for manual approval every time (path-traversal protection), independent of whether `<cmd>` itself would otherwise match a permission rule. Its instructions tell it to pass `<repo-path>` as an argument instead of `cd`-ing in, and to prefer the `Grep`/`Glob` tools (already granted, no `cd` involved) over Bash `grep`/`find` for content search. Unlike gibbon-scout's fixed, bounded `gh` calls, an analyst's exploration is genuinely open-ended per repo, so it isn't a candidate for the same fixed-script treatment.
   ```json
   { "permissions": { "allow": ["Bash(/absolute/path/to/.claude/plugins/cache/seankoji/ape/*)"] } }
   ```
