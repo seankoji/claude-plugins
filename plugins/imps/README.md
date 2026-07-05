@@ -30,7 +30,7 @@ Optional:
 | --- | --- |
 | **`CLAUDE_CDP_URL`** env var | Browser panel via CDP (default `ws://localhost:3000`). Point at a headless-Chrome container, local or LAN. |
 | **Claude-in-Chrome MCP** | Browser panel fallback if no CDP endpoint is reachable. |
-| **`~/.claude/scripts/persona-post.sh`** + dedicated GitHub Apps (`mm-solution-architect`, `mm-grumpy-engineer`, `mm-sre`, `mm-business-analyst`, `mm-ux-designer`) installed on the target repo, with their credentials in 1Password | Independent, per-persona review identity for the persona panel (see [The persona panel](#the-persona-panel)). Absent or failing → that persona falls back to an orchestrator-identity `[Persona: <Name>]` comment, clearly marked as degraded. |
+| **`~/.claude/scripts/persona-post.sh`** + dedicated GitHub Apps (`mm-solution-architect`, `mm-grumpy-engineer`, `mm-sre`, `mm-business-analyst`, `mm-ux-designer`) installed on the target repo, with their credentials in 1Password | Independent, per-persona review identity for the persona panel (see [The persona panel](#the-persona-panel)). Absent or failing → that persona's verdict goes to `findings_inline` instead of posting — it never falls back to the orchestrator's own identity. |
 
 ## Install
 
@@ -133,10 +133,16 @@ uses to mint every App's token, so it isn't a control the authoring session is
 structurally unable to satisfy — it fixes the previous self-approval-under-one's-own-
 name problem, not every trust concern a branch-protection rule might assume. If that
 script is absent, fails, or its post can't be verified on the PR for a given persona
-(Apps not installed on this repo, 1Password locked, no `op` access, etc.), that persona
-alone falls back to an ordinary `[Persona: <Name>]` comment under the orchestrator's own
-identity, clearly marked in the comment body as a degraded, non-independent review — the
-rest of the panel is unaffected.
+(Apps not installed on this repo, 1Password locked, no `op` access, etc.), that persona's
+verdict fails **closed**: it goes into `findings_inline` for the operator to read or post
+by hand, never under the orchestrator's own identity — the rest of the panel is
+unaffected.
+
+Pushing/opening the endstate PR and authorizing personas to post live GitHub reviews are
+two separate operator decisions, not one — the `Push & PR?` question
+(`agents/imp-wrangler.md` Segment B+C) offers a `findings only (no persona posts)` option
+precisely for runs where this session's own Head-Imp-driven amendments make an
+independent review under a bot identity misleading.
 
 ## Bundled assets
 

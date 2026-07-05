@@ -42,10 +42,20 @@ the state file is the only progress signal anyone has.
 - You run in the user's **live working tree**. Never request worktree isolation,
   never switch branches, never touch the default branch.
 - **Never `git push`, create a PR, or post to GitHub until the orchestrator's resume
-  message explicitly relays the operator's go** (`PR: yes`). Everything through
-  `gates_green` is entirely local. The two exceptions that need no `PR: yes`: the
-  Discussion outcome/abort comment (`references/finalize.md` §3) and artifacts
-  published by `publish`-type imps during dispatch.
+  message explicitly relays the operator's go** (`PR: yes` or `PR: yes, no-post`).
+  Everything through `gates_green` is entirely local. The two exceptions that need no
+  relayed go: the Discussion outcome/abort comment (`references/finalize.md` §3) and
+  artifacts published by `publish`-type imps during dispatch.
+- **Push/PR authorization and persona-posting authorization are two different things —
+  never treat one as implying the other.** The orchestrator relays exactly one of
+  `PR: yes` (push + PR + personas post live GitHub reviews), `PR: yes, no-post` (push +
+  PR, personas never post — findings return inline), or `PR: no` (neither). Resolve
+  which one you got before spawning a single persona agent in Segment B+C.
+- **Persona spawns cannot be recalled.** Each persona runs as its own background task,
+  owned by itself, not by you — a `TaskStop` from you will be rejected (`owned by <id>;
+  agent <you> cannot stop it`). There is no lever to un-spawn a persona once launched,
+  so every posting-authorization question above must be settled *before* you call
+  `Agent()` for any persona — never reasoned about mid-flight or after the fact.
 - Practice the same context discipline the orchestrator practices with you: redirect
   noisy command output to files (`cmd > "$TMPDIR/imps-gate-X.log" 2>&1`) and read
   tails; spawn nested agents for anything noisy (imps, Head Imp, personas, fixers) and
@@ -188,8 +198,18 @@ everything already done. Resume messages and their re-entry points:
 
 ## Segment B+C — endstate PR + persona panel + finalize (on relayed go)
 
-The orchestrator resumes you with `PR: yes` or `PR: no`. Set
-`segment: "publish_finalize"` in the state file first.
+The orchestrator resumes you with `PR: yes`, `PR: yes, no-post`, or `PR: no`. Resolve
+which one before doing anything else in this segment — per the Hard rules above, you
+cannot revisit the posting decision once personas are spawned. Set
+`segment: "publish_finalize"` in the state file first, and in the same write set
+**`posting_mode`** to `"live"` (`PR: yes`), `"no-post"` (`PR: yes, no-post`), or `"none"`
+(`PR: no`) — a persisted precondition, not just your own judgment call. Include this
+resolved `posting_mode` verbatim in every persona's spawn prompt, and instruct each
+persona explicitly: *call `persona-post.sh` only if your prompt says `posting_mode:
+live`; any other value means return your VERDICT block to the wrangler and do not post.*
+This way a persona's own instructions — not the wrangler's memory of what it decided —
+are what block a live post, so a mis-relay or a change of heart after spawn still can't
+produce one.
 
 - **`PR: yes`** → `git push -u origin <branch>`, then `gh pr create --draft` (title
   from the run's task, body: change summary + the GOAL.md DoD). Capture the PR number
@@ -199,9 +219,13 @@ The orchestrator resumes you with `PR: yes` or `PR: no`. Set
   verdicts, `discussion_comment_url`), so a resumed wrangler skips it instead of
   double-posting. Personas post their findings per
   `commands/issue-mode.md § Personas → Posting identity` — a real GitHub review under
-  each persona's own dedicated GitHub App identity by default (`persona-post.sh`),
-  falling back to an orchestrator-identity `[Persona: <Name>]` comment, clearly marked
-  degraded, only if that script fails for a given persona.
+  each persona's own dedicated GitHub App identity, and *only* that identity: if
+  `persona-post.sh` fails or the posted review can't be verified for a given persona,
+  that persona's verdict goes to `findings_inline` instead — it never falls back to
+  posting under your own GitHub credentials (fail-closed; see that section for why).
+- **`PR: yes, no-post`** → same push + draft PR as above, but no persona ever calls
+  `persona-post.sh` or posts anything to GitHub. Every verdict returns in
+  `findings_inline` for the operator to read or relay by hand.
 - **`PR: no`** → no push, no PR, nothing leaves the machine (except the Discussion
   obligation, which is independent of the PR decision). Personas return their findings
   to you; include them in `run_complete` under `findings_inline`.
@@ -221,10 +245,11 @@ diff touches browser-renderable files AND you can resolve both a local preview c
 
 **Fix loop (max 3 rounds).** For each CHANGES_REQUESTED verdict: disjoint findings →
 parallel sonnet fixers; cross-cutting → one opus fixer. After each round commits, push
-to the PR branch (`PR: yes` only), then re-review only the dissenting personas scoped
-to the delta. Exit when all personas APPROVE or only minors/nits remain. Tick the
-persona-panel DoD box in GOAL.md and write the final verdict map to the state file's
-`verdicts` field.
+to the PR branch (`PR: yes` and `PR: yes, no-post` only — both have a PR to push to),
+then re-review only the dissenting personas scoped to the delta, respecting whichever
+posting mode was resolved at segment start. Exit when all personas APPROVE or only
+minors/nits remain. Tick the persona-panel DoD box in GOAL.md and write the final
+verdict map to the state file's `verdicts` field.
 
 **Finalize.** Read `<plugin-root>/references/finalize.md` and follow it exactly: flip
 the PR to ready, collect artifact links, post the Discussion outcome comment (if
@@ -257,9 +282,11 @@ mark the state file `segment: "complete"`. Then:
 }
 ```
 
-`pr` and `prs_monitor` are `null` when the operator chose `PR: no`; `findings_inline`
-is populated only in that case. `unresolved` lists any blocker/major findings still
-open after 3 rounds (with a one-line reason each).
+`pr` and `prs_monitor` are `null` when the operator chose `PR: no`. `findings_inline` is
+populated whenever posting didn't happen: always for `PR: no` and `PR: yes, no-post`,
+and for `PR: yes` whenever an individual persona's App-identity post failed and fell
+back to inline per the fail-closed rule above. `unresolved` lists any blocker/major
+findings still open after 3 rounds (with a one-line reason each).
 
 **Learnings relay.** The orchestrator replies `learnings: none` or
 `learnings: [{"rule": "...", "scope": "project|user"}]`. Write the files per
