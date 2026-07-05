@@ -176,10 +176,9 @@ flight when this context was lost):**
 - **Resume** — jump to **Phase 3 — Handover** with mode `resume`. The fresh wrangler
   reads the state file, reconciles against ground truth (existing branches, GOAL.md
   checkboxes, heartbeat), re-dispatches only unfinished tasks, and re-enters at the
-  recorded segment. Any Workflow from the dead session is unreachable — the wrangler
-  knows this; do not try to re-attach to it yourself.
-- **New** — same archive-rename procedure as Case A. A still-active old Workflow (if
-  any) keeps running independently in the background either way.
+  recorded segment. Any imps the dead wrangler had in flight are unreachable — the
+  wrangler knows this; do not try to re-attach to them yourself.
+- **New** — same archive-rename procedure as Case A.
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh.
 
 Do not proceed past this check without an answer.
@@ -330,17 +329,16 @@ SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
   ],
   "phase": "dispatch_pending",
   "segment": null,
-  "wrangler_agent_id": null,
-  "workflow_task_id": null,
-  "workflow_run_id": null,
-  "workflow_output_file": null,
   "dispatched_at": null,
   "poll_interval_seconds": 300,
-  "max_workflow_hours": 6,
+  "max_dispatch_hours": 6,
   "last_heartbeat": null,
   "tasks_done": [],
   "worktrees": {},
+  "artifacts": [],
   "pr": null,
+  "verdicts": null,
+  "discussion_comment_url": null,
   "source_discussion": null
 }
 ```
@@ -359,9 +357,10 @@ fresh context by construction, so dispatch never inherits this planning window.
 ## Phase 3 — Handover to the Imp Wrangler
 
 Everything from here to run completion happens inside one **imp-wrangler** subagent
-(see `agents/imp-wrangler.md` for its full protocol): git preflight, Workflow
-authoring/launch, monitoring, merges, the Head Imp diff review, gates, the endstate PR,
-the persona panel, and finalize. Only compact JSON checkpoints come back.
+(see `agents/imp-wrangler.md` for its full protocol): git preflight, dispatching the
+task DAG as staged background `imp` agents, monitoring them, merges, the Head Imp diff
+review, gates, the endstate PR, the persona panel, and finalize. Only compact JSON
+checkpoints come back.
 
 **Step 1:** Load SendMessage first (`ToolSearch: "select:SendMessage"`) — every
 checkpoint is answered through it, and the wrangler keeps its context across resumes.
@@ -380,9 +379,10 @@ Agent(
 )
 ```
 
-Keep the `agentId` from the spawn result and record it into the state file's
-`wrangler_agent_id` field (one `jq` write — the last time this session touches the
-file). Phase 4 resumes this same wrangler.
+Keep the `agentId` from the spawn result in this conversation — Phase 4 resumes this
+same wrangler. Do not write it to the state file: the file belongs to the wrangler from
+the spawn onward, and an agentId is useless across `/clear` anyway (resume always
+re-spawns fresh).
 
 **Agent-type fallback:** if `imp-wrangler` is not registered in this session, spawn
 `general-purpose` with the full body of `agents/imp-wrangler.md` prepended to the
@@ -420,13 +420,12 @@ idempotent. If the re-spawn also fails, fall back to executing its protocol inli
 
 **`blocked` checkpoints** — surface the problem, agree the next step with the user,
 relay the verb:
-- `dispatch_failed` — preflight rebase conflict or Workflow launch error. The user
-  fixes the tree (or decides); send `resolved, continue` or `abort`.
-- `workflow_failed_tasks` — failed tasks block the DoD. Ask the user (retry with
-  guidance / skip those tasks / abort) and relay `retry tasks #N: ...`,
-  `skip tasks #N`, or `abort`.
-- `workflow_timeout` — the imp Workflow exceeded `max_workflow_hours`. Relay
-  `wait <hours>`, `integrate partial`, or `abort`.
+- `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
+  the tree (or decides); send `resolved, continue` or `abort`.
+- `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
+  those tasks / abort) and relay `retry tasks #N: ...`, `skip tasks #N`, or `abort`.
+- `dispatch_timeout` — the imps exceeded `max_dispatch_hours`. Relay `wait <hours>`,
+  `integrate partial`, or `abort`.
 - `merge_conflict` — the conflict is live in the shared working tree. List the branch +
   files; let the user resolve (or resolve trivial conflicts yourself), then send
   `resolved, continue`.
@@ -439,7 +438,7 @@ surface its `tree_state` and stop (the state file stays for a later resume decis
 
 **`gates_green`** — print a one-block summary from the checkpoint fields (merged tasks,
 failed tasks, Head Imp verdict + amendments, gate results, diff stat, and the
-`workflow` block: elapsed, tokens, model counts, published artifacts). Then the
+`dispatch` block: elapsed, tokens, model counts, published artifacts). Then the
 operator gate:
 
 **Push & PR decision.** The persona panel posts its findings as comments on a PR
@@ -460,13 +459,17 @@ only `Not yet` skips it. Relay exactly `PR: yes` or `PR: no`. The wrangler then 
 the PR + persona panel + fix loop + finalize as one segment.
 
 **`run_complete`** — the run is done (PR ready, panel + fix loop finished, Discussion
-comment posted, state file deleted). In order:
+comment posted; the wrangler deletes the state file at `done`). In order:
 
-1. Print the final banner by piping the checkpoint to the bundled script, then the
-   results from the checkpoint fields:
+1. Print the final banner by piping the checkpoint to the bundled script — via a temp
+   file, never shell-quoted inline (the JSON routinely contains `'` and `$`):
    ```bash
-   printf '%s' '<the run_complete JSON>' | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/final-banner.py"
+   cat > "${CLAUDE_JOB_DIR:-/tmp}/imps-run-complete.json" <<'CHECKPOINT_JSON'
+   <the run_complete JSON verbatim>
+   CHECKPOINT_JSON
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/final-banner.py" < "${CLAUDE_JOB_DIR:-/tmp}/imps-run-complete.json"
    ```
+   Then the results from the checkpoint fields:
    ```
      merged:    #6 <label>    (3 files)
      published: #3 Discussion → https://github.com/...
@@ -528,8 +531,8 @@ in the prompts above stand for those current IDs.
 - Never hand over to the wrangler without explicit approval of the task list
   (`ExitPlanMode` is that gate).
 - Never `git merge --force`, `git reset --hard`, or `git push` without explicit user
-  instruction — **exceptions**: (1) after plan approval the Imp Wrangler dispatches the
-  Workflow, rebases the working branch, and merges imp branches autonomously, and it
+  instruction — **exceptions**: (1) after plan approval the Imp Wrangler dispatches
+  the imps, rebases the working branch, and merges imp branches autonomously, and it
   pushes + opens the endstate PR only after the operator's `Push & open PR` answer is
   relayed to it (pushing fix-loop commits to that same PR branch); (2) the `/imps:prs`
   PR monitor pushes fix commits to the PR branch autonomously once activated.
@@ -537,4 +540,4 @@ in the prompts above stand for those current IDs.
   that instruction for the endstate PR.
 - If a task touches a production system, pause and confirm before that task runs.
 - The wrangler owns the run state file and `.prs.json` from handover onward; this
-  session's last state-file write is `wrangler_agent_id` in Phase 3.
+  session's last state-file write is Phase 2 Step 6.

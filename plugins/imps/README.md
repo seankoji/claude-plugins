@@ -3,12 +3,12 @@
 ## What it does
 
 `/imps:imps` decomposes a task (or a batch of GitHub issues) into parallel, model-routed
-agents ("imps"), dispatches them via the Workflow tool, and integrates results through
-deterministic gates and an adversarial persona-review panel.
+agents ("imps"), dispatches them as staged background subagents, and integrates results
+through deterministic gates and an adversarial persona-review panel.
 
 The orchestrating session is deliberately minimal: it holds only the operator-facing
 work (plan approval, the push/PR gate, conflict decisions, learnings) while everything
-else — dispatch, workflow monitoring, merges, diffs, gate logs, persona traffic,
+else — dispatch, imp monitoring, merges, diffs, gate logs, persona traffic,
 finalize — runs inside a single **Imp Wrangler** subagent, the sole point of contact
 from plan approval to run completion. The wrangler speaks in compact JSON checkpoints
 and is resumed with the operator's decisions, so long runs never grind the main context
@@ -19,11 +19,10 @@ the command file the main session loads stays small.
 
 | Requirement | Needed for |
 | --- | --- |
-| **Workflow tool** | Free-text mode dependency-graph dispatch. Degrades to sequential `Agent` calls if unavailable. |
 | **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
 | **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
 | **Bundled agent types** (`imp`, `head-imp`, `imp-wrangler`) | Registered automatically once installed (`agents/*.md`). If registration fails for any reason, the commands fall back to `general-purpose` (the wrangler fallback prepends its brief to the prompt). |
-| **Background agents + SendMessage** | The free-text checkpoint loop: the wrangler is spawned in the background and resumed with operator decisions via `SendMessage`. Degrades to inline execution if subagents are unavailable. |
+| **Background agents + SendMessage** | The free-text run: the wrangler is spawned in the background, dispatches the imps as nested background agents (the Workflow tool is not available to subagents), and is resumed with operator decisions via `SendMessage`. Degrades to synchronous parallel batches, then inline execution. |
 
 Optional:
 
@@ -52,7 +51,7 @@ Four entry modes, auto-detected from the argument:
 
 | Invocation | Mode | What it does |
 | --- | --- | --- |
-| `/imps:imps <free-text task>` | Free-text | Refine → plan (opus plan mode) → decompose → dispatch a Workflow → merge → gates → persona panel → endstate PR |
+| `/imps:imps <free-text task>` | Free-text | Refine → plan (opus plan mode) → decompose → hand to the wrangler (staged dispatch → merge → gates → persona panel → endstate PR) |
 | `/imps:imps 42 43 51` | Issue-driven | Scout issues → rolling dispatch in isolated worktrees → holding branch → gates → persona panel → operator handoff |
 | `/imps:imps https://github.com/<owner>/<repo>/discussions/284` | Discussion-seed | Fetch the discussion via GraphQL, seed it as the free-text task, run the normal free-text flow, and always post a summary comment back to the discussion at the end |
 | `/imps:imps path/to/checklist.md` | Checklist-file | Run each `Verify:`/`Done when:` item as a read-only audit, then offer remediation dispatch |
@@ -62,7 +61,7 @@ Four entry modes, auto-detected from the argument:
 1. `/imps:imps` with a task description (or empty — it will ask).
 2. `/imps:imps` refines the brief via `prompt-builder`, asks five discovery questions, then enters plan mode (opus) to decompose and write `GOAL.md` (to `~/.claude/imps/runs/<slug>.md`, not the repo — see [Runtime state](#runtime-state)).
 3. The Head Imp (opus) adversarially reviews the plan; findings are addressed before dispatch.
-4. After plan approval, `/imps:imps` hands the entire run to the **Imp Wrangler** subagent and returns control. The wrangler does the git preflight, authors and launches the imp Workflow, and monitors it — writing a heartbeat into the run state file every poll, so progress is `cat ~/.claude/imps/runs/<slug>.json` (the Workflow runs in the wrangler's session, so it won't appear in the main session's `/workflows` UI).
+4. After plan approval, `/imps:imps` hands the entire run to the **Imp Wrangler** subagent and returns control. The wrangler does the git preflight, dispatches the task DAG as staged parallel background `imp` agents, and monitors them — writing a heartbeat into the run state file as imps complete, so progress is `cat ~/.claude/imps/runs/<slug>.json` (the imps run in the wrangler's session, invisible to the main session's UI).
 5. When the imps finish, the wrangler flows straight into integration: merges code branches, drives the Head Imp diff review, runs gates, then checkpoints back. After you approve the push it opens the endstate PR (the default for runs that change code — decline the push to skip it), runs the persona panel on that PR, applies fixes, and finalizes the run (PR ready, Discussion comment, run stats, monitor state). The main session only relays your decisions, then makes the one `/imps:prs` call to activate the PR monitor.
 
 ### Issue-driven mode walkthrough
@@ -156,10 +155,8 @@ rest of the panel is unaffected.
 | Final banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/final-banner.py` |
 
 No manual setup needed for any of these — the plugin installs them at
-`${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The workflow
-script inlines its own copy of the Head Imp persona for calls made from inside
-a `Workflow` script (see below); the bundled `head-imp` agent type is what
-resolves when it, or anything else, invokes it directly via the `Agent` tool
+`${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The bundled
+`head-imp` agent type resolves whenever anything invokes it via the `Agent` tool
 (`Agent(subagent_type: "head-imp", ...)`).
 
 ## Runtime state
@@ -168,7 +165,7 @@ Written to `~/.claude/imps/` on first run — not bundled:
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/imps/runs/<slug>.json` | Per-project run state — resume spine, owned by the wrangler after handover; it heartbeats `last_heartbeat` + `tasks_done` during the workflow run, so `cat` this file for live progress |
+| `~/.claude/imps/runs/<slug>.json` | Per-project run state — resume spine, owned by the wrangler after handover; it heartbeats `last_heartbeat` + `tasks_done` while imps run, so `cat` this file for live progress |
 | `~/.claude/imps/runs/<slug>.md` | Per-run `GOAL.md` spine (`/compact`-durable) — lives here, not in the repo, so writing it never needs project-directory permission |
 | `~/.claude/imps/runs/<slug>.prs.json` | Per-PR monitor state for `/imps:prs` |
 | `~/.claude/imps/learnings.md` | Self-tuning `## Active rules` (≤10 bullets) + per-run notes |
