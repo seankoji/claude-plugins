@@ -2,6 +2,35 @@
 
 Imitation is the sincerest form of engineering. Apes techniques from open-source GitHub repos into your codebase: parallel gibbon discovery → metadata gate → shallow clones → parallel orangutan deep analysis → silverback synthesis — the whole expedition run by one ape-wrangler subagent so the orchestrator's context only ever sees the fingerprint and the final recommendations.
 
+## Workflow
+
+```mermaid
+flowchart TD
+    A["Phase 0 — Preflight + fingerprint<br/>(you; no subagents)"] --> B
+
+    subgraph B["🐒 Phase 1 — Discovery (parallel)"]
+        direction LR
+        B1["gibbon-scout<br/>Axis A: same domain"]
+        B2["gibbon-scout<br/>Axis B: adjacent stack"]
+        B3["gibbon-scout<br/>Axis C: curated sources"]
+    end
+
+    B --> C["Gate — triage, dedupe, rank<br/>(you; top 6, hard cap 8)"]
+    C --> D["Clone candidates<br/>(one backgrounded script call)"]
+    D --> E
+
+    subgraph E["🦧 Phase 2 — Analysis (parallel, one per repo)"]
+        direction LR
+        E1["orangutan-analyst<br/>repo 1"]
+        E2["orangutan-analyst<br/>repo 2"]
+        E3["orangutan-analyst<br/>…"]
+        E4["orangutan-analyst<br/>repo N"]
+    end
+
+    E --> F["🦍 Phase 3 — Synthesis<br/>silverback-synthesist"]
+    F --> G["RECOMMENDATIONS.md<br/>+ top 2-3 picks returned to you"]
+```
+
 ## Components
 
 | Component | File | Purpose |
