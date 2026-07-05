@@ -28,6 +28,12 @@
       "version": "0.1.12",
       "source": "./plugins/imps",
       "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via Workflow, merges through gates and persona review."
+    },
+    {
+      "name": "ape",
+      "version": "0.1.0",
+      "source": "./plugins/ape",
+      "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, grounded synthesis."
     }
   ]
 }

@@ -1,0 +1,13 @@
+{
+  "name": "ape",
+  "version": "0.1.0",
+  "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, grounded synthesis.",
+  "author": {
+    "name": "seankoji",
+    "url": "https://github.com/seankoji"
+  },
+  "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/ape",
+  "repository": "https://github.com/seankoji/claude-plugins",
+  "license": "MIT",
+  "keywords": ["research", "subagents", "github", "code-mining", "orchestration", "ape"]
+}
