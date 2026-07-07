@@ -1,5 +1,5 @@
 ---
-name: imp
+name: 🦇
 model: sonnet
 color: yellow
 description: >

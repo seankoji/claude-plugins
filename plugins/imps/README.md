@@ -21,7 +21,7 @@ the command file the main session loads stays small.
 | --- | --- |
 | **`gh` CLI** (authenticated) | Issue-driven mode (issue reads, PR creates, CI checks). |
 | **GitHub MCP** (`mcp__github__*`) | PR/issue reads in `/imps:prs`; improves issue-driven mode. |
-| **Bundled agent types** (`imp`, `head-imp`, `imp-wrangler`, `imp-agency`) | Registered automatically once installed (`agents/*.md`). If registration fails for any reason, the commands fall back to `general-purpose` (the wrangler fallback prepends its brief to the prompt). |
+| **Bundled agent types** (`🦇`, `😈`, `👹`, `👺`) | Registered automatically once installed (`agents/*.md`). If registration fails for any reason, the commands fall back to `general-purpose` (the wrangler fallback prepends its brief to the prompt). |
 | **Background agents + SendMessage** | The free-text run: the wrangler is spawned in the background, dispatches the imps as nested background agents (the Workflow tool is not available to subagents), and is resumed with operator decisions via `SendMessage`. Degrades to synchronous parallel batches, then inline execution. |
 
 Optional:
@@ -187,10 +187,10 @@ independent review under a bot identity misleading.
 | Asset | Location |
 | --- | --- |
 | Persona briefs (5) | `${CLAUDE_PLUGIN_ROOT}/personas/<slug>.md` |
-| `imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp.md` |
-| `head-imp` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/head-imp.md` |
-| `imp-wrangler` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp-wrangler.md` |
-| `imp-agency` agent type (audit orchestrator) | `${CLAUDE_PLUGIN_ROOT}/agents/imp-agency.md` |
+| `🦇` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp.md` |
+| `😈` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/head-imp.md` |
+| `👹` agent type | `${CLAUDE_PLUGIN_ROOT}/agents/imp-wrangler.md` |
+| `👺` agent type (audit orchestrator) | `${CLAUDE_PLUGIN_ROOT}/agents/imp-agency.md` |
 | Wrangler dispatch/monitor protocol | `${CLAUDE_PLUGIN_ROOT}/references/dispatch.md` |
 | Wrangler finalize protocol | `${CLAUDE_PLUGIN_ROOT}/references/finalize.md` |
 | Checklist-file mode workflow | `${CLAUDE_PLUGIN_ROOT}/references/checklist-mode.md` |
@@ -201,8 +201,8 @@ independent review under a bot identity misleading.
 
 No manual setup needed for any of these — the plugin installs them at
 `${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The bundled
-`head-imp` agent type resolves whenever anything invokes it via the `Agent` tool
-(`Agent(subagent_type: "head-imp", ...)`).
+`😈` agent type resolves whenever anything invokes it via the `Agent` tool
+(`Agent(subagent_type: "😈", ...)`).
 
 ## Runtime state
 

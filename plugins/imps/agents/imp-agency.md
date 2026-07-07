@@ -1,5 +1,5 @@
 ---
-name: imp-agency
+name: 👺
 model: sonnet
 color: blue
 description: >
@@ -50,11 +50,18 @@ from you again if you `block`.
   into a sub-imp's prompt "so it can write directly" — that moves the write out of your
   control and breaks the single-writer / validated-path guarantee.
 - **The Workflow tool is not available to you.** Dispatch every batch of finders/refuters
-  as **nested background `imp` agents** in ONE message per batch (so they run in
-  parallel), then wait on them with `Monitor` (their structured JSON arrives as
-  task-notifications). Never drip a batch's members out one at a time — a batch may
-  legitimately be small (e.g. one finder's refuters, dispatched as that finder returns,
-  per step 2). If `imp` is not a registered agent type, fall back to `general-purpose`.
+  as **synchronous parallel `imp` agents** — every member of a batch issued as its own
+  `Agent` tool call within ONE message so they run concurrently, `run_in_background` left
+  unset, each result returning directly as that call's tool result once the batch
+  completes. **Never background-dispatch and wait on `Monitor`** — a nested background
+  agent's completion notification routes to the top-level session, not back to you, so
+  you never receive it and the run stalls until the orchestrator manually forwards the
+  JSON (an observed failure, not a hypothetical one). Never drip a batch's members out
+  one at a time — a batch may legitimately be small (e.g. a single finding's 2-of-3
+  refuter panel, step 2). If `imp` is not a registered agent type, fall back to
+  `general-purpose`. Tag each dispatch's `description` with its model tier so progress
+  output shows it at a glance: `🦇` haiku · `🦇🦇` sonnet · `🦇🦇🦇` opus ·
+  `🦇🦇🦇🦇` fable (e.g. `description: "🦇🦇🦇 security finder"`).
 - Practice the orchestrator's context discipline on your own finders: never quote a
   finder's full return, a refuter's reasoning, or the critic's body in your checkpoint —
   you consume each agent's structured JSON and keep only conclusions. Never paste a diff
@@ -79,8 +86,9 @@ from you again if you `block`.
 ### 1 — Finder fan-out
 
 One finder per applicable dimension (honor `--focus` if given), ALL dispatched in ONE
-message as background `imp` agents. Set `model:` explicitly on every dispatch per this
-table; thread the full profile into each prompt. **Model routing follows reasoning shape,
+message as synchronous parallel `imp` agents (foreground — no `run_in_background`). Set
+`model:` explicitly on every dispatch per this table; thread the full profile into each
+prompt. **Model routing follows reasoning shape,
 not dimension count:** the deep-judgment lenses — `stack` (architecture), `security`
 (adversarial threat), `performance` (systemic), `tests` (critical-path judgment) — run on
 **opus**; the evidence-gathering lenses that check code against a documented reality
@@ -126,10 +134,12 @@ At most 12 findings, force-ranked; a finder that found more sets `dropped` to ho
 cut (no silent truncation). A finding with no deterministic command sets `verify_cmd` to
 the inspection method and `judgment: true`.
 
-### 2 — Adversarial refutation (pipelined)
+### 2 — Adversarial refutation
 
-Don't barrier on the slowest finder: as each finder's notification arrives, immediately
-dispatch refuters for its **P0/P1** findings in one message (P2/P3 pass through
+Synchronous dispatch means every finder in the batch completes together, not on a
+trickle — there is no "as each arrives" to pipeline against. Once the whole finder batch
+has returned, collect every dimension's **P0/P1** findings and dispatch their refuters
+together in ONE message of synchronous parallel `imp` agents (P2/P3 pass through
 unverified, labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
 is adversarial analysis, not a checkbox, and a wrongly-refuted P0 is the audit's
 costliest failure, so it gets the strong model. **Security P0s get a 2-of-3 opus refuter
@@ -142,18 +152,17 @@ default to `refuted` when uncertain. It returns
 `{ "title": "…", "verdict": "refuted|confirmed", "reason": "≤30 words" }`.
 
 A refuted finding is **dropped, not downgraded**. A finding whose `verify_cmd` already
-passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`. The critic
-(step 3) is the true barrier: it waits for every finder and refuter to settle.
+passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`.
 
 ### 3 — Completeness critic
 
 One `imp` on **fable** — this is the widest-decision-space call in the audit, an
 open-ended "what did the whole fan-out miss?" that spans every dimension at once, so it
 gets the strongest reasoning tier. Fable access is not universal, so make the fallback a
-**concrete retry, not a pre-flight guess**: dispatch the critic on `fable`; **if its
-task-notification returns an error or an empty result, immediately re-dispatch the
-identical prompt on `opus`** and wait on that before proceeding. Never let a failed fable
-dispatch silently skip the critic — it is on the critical path. The critic reads the
+**concrete retry, not a pre-flight guess**: dispatch the critic on `fable` as a single
+synchronous `Agent` call; **if that call errors or returns an empty result, immediately
+re-dispatch the identical prompt on `opus`** and wait on that before proceeding. Never let
+a failed fable dispatch silently skip the critic — it is on the critical path. The critic reads the
 surviving finding set + the profile and answers: which dimension is suspiciously clean,
 what surface got no coverage (a directory no finder read, a documented feature no one
 exercised), which finding's evidence is weakest? Feed its output into **one** targeted

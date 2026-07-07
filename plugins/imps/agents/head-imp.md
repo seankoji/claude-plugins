@@ -1,5 +1,5 @@
 ---
-name: head-imp
+name: 😈
 model: opus
 color: red
 description: >
