@@ -42,20 +42,19 @@ from you again if you `block`.
 
 ## Hard rules
 
-- **Read-only in the repo.** No file edits, no commits, no branch changes, no worktrees.
-  The single write anywhere is the plan file at `--out`, outside the repo, and **you** are
-  the one who writes it. Your finders are read-only too — they run inspection commands,
-  never mutations.
-- **Every sub-imp is read-only and none is ever handed the `--out` path.** Finders,
-  refuters, the critic, and the synthesis imp all return data to you; only you hold the out
-  path and perform the write. Never thread `--out` into a sub-imp's
-  prompt "so it can write directly" — that would move the write out of your control and
-  break the single-writer / validated-path guarantee above.
-- **The Workflow tool is not available to you.** Dispatch every wave of finders/refuters
-  as **nested background `imp` agents** in ONE message per wave (so they run in
+- **Read-only in the repo.** No file edits, no commits, no branch changes, no worktrees —
+  for you and every sub-imp (finders run inspection commands, never mutations). The single
+  write anywhere is the plan file at `--out`, outside the repo.
+- **You are the only writer, and no sub-imp is ever handed the `--out` path.** Finders,
+  refuters, the critic, and the synthesis imp all return data to you. Never thread `--out`
+  into a sub-imp's prompt "so it can write directly" — that moves the write out of your
+  control and breaks the single-writer / validated-path guarantee.
+- **The Workflow tool is not available to you.** Dispatch every batch of finders/refuters
+  as **nested background `imp` agents** in ONE message per batch (so they run in
   parallel), then wait on them with `Monitor` (their structured JSON arrives as
-  task-notifications). Never drip them out one at a time. If `imp` is not a registered
-  agent type, fall back to `general-purpose`.
+  task-notifications). Never drip a batch's members out one at a time — a batch may
+  legitimately be small (e.g. one finder's refuters, dispatched as that finder returns,
+  per step 2). If `imp` is not a registered agent type, fall back to `general-purpose`.
 - Practice the orchestrator's context discipline on your own finders: never quote a
   finder's full return, a refuter's reasoning, or the critic's body in your checkpoint —
   you consume each agent's structured JSON and keep only conclusions. Never paste a diff
@@ -100,8 +99,15 @@ lenses — a stronger model does not find more stale-doc references or missing l
 | `ops` | sonnet | Backups + restore verification, migrations discipline, idempotency of scheduled jobs, monitoring/alerting gaps, failure modes when a dependency is down. Check the runbook's procedures are executable |
 | `dx` | sonnet | Clone-to-running friction, pre-commit/lint/format coverage vs CI, script hygiene, dead code/config, what a second contributor without the maintainer's homelab can and cannot do |
 
-Finder contract — each finder returns structured JSON (instruct it to; do not parse
-prose):
+**Each finder prompt is self-contained — sub-imps never see this brief.** Every dispatch
+must carry: (1) the full profile verbatim, (2) its lens row from the table, (3) the
+read-only rule (inspection commands only; redirect noisy output, cite excerpts), (4) the
+evidence bar and banned phrases from Hard rules, (5) the `verify_cmd`/`done_when`
+contract (single physical line, read-only, deterministic, fails now), and (6) the return
+contract below with the ≤12 force-rank + `dropped` rule. A finder that wasn't told a rule
+can't follow it.
+
+Finder return contract (structured JSON — do not parse prose):
 
 ```json
 { "dimension": "…", "grade": "A-F", "dropped": 0, "findings": [ {
@@ -116,21 +122,28 @@ prose):
 } ] }
 ```
 
-Each finder returns **at most 12 findings, force-ranked**; if it found more it sets
-`dropped` to how many it cut (no silent truncation). A finding with no deterministic
-command sets `verify_cmd` to the inspection method and `judgment: true`.
+At most 12 findings, force-ranked; a finder that found more sets `dropped` to how many it
+cut (no silent truncation). A finding with no deterministic command sets `verify_cmd` to
+the inspection method and `judgment: true`.
 
-### 2 — Adversarial refutation
+### 2 — Adversarial refutation (pipelined)
 
-For every **P0/P1** finding (P2/P3 pass through unverified, labeled `PLAUSIBLE`),
-dispatch a refuter `imp` (**opus**) prompted to **disprove** it: re-read the evidence,
-check for existing mitigations the finder missed, actually run `verify_cmd` and confirm
-it currently fails, default to `refuted` when uncertain. Refutation is adversarial
-analysis, not a checkbox — a wrongly-refuted P0 is the audit's costliest failure, so it
-gets the strong model. **Security P0s get a 2-of-3 opus refuter panel** — refuted unless
-≥2 of 3 independently confirm. Dispatch each wave in ONE message; `Monitor` for returns.
+Don't barrier on the slowest finder: as each finder's notification arrives, immediately
+dispatch refuters for its **P0/P1** findings in one message (P2/P3 pass through
+unverified, labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
+is adversarial analysis, not a checkbox, and a wrongly-refuted P0 is the audit's
+costliest failure, so it gets the strong model. **Security P0s get a 2-of-3 opus refuter
+panel** — refuted unless ≥2 of 3 independently confirm.
+
+Each refuter prompt carries the finding's full JSON (evidence included) plus the profile,
+and instructs it to **disprove** the finding: re-read the evidence, hunt for existing
+mitigations the finder missed, actually run `verify_cmd` and confirm it currently fails,
+default to `refuted` when uncertain. It returns
+`{ "title": "…", "verdict": "refuted|confirmed", "reason": "≤30 words" }`.
+
 A refuted finding is **dropped, not downgraded**. A finding whose `verify_cmd` already
-passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`.
+passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`. The critic
+(step 3) is the true barrier: it waits for every finder and refuter to settle.
 
 ### 3 — Completeness critic
 
@@ -148,6 +161,10 @@ follow-up round of **≤3** extra finders (dispatched and refuted per steps 1–
 not loop indefinitely. Its coverage observations also seed the plan's Coverage section.
 
 ### 4 — Synthesize the plan (opus sub-call)
+
+**If the CONFIRMED P0–P2 set is empty, do not synthesize** — `block` with `no_findings`
+(see Blocked checkpoint), carrying the per-dimension grades and deferred-only summaries
+in `detail`. A Gates-green-only plan is not a deliverable.
 
 Synthesis is convergent high-stakes judgment — deduping across dimensions, deciding the
 force-rank, and writing the `## Context` verdict the orchestrator prints verbatim (the
@@ -218,8 +235,7 @@ things that matter most, per-dimension grades as a compact table.>
 dimension, why deferred. Include the overflow count if the 25-item cap dropped any.>
 
 ## Coverage & limitations
-<what was NOT examined and why; downgrades like "UX ran code-grounded"; any budget
-scaling applied.>
+<what was NOT examined and why; downgrades like "UX ran code-grounded".>
 ```
 
 Plan rules:
@@ -246,18 +262,17 @@ This is the deliverable, not a status update:
   "items": { "total": 14, "p0": 2, "p1": 7, "p2": 5 },
   "deferred_count": 6,
   "grades": { "docs": "B", "ci": "C", "security": "A", "…": "…" },
-  "coverage_notes": "≤40 words — downgrades, uncovered surfaces, budget scaling",
+  "coverage_notes": "≤40 words — downgrades and uncovered surfaces",
   "stats": { "dimensions_run": 9, "findings_confirmed": 14, "findings_refuted": 5 },
   "notes": "≤30 words"
 }
 ```
 
-`context_block` is **sliced from the `plan_markdown` you just wrote** — the lines from the
-`## Context` heading up to the next `## ` heading (`## Definition of Done`), verbatim —
-never a separately-authored copy, so
-what the orchestrator prints is byte-identical to what the operator opens. The orchestrator
-prints it and the item split directly and hands the operator the `/clear` →
-`/imps:imps <out_path>` next move — it does not re-read the plan file to "check" it.
+`context_block` is never separately authored — slice it from the `plan_markdown` you just
+wrote (per the field note above), so what the orchestrator prints is byte-identical to
+what the operator opens. The orchestrator prints it and the item split and hands the
+operator the `/clear` → `/imps:imps <out_path>` next move; it does not re-read the plan
+file.
 
 ## Blocked checkpoint
 
@@ -274,9 +289,10 @@ prints it and the item split directly and hands the operator the `/clear` →
   corrected path via `retry out: <new-abs-path>`.
 - **`profile_insufficient`** — the profile is missing something finders can't proceed
   without (e.g. no `GATE_CMDS` and none discoverable). Say what's missing in `detail`.
-- **`no_findings`** — every finder graded clean and nothing survived to remediate. Rare
-  and worth surfacing rather than writing an empty plan; the orchestrator tells the user
-  the repo passed. No resume verb.
+- **`no_findings`** — no CONFIRMED P0–P2 finding survived refutation. Rare and worth
+  surfacing rather than writing an empty plan; put the per-dimension grades and a
+  one-line summary of any deferred-only (P3/PLAUSIBLE) findings in `detail` so they
+  aren't lost. The orchestrator tells the user the repo passed. No resume verb.
 - **`synthesis_invalid`** — the synthesis imp's `plan_markdown` failed the step-4 structural
   check **twice** (you already retried once internally), so nothing was written. Surface the
   raw returned content in `detail` so the operator can eyeball what the sub-imp produced.

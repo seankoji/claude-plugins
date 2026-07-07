@@ -37,12 +37,10 @@ subagent.
   (`docs`, `ci`, `tests`, `security`, `performance`, `ux`, `stack`, `ops`, `dx`); default
   is all applicable.
 - `--out <path>` (optional) — where to write the plan. Default:
-  `$HOME/.claude/audits/<repo-name>-<YYYY-MM-DD>.md`. Must resolve to an **absolute path
-  with no whitespace** outside the repo — `/imps:imps` checklist mode only triggers on a
-  single token, and you are read-only in the repo so the plan cannot live there. You
-  **resolve and validate this path in Phase 0** (below) before spawning, and hand the
-  agent the already-resolved absolute path — the agent writes it with `Write`, which does
-  **not** expand `~`.
+  `$HOME/.claude/audits/<repo-name>-<YYYY-MM-DD>.md`. Must resolve to an **absolute,
+  whitespace-free path outside the repo** — `/imps:imps` checklist mode only triggers on a
+  single token, and the audit is read-only in the repo. Resolved and validated in Phase 0
+  (below) before spawning.
 
 ## Phase 0 — Project profile (you; inline or haiku scouts, no wrangler yet)
 
@@ -70,9 +68,10 @@ Do this inline, or delegate the mechanical lookups to haiku scouts and assemble 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
 OUT="${out:-$HOME/.claude/audits/$(basename "$REPO_ROOT")-$(date +%F).md}"
-OUT="${OUT/#\~/$HOME}"                              # expand a leading ~ → $HOME (Write won't)
+OUT="${OUT/#\~/$HOME}"    # expand a leading ~ → $HOME (the agent's Write won't)
 case "$OUT" in
-  "$REPO_ROOT"/*) echo "REJECT: --out is inside the repo; the audit is read-only there"; ;;
+  *[[:space:]]*)  echo "REJECT: path contains whitespace (checklist mode needs a single token) — pass a space-free --out" ;;
+  "$REPO_ROOT"/*) echo "REJECT: --out is inside the repo; the audit is read-only there" ;;
   /*) mkdir -p "$(dirname "$OUT")" && echo "OUT ok: $OUT" ;;
   *)  echo "REJECT: --out must be an absolute path" ;;
 esac
@@ -124,8 +123,13 @@ subagents are unavailable entirely, execute that file's protocol inline in this 
 - **`blocked` (`reason: "profile_insufficient"`)** — the profile was missing something
   finders needed (`detail` says what). Fix it in Phase 0 terms and re-spawn a fresh
   wrangler with the corrected profile.
-- **`blocked` (`reason: "no_findings"`)** — every dimension graded clean. Tell the user the
-  repo passed; there is no plan to dispatch and no resume verb.
+- **`blocked` (`reason: "no_findings"`)** — no confirmed P0–P2 finding survived
+  refutation. Tell the user the repo passed, relaying the grades and any deferred-only
+  notes from `detail`; there is no plan to dispatch and no resume verb.
+- **`blocked` (`reason: "synthesis_invalid"`)** — the synthesis render failed the
+  wrangler's structural checks twice; nothing was written. Show the user the `detail`
+  excerpt; on their go, `SendMessage` the wrangler `retry synthesis` (one more render —
+  finders are not re-run).
 
 **Wrangler death mid-segment:** if `SendMessage` errors or the wrangler returns
 malformed/non-JSON output, re-spawn a fresh `imp-agency` with the same Phase 1 prompt. The
