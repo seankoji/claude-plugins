@@ -2,7 +2,8 @@
 name: imps
 description: >
   Decompose a vague task into dependency-mapped imps, dispatch with model routing,
-  monitor progress, and merge code changes back to the current branch.
+  monitor progress, and merge code changes back to a dedicated run branch cut off
+  the default branch.
 argument-hint: '<task description>'
 ---
 
@@ -223,9 +224,11 @@ Task description: `<REFINED_TASK>`
 
 Ask the following in a **single AskUserQuestion call** (batch all five), **skipping any questions prompt-builder already answered** during Phase 0:
 
-1. Which repo and branch is this work in? (free text) — in discussion-seed mode, default
+1. Which repo is this work in? (free text) — in discussion-seed mode, default
    to the discussion's own repo and skip asking unless the discussion implies a
-   different target repo.
+   different target repo. Don't ask which branch: Phase 2 Step 6 always cuts a
+   fresh dedicated branch off the default branch itself — never the branch the
+   operator happens to be on when they run this command.
 2. What concrete output artifacts are expected? Be specific — e.g. Bash scripts, GitHub Discussion post, PR, code changes. In discussion-seed mode, a reply comment on the source discussion is posted automatically by the wrangler at finalize regardless of the answer here — this question is only for artifacts *beyond* that reply.
 3. What data sources, APIs, or external access will agents need?
 4. How will you know this is done? (acceptance criteria)
@@ -320,19 +323,32 @@ changes, stay in plan mode and revise `GOAL.md`; when approved, proceed.
 
 **Step 5:** Set `poll_interval_seconds: 300` (5-minute default — no user prompt needed).
 
-**Step 6:** Write the durable state file **now** — this is your last write to it; from
-Phase 3 onward it belongs to the wrangler. Derive the slug, ensure the directory
-exists, and write to `~/.claude/imps/runs/${SLUG}.json`:
+**Step 6:** Cut the run's dedicated working branch, then write the durable state file
+**now** — this is your last write to it; from Phase 3 onward it belongs to the
+wrangler. **Never write the branch you happen to be on into the state file** — that
+includes the default branch, and doing so is exactly how a run ends up committing every
+task's work straight onto `master`. Always cut a fresh branch off a clean fetch of the
+default branch, the same way `commands/issue-mode.md` Phase 1 cuts its holding branch:
+
 ```sh
 mkdir -p ~/.claude/imps/runs
 SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
+RUN_BRANCH="imps/${SLUG}-$(date -u +%Y%m%d-%H%M%S)"
+git fetch origin "$DEFAULT_BRANCH" && git checkout -b "$RUN_BRANCH" "origin/$DEFAULT_BRANCH"
 ```
+
+Write `$RUN_BRANCH` into `branch` below — never the discovery answer, never whatever
+`git rev-parse --abbrev-ref HEAD` reported before this step ran. If branch creation
+fails for any reason, stop and surface the error rather than falling back to the
+current branch.
+
 ```json
 {
   "schema": 2,
   "task": "<REFINED_TASK>",
   "repo": "<repo from discovery>",
-  "branch": "<current branch>",
+  "branch": "<RUN_BRANCH>",
   "tasks": [
     { "id": 1, "label": "...", "model": "haiku", "type": "query", "deps": [] }
   ],
