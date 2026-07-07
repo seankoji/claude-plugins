@@ -37,7 +37,7 @@ context across resumes.
 
 ```
 Agent(
-  subagent_type: 'ape-wrangler',
+  subagent_type: 'ape:📣',
   prompt: `Run Segment A per your brief.
     Fingerprint: <the full fingerprint content>
     Focus area: <focus area, or "broad" if empty>
@@ -47,7 +47,7 @@ Agent(
 
 Keep the `agentId` from the spawn — you resume this same wrangler for Segment B.
 
-**Agent-type fallback:** if `ape-wrangler` is not registered in this session, spawn
+**Agent-type fallback:** if `ape:📣` is not registered in this session, spawn
 `general-purpose` with the full body of `agents/ape-wrangler.md` prepended to the prompt. If
 subagents are unavailable entirely, execute that file's protocol inline in this session (same
 steps, no offload) and note the degradation.
@@ -68,7 +68,7 @@ steps, no offload) and note the degradation.
   handing this off was meant to avoid.
 
 **Wrangler death mid-segment:** if `SendMessage` to the wrangler errors, or it returns
-malformed/non-JSON output, re-spawn a fresh `ape-wrangler`:
+malformed/non-JSON output, re-spawn a fresh `ape:📣`:
 
 - **Died before `candidates_ready`** (mid Segment A) — re-spawn with the original Segment A
   prompt. This re-burns each gibbon-scout's search budget and may surface a different

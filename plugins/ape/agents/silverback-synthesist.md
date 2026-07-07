@@ -1,5 +1,5 @@
 ---
-name: silverback-synthesist
+name: 🦍
 description: |
   Synthesizes every per-repo analyst report into ranked, actionable recommendations for the host project. Used during the synthesis phase of /ape:forage — reads reports and fingerprint from disk itself so the orchestrator's context never absorbs the raw report bodies.
 
@@ -12,7 +12,7 @@ description: |
   </commentary>
   </example>
 model: opus
-color: black
+color: purple
 tools: ["Read", "Glob", "Write"]
 ---
 

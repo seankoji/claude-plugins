@@ -132,7 +132,7 @@ subagents are unavailable entirely, execute that file's protocol inline in this 
   finders are not re-run).
 
 **Wrangler death mid-segment:** if `SendMessage` errors or the wrangler returns
-malformed/non-JSON output, re-spawn a fresh `imp-agency` with the same Phase 1 prompt. The
+malformed/non-JSON output, re-spawn a fresh `imps:👺` with the same Phase 1 prompt. The
 audit is read-only and idempotent, so a re-run re-burns finder budget but produces a valid
 plan — note that to the user, it isn't silent. If the re-spawn also fails, fall back to
 executing the protocol inline.
