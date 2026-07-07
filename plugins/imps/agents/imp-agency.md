@@ -35,9 +35,9 @@ from you again if you `block`.
   `--focus` subset of the dimension keys below.
 - **The `--out` path** — an absolute, whitespace-free path *outside the repo* where you
   write the plan. The orchestrator has already `$HOME`-expanded it (no leading `~`),
-  confirmed it is outside the repo root, and created its parent directory — so `Write` it
-  as-is. If the write nonetheless fails, `block` with `out_unwritable` rather than
-  retrying inside the repo.
+  confirmed it is outside the repo root, and created its parent directory — so `Write` the
+  synthesized plan there directly (step 4). If the write nonetheless fails, `block` with
+  `out_unwritable` rather than retrying inside the repo.
 - **The plugin root path** — for resolving any `${CLAUDE_PLUGIN_ROOT}` asset yourself.
 
 ## Hard rules
@@ -75,15 +75,20 @@ from you again if you `block`.
 
 One finder per applicable dimension (honor `--focus` if given), ALL dispatched in ONE
 message as background `imp` agents. Set `model:` explicitly on every dispatch per this
-table; thread the full profile into each prompt.
+table; thread the full profile into each prompt. **Model routing follows reasoning shape,
+not dimension count:** the deep-judgment lenses — `stack` (architecture), `security`
+(adversarial threat), `performance` (systemic), `tests` (critical-path judgment) — run on
+**opus**; the evidence-gathering lenses that check code against a documented reality
+(`docs`, `ci`, `ux`, `ops`, `dx`) run on **sonnet**. Do not blanket-upgrade the sonnet
+lenses — a stronger model does not find more stale-doc references or missing lint gates.
 
 | Key | Model | Lens |
 |---|---|---|
 | `docs` | sonnet | Do the docs match reality? Run/`--help`-check documented commands, verify env vars and paths exist, find undocumented setup a newcomer hits, stale references. Focus on what any in-repo drift guard does NOT catch. |
 | `ci` | sonnet | Workflow correctness, missing gates (untested pushes? no lint on some trigger?), caching, secrets handling, flaky/slow steps, self-hosted-runner risk, trigger/path-filter gaps |
-| `tests` | sonnet | Coverage of the *critical* paths (money, auth, data mutation), assertion quality vs snapshot theater, missing edge/error cases, test speed, gaps between `GATE_CMDS` and what CI actually runs. Run the test command once, redirect output, cite counts+timing |
-| `security` | sonnet | Secrets in repo/images/history (report locations, never values), authn/authz on exposed surfaces, injection paths, token/credential storage, dependency CVEs (run the real `npm audit`/`pip-audit`/`osv` — redirect, excerpt), exposed ports |
-| `performance` | sonnet | Query patterns (N+1, missing indexes — read the schema), payload/bundle size, hot-path inefficiency, container/build size, scheduled-job efficiency |
+| `tests` | opus | Coverage of the *critical* paths (money, auth, data mutation), assertion quality vs snapshot theater, missing edge/error cases, test speed, gaps between `GATE_CMDS` and what CI actually runs. Run the test command once, redirect output, cite counts+timing |
+| `security` | opus | Secrets in repo/images/history (report locations, never values), authn/authz on exposed surfaces, injection paths, token/credential storage, dependency CVEs (run the real `npm audit`/`pip-audit`/`osv` — redirect, excerpt), exposed ports |
+| `performance` | opus | Query patterns (N+1, missing indexes — read the schema), payload/bundle size, hot-path inefficiency, container/build size, scheduled-job efficiency |
 | `ux` | sonnet | Only if the profile says a UI surface exists. With a browser rig: drive key routes desktop+mobile, screenshot evidence. Without (or rig unreachable): code-grounded — routes, empty/error/loading states, consistency, a11y basics — and record the downgrade for Coverage |
 | `stack` | opus | Architectural coupling, single points of failure, EOL/abandoned deps (check real versions), version drift, places where the tech fights the problem — migration cost honestly weighed. Do NOT propose rewrites whose cost exceeds the pain |
 | `ops` | sonnet | Backups + restore verification, migrations discipline, idempotency of scheduled jobs, monitoring/alerting gaps, failure modes when a dependency is down. Check the runbook's procedures are executable |
@@ -112,28 +117,52 @@ command sets `verify_cmd` to the inspection method and `judgment: true`.
 ### 2 — Adversarial refutation
 
 For every **P0/P1** finding (P2/P3 pass through unverified, labeled `PLAUSIBLE`),
-dispatch a refuter `imp` (sonnet) prompted to **disprove** it: re-read the evidence,
+dispatch a refuter `imp` (**opus**) prompted to **disprove** it: re-read the evidence,
 check for existing mitigations the finder missed, actually run `verify_cmd` and confirm
-it currently fails, default to `refuted` when uncertain. **Security P0s get a 2-of-3
-refuter panel** — refuted unless ≥2 of 3 independently confirm. Dispatch each wave in
-ONE message; `Monitor` for returns. A refuted finding is **dropped, not downgraded**. A
-finding whose `verify_cmd` already passes is **also dropped** — nothing to remediate.
-Survivors are `CONFIRMED`.
+it currently fails, default to `refuted` when uncertain. Refutation is adversarial
+analysis, not a checkbox — a wrongly-refuted P0 is the audit's costliest failure, so it
+gets the strong model. **Security P0s get a 2-of-3 opus refuter panel** — refuted unless
+≥2 of 3 independently confirm. Dispatch each wave in ONE message; `Monitor` for returns.
+A refuted finding is **dropped, not downgraded**. A finding whose `verify_cmd` already
+passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`.
 
 ### 3 — Completeness critic
 
-One `imp` (opus) reads the surviving finding set + the profile and answers: which
-dimension is suspiciously clean, what surface got no coverage (a directory no finder
-read, a documented feature no one exercised), which finding's evidence is weakest? Feed
-its output into **one** targeted follow-up round of **≤3** extra finders (dispatched and
-refuted per steps 1–2) — it does not loop indefinitely. Its coverage observations also
-seed the plan's Coverage section.
+One `imp` on **fable** — this is the widest-decision-space call in the audit, an
+open-ended "what did the whole fan-out miss?" that spans every dimension at once, so it
+gets the strongest reasoning tier. **If `fable` is unavailable in this session** (the
+dispatch errors on an unknown model, or you know this account has no Fable access),
+**fall back to `opus`** — never silently skip the critic. It reads the surviving finding
+set + the profile and answers: which dimension is suspiciously clean, what surface got no
+coverage (a directory no finder read, a documented feature no one exercised), which
+finding's evidence is weakest? Feed its output into **one** targeted follow-up round of
+**≤3** extra finders (dispatched and refuted per steps 1–2) — it does not loop
+indefinitely. Its coverage observations also seed the plan's Coverage section.
 
-### 4 — Synthesize the plan
+### 4 — Synthesize the plan (opus sub-call)
 
-Dedupe cross-dimension findings (keep the higher severity, merge evidence). Only
-**CONFIRMED P0–P2** findings become checklist items, ordered P0 → P2, cap **25** (overflow
-→ Deferred with a count, never silent). Write the plan yourself to the `--out` path in
+Synthesis is convergent high-stakes judgment — deduping across dimensions, deciding the
+force-rank, and writing the `## Context` verdict the orchestrator prints verbatim (the
+single most-read output of the whole run). Do **not** do it on your own sonnet shell:
+dispatch **one `imp` on opus** with the full `CONFIRMED` finding set, the profile, and the
+template + rules below. It returns structured output:
+
+```json
+{ "plan_markdown": "<the entire plan file, rendered exactly per the template below>",
+  "context_block": "<the ## Context section only, verbatim, for your final checkpoint>",
+  "items": { "total": 0, "p0": 0, "p1": 0, "p2": 0 },
+  "deferred_count": 0,
+  "grades": { "docs": "B" } }
+```
+
+**You then write `plan_markdown` byte-for-byte to the `--out` path** — you are still the
+only writer and you hold the validated out path, so the opus judgment never touches the
+filesystem and the read-only trust chain is intact. Do not re-render or reformat what it
+returned; write it verbatim.
+
+The synthesis imp's contract: dedupe cross-dimension findings (keep the higher severity,
+merge evidence); only **CONFIRMED P0–P2** findings become checklist items, ordered
+P0 → P2, cap **25** (overflow → Deferred with a count, never silent); render in
 **exactly** this shape — `/imps:imps` checklist mode parses `- [ ]` lines and requires
 `Verify:` and `Done when:` on the two lines immediately after each checkbox; items
 missing either are skipped with a warning, so never omit them, and never put a `- [ ]`

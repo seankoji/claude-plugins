@@ -115,11 +115,19 @@ it to the user as a gate — then hands the whole audit to a single **imp-agency
 (the audit-side analogue of the Imp Wrangler). Inside it, one finder per applicable
 dimension (`docs`, `ci`, `tests`, `security`, `performance`, `ux`, `stack`, `ops`, `dx`)
 fans out as nested background `imp` agents (the Workflow tool is not available to
-subagents), every P0/P1 finding is adversarially refuted (security P0s by a 2-of-3 panel),
-a completeness critic (opus) catches the suspiciously-clean dimension, and the survivors
-are synthesized into the checklist plan. The orchestrator gets back only the plan's
-`## Context` block and the item split — finder returns, refuter traffic, and critic output
-never touch its context.
+subagents), every P0/P1 finding is adversarially refuted, a completeness critic catches
+the suspiciously-clean dimension, and the survivors are synthesized into the checklist
+plan. The orchestrator gets back only the plan's `## Context` block and the item split —
+finder returns, refuter traffic, and critic output never touch its context.
+
+**Model routing follows reasoning shape.** The wrangler shell (dispatch/monitor/merge) is
+sonnet; the parts with real analysis are upgraded: the deep-judgment finders (`stack`,
+`security`, `performance`, `tests`) and every adversarial refuter run on **opus**,
+synthesis is an **opus** sub-call (it writes the most-read output), and the
+cross-dimension completeness critic runs on **fable** — the widest-decision-space call —
+falling back to opus where Fable isn't available. The evidence-gathering finders (`docs`,
+`ci`, `ux`, `ops`, `dx`) stay on sonnet: a stronger model doesn't find more stale docs or
+missing lint gates.
 
 ```
 /imps:imp-agency [--focus docs,tests,security] [--out /abs/path/plan.md]
