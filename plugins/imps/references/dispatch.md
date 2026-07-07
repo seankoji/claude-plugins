@@ -63,7 +63,7 @@ runs concurrently.
 
 Per-task rules (identical for every imp you spawn):
 
-- Spawn via the Agent tool with `subagent_type: '🦇'` — this bakes in atomic-task
+- Spawn via the Agent tool with `subagent_type: 'imps:🦇'` — this bakes in atomic-task
   discipline, correct branch handling for publish tasks, and structured output
   conventions. **Agent-type fallback**: if the spawn errors with an agent-type
   registration failure, re-spawn as `general-purpose` with the full body of

@@ -394,7 +394,7 @@ checkpoint is answered through it, and the wrangler keeps its context across res
 
 ```
 Agent(
-  subagent_type: '👹',
+  subagent_type: 'imps:👹',
   run_in_background: true,
   prompt: `Mode: fresh dispatch          ← or "resume" from the guard's Case B
     State file: ~/.claude/imps/runs/<slug>.json
@@ -409,7 +409,7 @@ same wrangler. Do not write it to the state file: the file belongs to the wrangl
 the spawn onward, and an agentId is useless across `/clear` anyway (resume always
 re-spawns fresh).
 
-**Agent-type fallback:** if `imp-wrangler` is not registered in this session, spawn
+**Agent-type fallback:** if `imps:👹` is not registered in this session, spawn
 `general-purpose` with the full body of `agents/imp-wrangler.md` prepended to the
 prompt. If subagents are unavailable entirely, execute that file's protocol inline in
 this session (same steps, no offload) and note the degradation.

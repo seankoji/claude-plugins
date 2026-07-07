@@ -114,7 +114,7 @@ unless blocked**.
 3. **Head Imp diff review (mandatory when there is a diff).** If step 2 merged nothing
    and the working branch has no commits beyond `origin/<default-branch>` (empty diff —
    e.g. all tasks were query/publish-type), skip this review and set `head_imp: null`
-   in the checkpoint. Otherwise spawn `Agent(subagent_type: "😈", model: opus)`
+   in the checkpoint. Otherwise spawn `Agent(subagent_type: "imps:😈", model: opus)`
    and pass the artifact **by command** — tell it to run
    `git diff origin/<default-branch>..HEAD -- ':!*lock*' ':!dist'` itself and review
    that output. Do not paste the diff. Apply the amendments its blocker/major findings
