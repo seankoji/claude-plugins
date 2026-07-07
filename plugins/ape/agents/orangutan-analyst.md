@@ -1,5 +1,5 @@
 ---
-name: orangutan-analyst
+name: 🦧
 description: |
   Deep-reads ONE already-cloned repository to extract techniques transferable to the host project, grounded in file:line evidence. Used during the analysis phase of /ape:forage.
 

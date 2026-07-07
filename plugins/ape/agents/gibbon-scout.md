@@ -1,5 +1,5 @@
 ---
-name: gibbon-scout
+name: 🐒
 description: |
   Discovers candidate open-source repositories on GitHub via gh search and metadata triage during the discovery phase of /ape:forage. Never clones, never reads code.
 

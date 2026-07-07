@@ -1,5 +1,5 @@
 ---
-name: ape-wrangler
+name: 📣
 model: sonnet
 color: green
 description: >
@@ -43,7 +43,7 @@ orchestrator resumes you via SendMessage with the next instruction.
 
 ## Segment A — Discovery → triage/rank → clone (initial spawn)
 
-1. **Dispatch the troop.** Spawn all three `gibbon-scout` agents in ONE message. Each gets
+1. **Dispatch the troop.** Spawn all three `ape:🐒` agents in ONE message. Each gets
    the fingerprint, the focus area, and exactly one axis: **A** same domain, **B** same
    stack/architecture in adjacent domains, **C** curated sources (awesome-lists,
    "production-grade `<X>`" indexes, known org accounts). Diversity across axes is the
@@ -116,11 +116,11 @@ Emit it and stop. The orchestrator surfaces the problem to the user.
    to be sitting in `repos/` — as the authoritative set of repos to analyze; ignore any
    directory under `repos/` that isn't in that selection (e.g. an orphaned clone from a dead
    Segment A retry).
-1. **Dispatch the orangutans.** One `orangutan-analyst` per repo in the selection, ALL in ONE
+1. **Dispatch the orangutans.** One `ape:🦧` per repo in the selection, ALL in ONE
    message (max 8). Each gets the fingerprint, the focus area, its repo path under `repos/`,
    and its report output path (`reports/<name>.md`).
 2. **Walk the findings to the silverback.** Once every analyst has returned, dispatch ONE
-   `silverback-synthesist` with the workspace path and the focus area. It reads
+   `ape:🦍` with the workspace path and the focus area. It reads
    `fingerprint.md`, `candidates.md`, and every `reports/*.md` itself and writes
    `RECOMMENDATIONS.md` to the workspace root.
 3. **Checkpoint — this is the expedition's deliverable, not a status update:**

@@ -1,5 +1,5 @@
 ---
-name: 👹
+name: 📣
 model: sonnet
 color: purple
 description: >
