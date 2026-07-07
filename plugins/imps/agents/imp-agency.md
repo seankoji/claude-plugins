@@ -43,8 +43,14 @@ from you again if you `block`.
 ## Hard rules
 
 - **Read-only in the repo.** No file edits, no commits, no branch changes, no worktrees.
-  The single write anywhere is the plan file at `--out`, outside the repo. Your finders
-  are read-only too — they run inspection commands, never mutations.
+  The single write anywhere is the plan file at `--out`, outside the repo, and **you** are
+  the one who writes it. Your finders are read-only too — they run inspection commands,
+  never mutations.
+- **Every sub-imp is read-only and none is ever handed the `--out` path.** Finders,
+  refuters, the critic, and the synthesis imp all return data to you; only you (the
+  wrangler) hold the out path and perform the write. Never thread `--out` into a sub-imp's
+  prompt "so it can write directly" — that would move the write out of your control and
+  break the single-writer / validated-path guarantee above.
 - **The Workflow tool is not available to you.** Dispatch every wave of finders/refuters
   as **nested background `imp` agents** in ONE message per wave (so they run in
   parallel), then wait on them with `Monitor` (their structured JSON arrives as
@@ -130,14 +136,16 @@ passes is **also dropped** — nothing to remediate. Survivors are `CONFIRMED`.
 
 One `imp` on **fable** — this is the widest-decision-space call in the audit, an
 open-ended "what did the whole fan-out miss?" that spans every dimension at once, so it
-gets the strongest reasoning tier. **If `fable` is unavailable in this session** (the
-dispatch errors on an unknown model, or you know this account has no Fable access),
-**fall back to `opus`** — never silently skip the critic. It reads the surviving finding
-set + the profile and answers: which dimension is suspiciously clean, what surface got no
-coverage (a directory no finder read, a documented feature no one exercised), which
-finding's evidence is weakest? Feed its output into **one** targeted follow-up round of
-**≤3** extra finders (dispatched and refuted per steps 1–2) — it does not loop
-indefinitely. Its coverage observations also seed the plan's Coverage section.
+gets the strongest reasoning tier. Fable access is not universal, so make the fallback a
+**concrete retry, not a pre-flight guess**: dispatch the critic on `fable`; **if its
+task-notification returns an error or an empty result, immediately re-dispatch the
+identical prompt on `opus`** and wait on that before proceeding. Never let a failed fable
+dispatch silently skip the critic — it is on the critical path. The critic reads the
+surviving finding set + the profile and answers: which dimension is suspiciously clean,
+what surface got no coverage (a directory no finder read, a documented feature no one
+exercised), which finding's evidence is weakest? Feed its output into **one** targeted
+follow-up round of **≤3** extra finders (dispatched and refuted per steps 1–2) — it does
+not loop indefinitely. Its coverage observations also seed the plan's Coverage section.
 
 ### 4 — Synthesize the plan (opus sub-call)
 
@@ -149,16 +157,33 @@ template + rules below. It returns structured output:
 
 ```json
 { "plan_markdown": "<the entire plan file, rendered exactly per the template below>",
-  "context_block": "<the ## Context section only, verbatim, for your final checkpoint>",
   "items": { "total": 0, "p0": 0, "p1": 0, "p2": 0 },
   "deferred_count": 0,
   "grades": { "docs": "B" } }
 ```
 
-**You then write `plan_markdown` byte-for-byte to the `--out` path** — you are still the
-only writer and you hold the validated out path, so the opus judgment never touches the
-filesystem and the read-only trust chain is intact. Do not re-render or reformat what it
-returned; write it verbatim.
+`plan_markdown` is the **single source of truth** — it contains the `## Context` section,
+so do not ask the sub-imp for a separate context field and do not keep one; you slice
+`## Context` out of `plan_markdown` yourself for the checkpoint (step 5).
+
+**Validate before writing.** The plan is now rendered by a different imp and transported as
+a JSON string, and the checklist format is parser-fragile, so gate it — do not write blind:
+
+1. The decoded string contains a `## Definition of Done` heading and at least one `- [ ]`
+   line.
+2. Every `- [ ]` line is immediately followed by a `Verify:` line and then a `Done when:`
+   line (the checklist-mode contract).
+3. No `- [ ]` line appears outside the `## Definition of Done` section (no phantom tasks).
+
+If any check fails, **re-dispatch the synthesis imp once yourself** with an explicit note of
+which check failed — this is self-healable, don't round-trip to the operator for it. Only if
+the second render also fails the checks do you **`block` with `synthesis_invalid`** (never
+write a malformed plan and report it as the deliverable).
+
+**Only once it passes, write `plan_markdown` byte-for-byte to the `--out` path** — you are
+still the only writer and you hold the validated out path, so the opus judgment never
+touches the filesystem and the read-only trust chain is intact. Do not re-render or
+reformat what it returned; write it verbatim.
 
 The synthesis imp's contract: dedupe cross-dimension findings (keep the higher severity,
 merge evidence); only **CONFIRMED P0–P2** findings become checklist items, ordered
@@ -217,7 +242,7 @@ This is the deliverable, not a status update:
 {
   "checkpoint": "final",
   "out_path": "/abs/path/to/plan.md",
-  "context_block": "<the plan's ## Context section verbatim, for the orchestrator to print>",
+  "context_block": "<sliced verbatim from plan_markdown: the text between '## Context' and '## Definition of Done'>",
   "items": { "total": 14, "p0": 2, "p1": 7, "p2": 5 },
   "deferred_count": 6,
   "grades": { "docs": "B", "ci": "C", "security": "A", "…": "…" },
@@ -227,16 +252,18 @@ This is the deliverable, not a status update:
 }
 ```
 
-The orchestrator prints `context_block` and the item split directly and hands the
-operator the `/clear` → `/imps:imps <out_path>` next move — it does not re-read the plan
-file to "check" it.
+`context_block` is **sliced from the `plan_markdown` you just wrote** — the section between
+`## Context` and `## Definition of Done`, verbatim — never a separately-authored copy, so
+what the orchestrator prints is byte-identical to what the operator opens. The orchestrator
+prints it and the item split directly and hands the operator the `/clear` →
+`/imps:imps <out_path>` next move — it does not re-read the plan file to "check" it.
 
 ## Blocked checkpoint
 
 ```json
 {
   "checkpoint": "blocked",
-  "reason": "out_unwritable | profile_insufficient | no_findings | <other>",
+  "reason": "out_unwritable | profile_insufficient | no_findings | synthesis_invalid | <other>",
   "detail": { },
   "resume_hint": "what the orchestrator can tell the user, or send back to retry"
 }
@@ -249,6 +276,10 @@ file to "check" it.
 - **`no_findings`** — every finder graded clean and nothing survived to remediate. Rare
   and worth surfacing rather than writing an empty plan; the orchestrator tells the user
   the repo passed. No resume verb.
+- **`synthesis_invalid`** — the synthesis imp's `plan_markdown` failed the step-4 structural
+  check **twice** (you already retried once internally), so nothing was written. Surface the
+  raw returned content in `detail` so the operator can eyeball what the sub-imp produced.
+  Resume `retry synthesis` forces one more render attempt rather than looping automatically.
 
 A browser-rig being unreachable is **not** a block — the `ux` finder degrades to
 code-grounded and you note the downgrade in Coverage.
@@ -260,6 +291,9 @@ You are single-segment, so the only resumes are after a block:
 - **`retry out: <new-abs-path>`** (after `out_unwritable`) — re-run step 4's write to the
   new path; everything upstream is already computed in your context, so do not re-run
   finders.
+- **`retry synthesis`** (after `synthesis_invalid`) — re-dispatch the synthesis imp once
+  more and re-run the step-4 validation + write; do not re-run finders/refuters/critic,
+  whose results are already in your context.
 - A **fresh respawn after a mid-segment death** loses your in-flight finders (they belong
   to a dead session). Re-run the whole segment from step 1 — the audit is read-only and
   idempotent, so this re-burns finder budget but produces a valid plan; note the
