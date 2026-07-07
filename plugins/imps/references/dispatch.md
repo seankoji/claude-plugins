@@ -29,8 +29,25 @@ git remote show origin | grep 'HEAD branch'   # default branch
 git fetch origin && git rebase origin/<default-branch>
 ```
 
-Branch mismatch → `blocked` checkpoint (`reason: "branch_mismatch"`). Rebase conflict →
-abort the rebase (`git rebase --abort`), then `blocked` checkpoint
+Branch mismatch → `blocked` checkpoint (`reason: "branch_mismatch"`).
+
+**Hard stop: never dispatch, merge, or commit onto the default branch.** After
+resolving the default branch above, compare it against `git rev-parse --abbrev-ref
+HEAD` yourself — do not just trust the state file's `branch` field, since a bad state
+file (e.g. `branch` set to the operator's current branch at plan time instead of a
+dedicated run branch) is exactly the failure mode this guards against. If they match,
+stop immediately — no rebase, no dispatch, no merge — and cut a dedicated branch
+yourself before proceeding:
+```sh
+git fetch origin <default-branch>
+git checkout -b "imps/<slug>-$(date -u +%Y%m%d-%H%M%S)" origin/<default-branch>
+```
+Update the state file's `branch` field to the new name, then continue preflight from
+the top (re-verify, then rebase). If branch creation fails for any reason, do not fall
+back to the default branch — emit `blocked` checkpoint (`reason: "dispatch_failed"`,
+`detail: { step: "default_branch_guard" }`) instead.
+
+Rebase conflict → abort the rebase (`git rebase --abort`), then `blocked` checkpoint
 (`reason: "dispatch_failed"`, `detail: { step: "rebase", conflict_files: [...] }`). Do
 not dispatch until the working tree is clean and rebased.
 

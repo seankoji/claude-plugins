@@ -98,7 +98,11 @@ unless blocked**.
 
 1. **Verify the tree.** `git rev-parse --abbrev-ref HEAD` must match the state file's
    `branch` and the tree must be clean. Mismatch → `blocked` checkpoint
-   (`reason: "branch_mismatch"`).
+   (`reason: "branch_mismatch"`). Also re-apply `references/dispatch.md` §2's
+   default-branch guard here — a resumed run can re-enter this segment without
+   passing back through Segment D's preflight, and that guard is what stops a merge
+   from landing on the default branch if an old or hand-edited state file still
+   points `branch` at it.
 2. **Merge the imps' branches.** For each `code`-type task in the `worktrees` map
    whose imp reported `"status": "done"` (skip `"failed"` — list them in the
    checkpoint, never merge them): `git merge <branch>`. On conflict: **leave the conflict in the tree** (do
