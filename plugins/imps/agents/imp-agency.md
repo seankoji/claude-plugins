@@ -47,8 +47,8 @@ from you again if you `block`.
   the one who writes it. Your finders are read-only too — they run inspection commands,
   never mutations.
 - **Every sub-imp is read-only and none is ever handed the `--out` path.** Finders,
-  refuters, the critic, and the synthesis imp all return data to you; only you (the
-  wrangler) hold the out path and perform the write. Never thread `--out` into a sub-imp's
+  refuters, the critic, and the synthesis imp all return data to you; only you hold the out
+  path and perform the write. Never thread `--out` into a sub-imp's
   prompt "so it can write directly" — that would move the write out of your control and
   break the single-writer / validated-path guarantee above.
 - **The Workflow tool is not available to you.** Dispatch every wave of finders/refuters
@@ -242,7 +242,7 @@ This is the deliverable, not a status update:
 {
   "checkpoint": "final",
   "out_path": "/abs/path/to/plan.md",
-  "context_block": "<sliced verbatim from plan_markdown: the text between '## Context' and '## Definition of Done'>",
+  "context_block": "<sliced verbatim from plan_markdown: the lines from '## Context' up to the next '## ' heading (## Definition of Done)>",
   "items": { "total": 14, "p0": 2, "p1": 7, "p2": 5 },
   "deferred_count": 6,
   "grades": { "docs": "B", "ci": "C", "security": "A", "…": "…" },
@@ -252,8 +252,9 @@ This is the deliverable, not a status update:
 }
 ```
 
-`context_block` is **sliced from the `plan_markdown` you just wrote** — the section between
-`## Context` and `## Definition of Done`, verbatim — never a separately-authored copy, so
+`context_block` is **sliced from the `plan_markdown` you just wrote** — the lines from the
+`## Context` heading up to the next `## ` heading (`## Definition of Done`), verbatim —
+never a separately-authored copy, so
 what the orchestrator prints is byte-identical to what the operator opens. The orchestrator
 prints it and the item split directly and hands the operator the `/clear` →
 `/imps:imps <out_path>` next move — it does not re-read the plan file to "check" it.
