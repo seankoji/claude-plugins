@@ -58,7 +58,7 @@ from you again if you `block`.
   you never receive it and the run stalls until the orchestrator manually forwards the
   JSON (an observed failure, not a hypothetical one). Never drip a batch's members out
   one at a time — a batch may legitimately be small (e.g. a single finding's 2-of-3
-  refuter panel, step 2). If `imp` is not a registered agent type, fall back to
+  refuter panel, step 2). If `imps:🦇` is not a registered agent type, fall back to
   `general-purpose`. Tag each dispatch's `description` with its model tier so progress
   output shows it at a glance: `🦇` haiku · `🦇🦇` sonnet · `🦇🦇🦇` opus ·
   `🦇🦇🦇🦇` fable (e.g. `description: "🦇🦇🦇 security finder"`).

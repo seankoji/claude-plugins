@@ -96,7 +96,7 @@ the wrangler keeps its context across the resume.
 
 ```
 Agent(
-  subagent_type: '👺',
+  subagent_type: 'imps:👺',
   prompt: `Run your audit segment per your brief.
     Project profile: <the full profile content from Phase 0>
     Focus: <the --focus dims, or "all applicable dimensions">
@@ -108,7 +108,7 @@ Agent(
 Keep the `agentId` from the spawn — you `SendMessage` this same wrangler if it blocks, so
 the resume lands in the context that already ran the finders.
 
-**Agent-type fallback:** if `imp-agency` is not registered in this session, spawn
+**Agent-type fallback:** if `imps:👺` is not registered in this session, spawn
 `general-purpose` with the full body of `agents/imp-agency.md` prepended to the prompt. If
 subagents are unavailable entirely, execute that file's protocol inline in this session
 (same steps, no offload) and note the degradation to the user.

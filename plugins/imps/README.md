@@ -202,7 +202,7 @@ independent review under a bot identity misleading.
 No manual setup needed for any of these — the plugin installs them at
 `${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The bundled
 `😈` agent type resolves whenever anything invokes it via the `Agent` tool
-(`Agent(subagent_type: "😈", ...)`).
+(`Agent(subagent_type: "imps:😈", ...)`).
 
 ## Runtime state
 
