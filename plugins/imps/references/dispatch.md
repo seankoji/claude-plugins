@@ -46,7 +46,7 @@ runs concurrently.
 
 Per-task rules (identical for every imp you spawn):
 
-- Spawn via the Agent tool with `subagent_type: 'imp'` — this bakes in atomic-task
+- Spawn via the Agent tool with `subagent_type: '🦇'` — this bakes in atomic-task
   discipline, correct branch handling for publish tasks, and structured output
   conventions. **Agent-type fallback**: if the spawn errors with an agent-type
   registration failure, re-spawn as `general-purpose` with the full body of
@@ -68,6 +68,9 @@ Per-task rules (identical for every imp you spawn):
 - Apply the model routing recorded per task in the state file (`model:` on every
   spawn). Model IDs vary by session — read the exact identifiers from the session's
   model table rather than hardcoding them.
+- Tag each spawn's `description` with its model tier so progress output shows it at a
+  glance: `🦇` haiku · `🦇🦇` sonnet · `🦇🦇🦇` opus · `🦇🦇🦇🦇` fable, matching
+  whatever `model:` you set on that same call (e.g. `description: "🦇🦇 docs task #4"`).
 - One imp = one task ID — never combine multiple state-file tasks into one imp or
   split one task across imps.
 - Never create GitHub PRs from inside dispatch. PRs are deferred to Segment B, created

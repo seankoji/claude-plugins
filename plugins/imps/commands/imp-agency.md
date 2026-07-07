@@ -96,7 +96,7 @@ the wrangler keeps its context across the resume.
 
 ```
 Agent(
-  subagent_type: 'imp-agency',
+  subagent_type: '👺',
   prompt: `Run your audit segment per your brief.
     Project profile: <the full profile content from Phase 0>
     Focus: <the --focus dims, or "all applicable dimensions">

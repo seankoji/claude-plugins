@@ -116,7 +116,7 @@ agent(
    correctness bugs, unsafe assumptions, gaps in the DoD. Steelman the case that this
    should NOT ship. Return a list of findings (blocker | major | minor | nit), then a
    one-line VERDICT: APPROVE | CHANGES_REQUESTED.`,
-  { model: '<opus model id>', label: 'head-imp' }
+  { model: '<opus model id>', label: '😈' }
 )
 ```
 
@@ -378,7 +378,7 @@ checkpoint is answered through it, and the wrangler keeps its context across res
 
 ```
 Agent(
-  subagent_type: 'imp-wrangler',
+  subagent_type: '👹',
   run_in_background: true,
   prompt: `Mode: fresh dispatch          ← or "resume" from the guard's Case B
     State file: ~/.claude/imps/runs/<slug>.json
