@@ -1,7 +1,7 @@
 {
   "name": "prompt-builder",
   "version": "0.1.6",
-  "description": "Iterative prompt engineering assistant — diagnoses the brief, selects a structural framework (RTF/RISEN/CO-STAR/CRISPE/RACE/APE/CARE/TAG), drafts, critiques, and delivers a finished artefact with test cases and failure modes.",
+  "description": "Iterative prompt engineering assistant — diagnoses the brief, structures it with Anthropic's evidence-based prompting techniques (XML tags, chain-of-thought, few-shot), drafts, critiques, and delivers a finished artefact with test cases and failure modes.",
   "author": {
     "name": "seankoji",
     "url": "https://github.com/seankoji"
@@ -13,8 +13,8 @@
     "claude-code",
     "prompt-engineering",
     "prompts",
-    "frameworks",
-    "rtf",
-    "risen"
+    "xml-tags",
+    "chain-of-thought",
+    "few-shot"
   ]
 }
