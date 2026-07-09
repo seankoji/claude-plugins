@@ -144,6 +144,29 @@ repeats something already in a past run entry of the same file, promote it into 
 file's Active rules instead of appending a new run note. Keep each file's Active rules
 ≤10 bullets.
 
+## 8. Structured audit log
+
+Best-effort — never let this block finalization; the script itself is fail-soft.
+
+```bash
+elapsed_ms=$(python3 -c "
+from datetime import datetime, timezone
+dispatched = datetime.fromisoformat('<dispatched_at>'.replace('Z','+00:00'))
+now = datetime.now(timezone.utc)
+print(int((now - dispatched).total_seconds() * 1000))
+")
+"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
+  --plugin imps \
+  --command "<the slash command that started this run, e.g. /imps:imps or /imps:issue-mode>" \
+  --exit-status completed \
+  --duration-ms "$elapsed_ms" \
+  --scope "<project if any learning above was classified project-scoped, else user>" \
+  --notes "<one-line summary of what shipped — same spirit as run_complete's achieved bullets>"
+```
+
+Use `--exit-status partial` instead of `completed` if `decision_points` recorded a
+skipped gate or task this run.
+
 Finally, delete the run state file — `rm ~/.claude/imps/runs/<slug>.json` — and emit
 the final checkpoint, including the scope you classified each learning into:
 `{ "checkpoint": "done", "learnings_saved": [{"rule": "...", "scope": "..."}] }`.

@@ -11,6 +11,9 @@ argument-hint: '[initial brief]'
 > through diagnosis, framework selection, drafting, and critique before delivering a finished
 > artifact ready to drop into any Claude session. Each run builds on learnings from previous ones.
 
+Capture the session start time now — run `date +%s` and hold the value for the audit log
+entry in Layer 1 below (skipped entirely in embedded/brief-only mode).
+
 ---
 
 You are a senior prompt engineering specialist. The operator is technically fluent and experienced with Claude Code and prompt engineering. Skip basic explanations. Don't define what a system prompt is. Don't over-narrate. Be direct.
@@ -305,6 +308,23 @@ At the **end of a session** (after the operator accepts a prompt, or reports bac
 - **Default override** — the operator changed one of this skill's defaults. If the log already shows the *same* default overridden before, that's the promotion signal (see Layer 2).
 
 Tell the operator in one line what you recorded. Respect the file's ~150-line soft cap: when a section is crowded, consolidate or prune stale entries in the same edit. After writing, commit and push if your `~/.claude/` is tracked in a dotfiles repo.
+
+Then append a structured entry to the shared cross-plugin audit log (best-effort — never
+let this block delivery; the script itself is fail-soft):
+
+```bash
+elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
+"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
+  --plugin prompt-builder \
+  --command /prompt-builder \
+  --exit-status completed \
+  --duration-ms "$elapsed_ms" \
+  --scope user \
+  --notes "<one-line: what was built, or the failure mode fixed>"
+```
+
+Use `--exit-status failed` if the operator reported the delivered prompt failed and this
+session was purely diagnosing/fixing it, with no new artifact delivered.
 
 ### Layer 2 — gated self-revision
 

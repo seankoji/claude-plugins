@@ -198,6 +198,7 @@ independent review under a bot identity misleading.
 | Summon banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/imps-intro.py` |
 | Dispatch banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-banner.py` |
 | Final banner (cosmetic) | `${CLAUDE_PLUGIN_ROOT}/scripts/final-banner.py` |
+| Structured audit-log appender | `${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh` |
 
 No manual setup needed for any of these — the plugin installs them at
 `${CLAUDE_PLUGIN_ROOT}` and the commands resolve them at runtime. The bundled
@@ -214,10 +215,13 @@ Written to `~/.claude/imps/` on first run — not bundled:
 | `~/.claude/imps/runs/<slug>.md` | Per-run `GOAL.md` spine (`/compact`-durable) — lives here, not in the repo, so writing it never needs project-directory permission |
 | `~/.claude/imps/runs/<slug>.prs.json` | Per-PR monitor state for `/imps:prs` |
 | `~/.claude/imps/learnings.md` | Self-tuning `## Active rules` (≤10 bullets) + per-run notes |
+| `~/.claude/audit.jsonl` | One structured JSON line per completed run — shared across plugins in this marketplace (schema in the root `AGENTS.md`) |
 
 The `learnings.md` `## Active rules` section is read at startup on every run and applied
 to model routing, task boundaries, and dependency detection. `/imps:imps` appends a new run
-entry after each completed run; confirmed learnings are promoted into Active rules.
+entry after each completed run; confirmed learnings are promoted into Active rules. The
+wrangler also appends a structured `audit.jsonl` entry at finalize — best-effort, skipped
+with a warning (not a failure) if `jq` is missing.
 
 ## Browser review (optional)
 

@@ -80,6 +80,7 @@ Default (no flag) is recommended: running Phase 1 before Phase 2 ensures that an
 - **Backup and rollback**: before any Phase 2 edit, `~/.claude/settings.json` is copied to `settings.json.bak.<timestamp>` next to the real file (falling back to `/tmp/` if that directory is blocked). All three settings files are validated as parseable JSON *before* the backup is taken and *after* edits are applied — a pre-existing parse failure aborts the run before anything is touched; a post-edit parse failure restores from the backup automatically. To manually revert, copy the `.bak.<timestamp>` file back over `~/.claude/settings.json`.
 - **Auto-commit**: if `.claude/settings.json` is modified and tracked in git, the command runs `git add .claude/settings.json` and `git commit -m "chore(.claude): ..."` (no push). `~/.claude/settings.json` and `.claude/settings.local.json` are never committed by this tool.
 - The self-reflect log lives at `~/.claude/claude-tuneup.notes.md` — one level above `commands/` so it is not auto-registered as a slash command.
+- Phase 3 also appends a structured entry to `~/.claude/audit.jsonl` (shared across plugins in this marketplace — schema in the root `AGENTS.md`). Best-effort: skipped with a warning, not a failure, if `jq` is missing.
 - To remove: `claude plugin uninstall claude-tuneup@seankoji`. The built-in `/fewer-permission-prompts` covers Phase 1 alone.
 
 ---

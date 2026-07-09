@@ -40,7 +40,41 @@ These five things must change **together** — missing one breaks the marketplac
   The pattern is already established in `goldfish-judge.sh` and `elephant.md` — match it.
 - **Executable files are the source of truth.** `commands/*.md` owns mechanics;
   `scripts/*.sh` owns runtime behavior. READMEs *describe* them — don't restate or drift.
-- **Fail-closed beats fail-open** everywhere. See `goldfish-judge.sh` for the pattern.
+- **Fail-closed beats fail-open** everywhere safety-relevant. See `goldfish-judge.sh` for
+  the pattern. Deliberate exception: `audit-log.sh` is telemetry, not a gate — it fails
+  *soft* (warns on stderr, exits 0) on a missing `jq` or an unwritable log dir, so a
+  logging hiccup never breaks the caller's primary command. Malformed *arguments* to it
+  still exit 1 — those are bugs in the calling command, not the environment.
+
+---
+
+## Cross-plugin audit log
+
+Self-improving commands (imps, prompt-builder, claude-tuneup) each append one line to a
+shared, append-only `~/.claude/audit.jsonl` after a run, in addition to their own
+free-text learnings log. One fixed shape across plugins is what makes a future
+cross-plugin meta-command (e.g. "which command types are failing most this month")
+possible at all — schema adapted from maestro's `audit.jsonl`
+(github.com/sharpdeveye/maestro):
+
+```json
+{"id":"a-974bcc15","ts":"2026-07-09T02:15:37Z","plugin":"imps","command":"/imps:imps","scope":"project","project":"claude-plugins","exit_status":"completed","duration_ms":812345,"cost_estimate_usd":null,"notes":"Shipped audit-log JSONL schema across imps, prompt-builder, claude-tuneup"}
+```
+
+`exit_status` is one of `completed | partial | failed | cancelled`. `notes` is
+free text, truncated to 200 chars by the script. `cost_estimate_usd` is reserved for
+future token-cost instrumentation — always `null` today.
+
+The appender is `scripts/audit-log.sh`, bundled **identically into every plugin that
+uses it** (`plugins/imps/scripts/`, `plugins/prompt-builder/scripts/`,
+`plugins/claude-tuneup/scripts/`) rather than pulled from one shared location — plugins
+in this marketplace install independently, so there is no cross-plugin runtime path to
+require a shared lib from. `tests/run.sh` diffs the copies against each other; if you
+change the script, change all three and let the diff check catch drift.
+
+The free-text logs (`learnings.md`, `claude-tuneup.notes.md`) are not being replaced —
+they hold qualitative "Active rules" narratives a single JSON line can't express well.
+`audit.jsonl` is additive: a queryable event stream layered on top.
 
 ---
 

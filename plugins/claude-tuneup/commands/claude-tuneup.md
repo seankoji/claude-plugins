@@ -29,6 +29,9 @@ Flags:
 - `--no-reflect` — run Phases 1 + 2 but skip Phase 3
 - (no flag) — run all three, scan first (adds can create new duplicates the audit catches)
 
+Capture the run start time now — run `date +%s` and hold the value for the audit log
+entry in Phase 3 below (only reached when Phase 3 runs).
+
 ## Scope rules
 
 **Global** (`~/.claude/settings.json` — may be a symlink; follow it before writing) — patterns that apply anywhere:
@@ -234,6 +237,21 @@ Append a dated entry to `~/.claude/claude-tuneup.notes.md` (one level above `com
 ```
 
 Keep entries terse. Reuse the same wording across runs when the same finding recurs — exact-string matching makes the "≥ 2 occurrences" tally in 8c trivial.
+
+**8b′. Structured audit log**
+
+Best-effort — never let this block the report; the script itself is fail-soft.
+
+```bash
+elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
+"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
+  --plugin claude-tuneup \
+  --command /claude-tuneup \
+  --exit-status completed \
+  --duration-ms "$elapsed_ms" \
+  --scope user \
+  --notes "<one-line: N added, D duplicates stripped, F findings logged>"
+```
 
 **8c. Suggest skill edits**
 
