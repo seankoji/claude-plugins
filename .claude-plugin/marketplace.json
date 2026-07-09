@@ -25,9 +25,9 @@
     },
     {
       "name": "imps",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "source": "./plugins/imps",
-      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, hands the run to a wrangler subagent, merges through gates and persona review. Plus /imps:imp-agency: whole-repo audit → imps-ready remediation plan."
+      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via a real Workflow script, merges through gates and persona review. Plus /imps:imp-agency: whole-repo audit → imps-ready remediation plan."
     },
     {
       "name": "ape",

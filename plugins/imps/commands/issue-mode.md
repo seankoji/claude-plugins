@@ -144,91 +144,13 @@ slugs whose brief exists (or whose Lens you can improvise) — don't invent slug
   a data-accuracy lens). Define these per repo via the Lens column; absent a brief,
   improvise from the Lens. Skip the whole browser panel when there's no UI surface.
 
-**Posting identity — dedicated GitHub Apps, not the orchestrator.** By default each
-persona posts through its own GitHub App identity (`mm-solution-architect`,
-`mm-grumpy-engineer`, `mm-sre`, `mm-business-analyst`, `mm-ux-designer`) via
-`~/.claude/scripts/persona-post.sh`, which mints that App's own installation token —
-never the orchestrator's own `gh` / GitHub-MCP credentials. This fixes the
-identity/attribution half of a real problem: previously the same session that authored
-the PR's content posted its own `VERDICT: APPROVE` under its own name, with no
-distinguishable reviewer at all. Posting through the `mm-*` Apps gives each persona a
-genuinely separate, traceable GitHub actor. **It is not an unforgeable gate** — the
-orchestrator still holds (via 1Password) the credentials `persona-post.sh` uses to mint
-every App's token, so a compromised or misbehaving orchestrator session could still
-mint an APPROVE under any `mm-*` identity without truly running that persona's review.
-Treat this as independent attribution and audit trail, not as a branch-protection
-control the authoring session itself is unable to satisfy. The one thing this mechanism
-*does* guarantee, enforced below rather than by prompt discipline alone: when the App
-path fails for a persona, that persona's verdict never silently reappears under the
-orchestrator's own identity — see **Fallback** below. Each persona's slug maps
-straight onto its App (`solution-architect` also accepts the alias
-`technical-architect`); the script itself handles JWT minting and installation-token
-exchange from 1Password (vault `robot.house`, item `persona-app-<slug>`) — no other
-setup is required per repo beyond having the Apps installed there.
-
-Post like this — **one temp file per persona**, never a shared path (Phase 4 runs all
-four code personas in parallel; a shared `/tmp/review.md` lets one persona's write race
-another's read and post the wrong body under the wrong identity):
-```bash
-f="$(mktemp "${TMPDIR:-/tmp}/review-<slug>.XXXXXX.md")"
-printf '%s' "$REVIEW_BODY" > "$f"
-~/.claude/scripts/persona-post.sh <slug> <owner/repo> pr-review <PR> "$f" <APPROVE|REQUEST_CHANGES|COMMENT>
-```
-`pr-review` files a **real GitHub PR review** — map the verdict protocol's
-`APPROVE | CHANGES_REQUESTED` straight onto the script's event argument (`APPROVE` /
-`REQUEST_CHANGES`; use `COMMENT` when genuinely undecided, per each persona's brief —
-see the note on `COMMENT` under **Verdict protocol** below, since it does not add a
-third VERDICT outcome). The plain-body form above, with the `- [severity] file:line —
-finding` bullets the verdict protocol already requires, satisfies each persona brief's
-review-format intent for most findings; reach for a JSON payload instead
-(`{"body": "...", "event": "...", "comments": [...]}`, filename ending `.json`) only
-when a finding needs true GitHub line-anchoring in the PR's Files tab — the script
-sends a `.json` file to the Reviews API verbatim.
-
-**Verify the post landed — do not trust the exit code alone.** `persona-post.sh` can
-swallow a failure without a clean non-zero exit (e.g. the App isn't installed on this
-repo → the installation-token exchange or the Reviews API answers with a 404/422 that
-a thin wrapper may not propagate). After each call, confirm the review actually exists —
-`gh api repos/<owner>/<repo>/pulls/<PR>/reviews --jq '.[-1].id,.[-1].user.login'` (or
-the GitHub MCP's `pull_request_read`) — and check the returned `user.login` matches the
-expected `mm-*` identity. Anything else (non-zero exit, no matching review, or a review
-posted under the wrong identity) counts as a failure for that persona and takes the
-fallback path below.
-
-**Fallback (script absent, that repo has no `mm-*` Apps installed, 1Password locked, no
-`op` access, the script exits non-zero, or verification above doesn't find a matching
-review): fail closed — never post under the orchestrator's own identity.** The
-orchestrator's own GitHub credentials authored, merged, or (via the Head Imp fix-loop)
-directly amended the diff under review; posting that persona's verdict under the
-orchestrator's identity when its dedicated App is unavailable would silently collapse
-"independent review" back into the session reviewing its own work — exactly the failure
-this identity separation exists to prevent, and worse, doing so with no separate human
-decision in the loop. Instead: record that persona's full VERDICT block in
-`findings_inline` in the run's checkpoint / tracking-issue comment, tagged
-`posting: failed — dedicated App unavailable, not posted`, for the operator to read
-directly or post by hand if they choose. One persona's script failure never fails the
-whole panel — every other persona still posts normally through its own App; only the
-failed persona's verdict moves from "posted" to "inline, unposted."
-
-**Verdict protocol (both modes — reviews and comments):** every persona review ends:
-
-```
-VERDICT: APPROVE | CHANGES_REQUESTED @ <sha>
-- [blocker|major|minor|nit] <file:line if applicable> — <finding>
-```
-
-CHANGES_REQUESTED requires ≥1 `blocker` or `major`. Minors and nits are recorded
-but never block. A `COMMENT`-event review (posted only when genuinely undecided) still
-resolves to `VERDICT: APPROVE` when no blocker/major is present — `COMMENT` is a
-posting nuance on *how* the review lands, not a third VERDICT outcome; the protocol
-stays two-valued. The orchestrator always parses VERDICT lines from the posted body and
-keeps the tally in the live-progress comment — **this is the sole source of truth, not
-GitHub's aggregate review-state field.** That field is absent entirely on the
-comment-only fallback path, and even where a real review exists it collapses
-`APPROVE`/`COMMENT` into a distinction (`APPROVED` vs. `COMMENTED`) that VERDICT-line
-parsing already resolves unambiguously. Never assume every persona used the real-review
-path just because some did — read each persona's own posted body for its VERDICT line
-rather than inferring panel-wide status from the PR's review-state summary.
+**Posting identity, verify, fallback, and verdict protocol: see
+`${CLAUDE_PLUGIN_ROOT}/references/persona-posting.md`** — shared verbatim with the
+free-text run's Workflow script, so it has one home instead of drifting between two
+copies. In this mode specifically: personas post concurrently in Phase 4, so use one temp
+file per persona per that file's shared-path-race guidance; a failed post's VERDICT block
+goes into `findings_inline` in the run's checkpoint / tracking-issue comment (the
+"caller's own findings/result record" that file refers to generically).
 
 ## Phase 0 — Scout wave
 
@@ -356,9 +278,9 @@ Then, in parallel:
 
 - **Code personas (opus):** each reads the integration PR diff — excluding
   lockfiles/generated (`git diff ... -- . ':!*lock*' ':!dist'`) — reviews through
-  its brief, ends with the verdict protocol, then posts per **Posting identity** above
-  (its own GitHub App only — a failed post goes to `findings_inline`, never under the
-  orchestrator's own identity).
+  its brief, ends with the verdict protocol, then posts per
+  `references/persona-posting.md` (its own GitHub App only — a failed post goes to
+  `findings_inline`, never under the orchestrator's own identity).
 - **1 collector agent (sonnet):** drives the browser ONCE — every key page, desktop
   1440×900 and mobile 375×812, full scroll — via the live transport (CDP or Chrome MCP).
   Client-rendered / hydrated content may load seconds after `readyState === complete` —
@@ -368,8 +290,9 @@ Then, in parallel:
 - **Browser personas (sonnet), after the collector finishes:** judge the bundle
   through their brief. Each has a budget of ≤5 live interactions via the browser
   transport for flows the bundle can't show (form steps, hover states). Post findings +
-  verdict per the protocol, through its own GitHub App identity — same **Posting
-  identity** rule (fail-closed to `findings_inline` on failure) as the code panel.
+  verdict per the protocol, through its own GitHub App identity — same
+  `references/persona-posting.md` rule (fail-closed to `findings_inline` on failure) as
+  the code panel.
 
 Update the live comment with the verdict table once all personas have posted.
 
@@ -385,15 +308,16 @@ Update the live comment with the verdict table once all personas have posted.
    A fixer may answer `WONTFIX: <rationale>` — collect these for the handoff.
 4. Push; re-review ONLY dissenting personas, scoped to the delta
    (`git diff <prev-sha>..HEAD`); browser personas re-run the collector on
-   affected pages only. Each re-review posts under the same **Posting identity** rule
-   (dedicated GitHub App only, fail-closed to `findings_inline` on failure) and pins the
-   new verdict to the new SHA.
+   affected pages only. Each re-review posts under the same
+   `references/persona-posting.md` rule (dedicated GitHub App only, fail-closed to
+   `findings_inline` on failure) and pins the new verdict to the new SHA.
 5. All clear → exit loop. After 3 rounds: summarize unresolved findings +
    WONTFIXes in the PR description and proceed.
 
 **Disclose fix-loop re-approvals in the handoff.** Each re-review in step 4 posts under
-the same `mm-*` App identities the orchestrator itself mints (`§ Personas → Posting
-identity`) — a dissenting persona approving the orchestrator's own fixer commits is a
+the same `mm-*` App identities the orchestrator itself mints
+(`references/persona-posting.md`) — a dissenting persona approving the orchestrator's own
+fixer commits is a
 narrower version of the same self-review shape the identity separation exists to guard
 against. It's still the right default (issue-mode's *initial* panel reviews other
 agents' work, not the orchestrator's own), but Phase 6 must say plainly when it
