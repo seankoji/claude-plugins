@@ -1,0 +1,40 @@
+{
+  "name": "ollama-sidecar",
+  "version": "0.1.0",
+  "description": "MCP tool that offloads mechanical file transforms to a local/LAN Ollama model — Claude passes file paths, not content, keeping token cost and data on your machine.",
+  "author": {
+    "name": "seankoji",
+    "url": "https://github.com/seankoji"
+  },
+  "homepage": "https://github.com/seankoji/claude-plugins/tree/master/plugins/ollama-sidecar",
+  "repository": "https://github.com/seankoji/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "mcp",
+    "ollama",
+    "local-llm",
+    "offload",
+    "sidecar"
+  ],
+  "userConfig": {
+    "ollama_host": {
+      "type": "string",
+      "title": "Ollama host",
+      "description": "Base URL of the Ollama server to use, e.g. http://localhost:11434 or http://your-pc.local:11434. Leave unset to use localhost.",
+      "default": "http://localhost:11434"
+    },
+    "ollama_model": {
+      "type": "string",
+      "title": "Ollama model",
+      "description": "Model tag to run transforms with. Must already be pulled on the target Ollama instance.",
+      "default": "qwen2.5-coder:14b"
+    },
+    "num_ctx": {
+      "type": "string",
+      "title": "Context window (tokens)",
+      "description": "num_ctx passed to Ollama, as a numeric string. Larger values allow bigger input files but need more VRAM.",
+      "default": "16384"
+    }
+  }
+}
