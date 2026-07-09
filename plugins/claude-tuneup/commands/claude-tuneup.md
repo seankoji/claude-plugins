@@ -19,7 +19,7 @@ Three phases, run in order by default:
 
 1. **Scan** — last 50 session transcripts → common read-only Bash and MCP tool calls → proposed adds (classified by scope).
 2. **Audit** — compare global vs project allowlists → strip duplicates, move misplaced entries, flag stale env vars and CLAUDE.md content.
-3. **Self-reflect** — capture lessons from this run, append to a running notes file, and propose skill edits when the same finding recurs.
+3. **Self-reflect** — capture lessons from this run and append them to a running notes file.
 
 Flags:
 
@@ -32,26 +32,62 @@ Flags:
 Capture the run start time now — run `date +%s` and hold the value for the audit log
 entry in Phase 3 below (only reached when Phase 3 runs).
 
+## Configuration (optional)
+
+This plugin's scope rules below cover only generic, widely-applicable defaults — no
+directory layout or self-hosted service names are hardcoded. If your setup uses a
+particular homelab/infra layout (container manifests outside the standard Compose
+filenames, a fixed set of directories that hold hostnames/SSH aliases, extra Bash heads
+you consider globally safe), point the run at an optional config file:
+`~/.claude/claude-tuneup.config.json`. If absent, every field below falls back to its
+generic default — the command works out of the box with no config.
+
+```json
+{
+  "extra_global_bash_heads": [],
+  "extra_global_read_paths": [],
+  "project_scan_dirs": [],
+  "project_compose_globs": ["docker-compose*.yml", "compose*.yml"],
+  "project_service_names": []
+}
+```
+
+- `extra_global_bash_heads` — additional Bash command heads to treat as globally safe
+  read-only-ish patterns (still filtered through **Safety rules** below — this can't
+  bypass the interpreter/shell/installer block list). Example: a link checker or a
+  metrics CLI you run from every project.
+- `extra_global_read_paths` — additional glob paths to allow `Read` on globally, beyond
+  the shipped defaults (`~/.config/**`, `~/.wrangler/**`, `/private/etc/**`).
+- `project_scan_dirs` — extra directories (beyond `CLAUDE.md`) to scan for hostnames/SSH
+  aliases this repo uses, for classifying scan candidates as project-scoped.
+- `project_compose_globs` — glob patterns for this project's container/service manifest
+  files, scanned for container names. Defaults to the standard Docker Compose filenames;
+  override if your manifests live elsewhere (e.g. a custom `stacks/*.yml` layout).
+- `project_service_names` — extra project-specific service subcommand names to treat as
+  project-scoped (e.g. a self-hosted automation tool's CLI).
+
+See `README.md` for a filled-in example config.
+
 ## Scope rules
 
 **Global** (`~/.claude/settings.json` — may be a symlink; follow it before writing) — patterns that apply anywhere:
 
-- Generic Bash heads: `git`, `gh`, `npm`, `npx`, `jq`, `mkdir`, `ping`, `traceroute`, `dig`, `route get`, `ipconfig`, `scutil`, `op`, `openssl`, `security`, `ssh-add`, `tar`, `unzip`, `xargs`, `time`, `sleep`, `wait`, `lychee`, `axiom`, `/usr/bin/sips`
+- Generic Bash heads: `git`, `gh`, `npm`, `npx`, `jq`, `mkdir`, `ping`, `traceroute`, `dig`, `route get`, `ipconfig`, `scutil`, `op`, `openssl`, `security`, `ssh-add`, `tar`, `unzip`, `xargs`, `time`, `sleep`, `wait`, plus anything listed in `extra_global_bash_heads` (see **Configuration** above)
 - All `mcp__*` tools EXCEPT ones whose target is project-state
 - `Read`/`Write`/`Edit` on `/tmp/**`, `/private/tmp/**`
-- `Read` on global config dirs (`~/.config/**`, `~/.cloudflare/**`, `~/.wrangler/**`, `/private/etc/**`)
+- `Read` on global config dirs (`~/.config/**`, `~/.wrangler/**`, `/private/etc/**`, plus anything in `extra_global_read_paths`)
 - `Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/<script>.py*)` — scripts in the global scripts dir
 - `Skill(<name>)` entries for globally-used skills
 
 **Project** (`.claude/settings.json`) — patterns referencing THIS repo:
 
-- Hostnames or SSH aliases defined in this repo (look in `CLAUDE.md`, `network/`, `hardware/`)
-- Container names from this repo's `stacks/*.yml`
+- Hostnames or SSH aliases defined in this repo (look in `CLAUDE.md` and any dirs listed in `project_scan_dirs`)
+- Container names from files matching `project_compose_globs`
 - Paths under the repo's working directory
-- Service-specific subcommands (e.g. `n8n n8n *`, project-specific docker exec paths)
+- Service-specific subcommands matching `project_service_names` (e.g. a self-hosted tool's CLI, project-specific docker exec paths)
 - Project-specific webhook URLs / API endpoints
 
-**Skip — different repo** (neither global nor project): `scan_perms.py` scans `~/.claude/projects/` across every repo on the machine, not just this one. If a candidate's hostname, container name, path, or service reference clearly belongs to a repo other than the current one, DROP it — don't default it into this repo's `.claude/settings.json` as a false-positive project entry. Cross-check against `~/repos/` directory names and other repos' known aliases when in doubt.
+**Skip — different repo** (neither global nor project): `scan_perms.py` scans `~/.claude/projects/` across every repo on the machine, not just this one. If a candidate's hostname, container name, path, or service reference clearly belongs to a repo other than the current one, DROP it — don't default it into this repo's `.claude/settings.json` as a false-positive project entry. Cross-check against sibling directory names and other repos' known aliases when in doubt.
 
 Quote-style variants (`'foo *` vs `"foo *`) are SEPARATE permission rules — Claude's matcher is exact-prefix. NEVER dedupe across quote styles.
 
@@ -66,7 +102,12 @@ NEVER allowlist a pattern that grants arbitrary code execution. A wildcard on an
 - Task-runner wildcards: `npm run *`, `yarn run *`, `pnpm run *`, `bun run *`, `make *`, `just *`, `cargo run *`, `go run *` — exact forms (e.g. `Bash(bun run typecheck)`) are fine
 - `gh api *`, `docker run`/`exec`, `kubectl exec`, `sudo`
 
-DROP commands Claude Code already auto-allows (no allowlist entry needed). Source of truth: `src/tools/BashTool/readOnlyValidation.ts` (`READONLY_COMMANDS`, `READONLY_NOARGS`, `READONLY_EXACT`, `COMMAND_ALLOWLIST`) and `src/utils/shell/readOnlyCommandValidation.ts` (`GIT_READ_ONLY_COMMANDS`, `GH_READ_ONLY_COMMANDS`, `DOCKER_READ_ONLY_COMMANDS`, `RIPGREP_READ_ONLY_COMMANDS`, `PYRIGHT_READ_ONLY_COMMANDS`). Highlights:
+DROP commands Claude Code already auto-allows (no allowlist entry needed) — an
+allowlist entry for one of these is a no-op at best. This list is this plugin's own
+maintained knowledge of Claude Code's built-in read-only auto-allow behavior; it is not
+sourced from a file this plugin (or its users) has access to, so it can drift from the
+actual CLI version over time — treat a candidate that seems to already work without a
+rule as a signal to recheck this list, not just trust it blindly:
 
 - Always auto-allowed (any args): `cat`, `head`, `tail`, `ls`, `find`, `wc`, `stat`, `id`, `uname`, `pwd`, `whoami`, `echo`, `printf`, `cd`, `which`, `true`, `false`, `sleep`, `expr`, `test`, `diff`, `cmp`, plus text manipulation (`cut`, `tr`, `column`, `sort`, `uniq`, `tac`, `rev`, `fold`, `expand`)
 - Auto-allowed with safe flags only: `xargs`, `file`, `sed`, `sort`, `grep`/`egrep`/`fgrep`, `sha256sum`/`sha1sum`/`md5sum`, `tree`, `date`, `hostname`, `lsof`, `pgrep`, `ss`, `fd`/`fdfind`, `rg`, `jq`, `uniq`, `history`, `arch`, `ifconfig`, `pyright`, `ps`, `netstat`, `base64`, `man`, `info`, `tput`
@@ -83,11 +124,12 @@ If a candidate matches any of these, drop it — no rule needed.
 Read in parallel:
 
 - `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` — frequency tables for Bash, MCP, SSH/sudo drills (last 50 transcripts). If absent, Phase 1 is unavailable; run with `--audit-only`.
+- `~/.claude/claude-tuneup.config.json` if it exists — see **Configuration** above; fall back to the documented defaults for any field it omits, and to all defaults if the file is absent entirely.
 - `~/.claude/settings.json` — follow the symlink to the real file if it's a link
 - `.claude/settings.json` if it exists
 - `.claude/settings.local.json` if it exists
 - `CLAUDE.md` and `~/.claude/CLAUDE.md` for the 3e check
-- Recursive scan of `network/`, `hardware/`, `services/` for SSH aliases this repo uses; `stacks/*.yml` for container names — informs scope classification
+- Recursive scan of `CLAUDE.md` plus any `project_scan_dirs` for SSH aliases this repo uses; files matching `project_compose_globs` for container names — informs scope classification
 
 ### 2. Phase 1 — Scan (skip if `--audit-only`)
 
@@ -120,8 +162,8 @@ Then strip **prefix-subsumed** entries across files: any rule whose prefix is al
 
 Iterate `global.allow`. Flag entries that reference:
 
-- Any hostname/alias mentioned in this repo's docs
-- Any container/service name from `stacks/*.yml`
+- Any hostname/alias mentioned in this repo's docs or `project_scan_dirs`
+- Any container/service name from files matching `project_compose_globs`
 - Paths under this repo's working directory
 - Project-specific binary paths (e.g. `/usr/local/bin/docker exec <container>`)
 
@@ -161,7 +203,7 @@ Print a one-line note per flagged item with `file:line`. Manual follow-up.
 
 Iterate `global.allow` + `project.allow` for `mcp__<server>__*` rules. For each, check whether `<server>` appears in the currently-connected / deferred tools list (the `mcp__<server>__*` names surfaced in `<system-reminder>` blocks). Flag any rule whose `<server>` prefix is absent — the server is no longer connected, so the rule is dead weight. Watch for **case drift** too: a server can reconnect under a different case (e.g. `mcp__Claude_in_Chrome__*` → live lowercase `mcp__claude-in-chrome__*`), leaving the old-case rules stale while the live-case tools go unallowed.
 
-Flag for removal — NEVER auto-remove; ask via `AskUserQuestion`. (Recurring finding — `mcp__Control_Chrome__*`, `mcp__claude_ai_Excalidraw__*`, old-case Chrome entries keep resurfacing.)
+Flag for removal — NEVER auto-remove; ask via `AskUserQuestion`. Case-drift stragglers are a recurring pattern across runs (an MCP server renaming/relaunching under different casing, or getting disconnected outright, leaves the old rule behind) — check `claude-tuneup.notes.md` for ones specific to your own setup.
 
 ### 4. Confirm & apply
 
@@ -206,7 +248,7 @@ Concise summary:
 - C CLAUDE.md items flagged
 - Backup at `~/.claude/settings.json.bak.<ts>` (or `/tmp/claude-settings.json.bak.<ts>` if the storage dir was blocked)
 - If committed: commit SHA
-- If Phase 3 ran: F findings logged, R recurring findings surfaced as proposed skill edits
+- If Phase 3 ran: F findings logged to `claude-tuneup.notes.md`
 
 ### 8. Phase 3 — Self-reflect (skip if `--no-reflect`, `--dry-run`, `--scan-only`, or `--audit-only`)
 
@@ -236,7 +278,7 @@ Append a dated entry to `~/.claude/claude-tuneup.notes.md` (one level above `com
 - ...
 ```
 
-Keep entries terse. Reuse the same wording across runs when the same finding recurs — exact-string matching makes the "≥ 2 occurrences" tally in 8c trivial.
+Keep entries terse. Reuse the same wording across runs when the same finding recurs — exact-string matching makes it easy to spot at a glance which findings are one-offs vs. recurring, if you're ever scanning the file yourself.
 
 **8b′. Structured audit log**
 
@@ -253,20 +295,13 @@ elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
   --notes "<one-line: N added, D duplicates stripped, F findings logged>"
 ```
 
-**8c. Suggest skill edits**
-
-After appending, scan the entire notes file for finding-bullets that have appeared **≥ 2 times across distinct runs** (separate `## YYYY-MM-DD` headers). For each recurring finding:
-
-1. Draft a concrete proposed edit to *this* file (`claude-tuneup.md`) — exact section, exact new text.
-2. Ask via `AskUserQuestion` whether to (a) apply now, (b) defer via a task chip with a self-contained prompt, or (c) dismiss this run.
-
-NEVER auto-edit `claude-tuneup.md`. The skill is global; changes need explicit approval.
-
-If running in autonomous mode (user said "work without stopping"), default to (b) defer-via-chip — don't apply silently, but don't lose the suggestion either.
+This command does not propose or apply edits to its own body based on the notes log —
+`claude-tuneup.notes.md` and `audit.jsonl` are for you to read back if you want to spot
+a recurring papercut and fix the command yourself.
 
 ## Notes
 
-- To remove this command, delete this file (`rm ~/.claude/commands/claude-tuneup.md`). The built-in `/fewer-permission-prompts` covers Phase 1 alone.
+- To remove: `claude plugin uninstall claude-tuneup@seankoji`. The built-in `/fewer-permission-prompts` covers Phase 1 alone.
 - The audit can be opinionated about scope — when in doubt, ASK rather than auto-move.
 - Permission rules are exact-prefix match: `Bash(npm *)` covers `Bash(npm test)` but not vice versa. Prefer the broader rule when classifying adds.
 - Never add a write/mutation pattern automatically — surface it for the user to explicitly approve.
