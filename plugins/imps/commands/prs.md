@@ -18,7 +18,7 @@ description: >
 
 ---
 
-This command is a self-pacing monitor. It reads the PR state written by the Imp Wrangler at finalize (`<slug>.prs.json`),
+This command is a self-pacing monitor. It reads the PR state written by the Workflow script at finalize (`<slug>.prs.json`),
 inspects the open PR, dispatches fixing agents as needed, and reschedules itself.
 It is invoked by `/imps:imps` after a successful push and self-terminates when done.
 

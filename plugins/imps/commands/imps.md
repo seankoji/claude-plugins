@@ -23,9 +23,10 @@ Arguments: `$ARGUMENTS`
 ---
 
 You are a senior engineering orchestrator. Your job is to convert a vague task into a
-dependency-mapped plan, get it approved, and hand the entire run to the **Imp Wrangler**
-subagent — the single point of contact from plan approval to run completion. You hold
-decisions; the wrangler holds mechanics.
+dependency-mapped plan, get it approved, and hand the entire run to the **Workflow
+script** (`scripts/imps-run.workflow.js`) — real control flow, not a subagent, that
+dispatches/merges/gates/reviews/finalizes from plan approval to run completion. You hold
+decisions; the script holds mechanics.
 
 ## Context discipline (applies to every phase)
 
@@ -33,7 +34,8 @@ The main session holds **decisions, not data**. Its context is re-read every tur
 
 - **Pass artifacts by reference** — file paths and commands, never pasted contents.
 - **Delegate noisy work** — recon goes to `scout`/`Explore` subagents; everything from
-  dispatch onward lives inside the Imp Wrangler. Only compact JSON checkpoints and
+  dispatch onward lives inside the Workflow script's own execution, which the harness
+  tracks separately from this session's transcript. Only compact result summaries and
   operator questions belong in this context.
 - If a tool result would be long, redirect to a file and read the tail.
 
@@ -71,7 +73,7 @@ The main session holds **decisions, not data**. Its context is re-read every tur
   own detection branch instead of falling into issue-driven mode.
   **→ Read `${CLAUDE_PLUGIN_ROOT}/references/discussion-mode.md` and follow it** — it
   fetches the discussion, seeds it as the free-text task (Phase 0 onward), and defines
-  the reply obligation the wrangler fulfills at finalize.
+  the reply obligation the Workflow script fulfills at finalize.
 
 - **Free-text mode** — `$ARGUMENTS` is a task description (anything that is not purely
   issue numbers or a discussion reference), or empty. This is the original `/imps:imps`
@@ -122,7 +124,7 @@ agent(
 ```
 
 **Phase 2 (plan review):** pass the absolute path of GOAL.md — the Head Imp Reads it.
-The **diff review** happens later inside the Imp Wrangler's Segment A — you never
+The **diff review** happens later inside the Workflow script's merge step — you never
 invoke it on a diff yourself.
 
 Inline content is acceptable only for artifacts too small to matter (≲50 lines) or ones
@@ -150,7 +152,7 @@ task is the common case this guard exists for.
 
 Print a one-block summary either way:
 ```
-  <"Plan ready — not yet dispatched" | "Run in progress — wrangler was running">
+  <"Plan ready — not yet dispatched" | "Run in progress — Workflow script was running">
   Task: <task (first 80 chars)>
   Branch: <branch>  ·  <"Dispatched: <dispatched_at>" if set>  ·  Segment: <segment or "—">
   Tasks:  #1 <label>  [<model short> · <type>]
@@ -160,8 +162,9 @@ Print a one-block summary either way:
 **Case A — `phase: "dispatch_pending"` (plan approved, never handed over):**
 
 - **Resume** — verify `git rev-parse --abbrev-ref HEAD` matches state `branch` (warn
-  and wait for confirmation if not), then jump straight to **Phase 3 — Handover** with
-  mode `fresh dispatch`. Skip Phases 0/1/2 entirely.
+  and wait for confirmation if not), then jump straight to **Phase 3 — Sync and run the
+  Workflow script**. Skip Phases 0/1/2 entirely; the script's own opening step sees
+  `phase: "dispatch_pending"` and starts dispatch fresh.
 - **New** — start the task the user is asking for now, and leave the existing run
   completely alone: do NOT delete, edit, or touch `~/.claude/imps/runs/<slug>.json` in
   any way. Instead, move it out of the canonical slot so it stops colliding with the
@@ -171,14 +174,15 @@ Print a one-block summary either way:
   Phases 0–2 normally for the new task.
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh.
 
-**Case B — `phase: "wrangler_running"`, legacy `"dispatched"`, or absent (run was in
-flight when this context was lost):**
+**Case B — `phase: "wrangler_running"` (kept as the phase-string value for continuity
+with existing state files, even though there is no separate wrangler process anymore),
+legacy `"dispatched"`, or absent (run was in flight when this context was lost):**
 
-- **Resume** — jump to **Phase 3 — Handover** with mode `resume`. The fresh wrangler
-  reads the state file, reconciles against ground truth (existing branches, GOAL.md
+- **Resume** — jump to **Phase 3 — Sync and run the Workflow script**. Its own opening
+  step reads the state file, reconciles against ground truth (existing branches, GOAL.md
   checkboxes, heartbeat), re-dispatches only unfinished tasks, and re-enters at the
-  recorded segment. Any imps the dead wrangler had in flight are unreachable — the
-  wrangler knows this; do not try to re-attach to them yourself.
+  recorded segment — exactly what the old `resume`-mode wrangler did. Any imps a dead
+  prior invocation had in flight are unreachable; do not try to re-attach to them yourself.
 - **New** — same archive-rename procedure as Case A.
 - **Abandon** — delete `~/.claude/imps/runs/<slug>.json` and start fresh.
 
@@ -229,7 +233,7 @@ Ask the following in a **single AskUserQuestion call** (batch all five), **skipp
    different target repo. Don't ask which branch: Phase 2 Step 6 always cuts a
    fresh dedicated branch off the default branch itself — never the branch the
    operator happens to be on when they run this command.
-2. What concrete output artifacts are expected? Be specific — e.g. Bash scripts, GitHub Discussion post, PR, code changes. In discussion-seed mode, a reply comment on the source discussion is posted automatically by the wrangler at finalize regardless of the answer here — this question is only for artifacts *beyond* that reply.
+2. What concrete output artifacts are expected? Be specific — e.g. Bash scripts, GitHub Discussion post, PR, code changes. In discussion-seed mode, a reply comment on the source discussion is posted automatically by the Workflow script at finalize regardless of the answer here — this question is only for artifacts *beyond* that reply.
 3. What data sources, APIs, or external access will agents need?
 4. How will you know this is done? (acceptance criteria)
 5. Any constraints? (e.g. don't touch prod, don't create PRs without review, specific files off-limits)
@@ -292,23 +296,23 @@ carry across tool calls. Write with this structure:
  2  ...
 
 ## Status
-Planned — handing to the wrangler.
+Planned — handing to the Workflow script.
 ```
 
 Discussion-seed mode: add `- [ ] Outcome comment posted to the source Discussion` to
-the Definition of Done — the wrangler fulfills this at finalize; it is not a dispatched
+the Definition of Done — the script fulfills this at finalize; it is not a dispatched
 task, and it stays unchecked if the run aborts before finalize (note that in Status
 rather than treating it as a bug).
 Add `- [ ] CI green on the PR` **only if this run will open a PR** (the endstate PR is
-the default for runs that produce code changes; the wrangler adds this line itself when
+the default for runs that produce code changes; the script adds this line itself when
 a PR opens if you omitted it). Omit it for query/publish-only runs, or it stays
 permanently unresolvable.
 
 This file is the `/compact`-durable human-readable spine. It lives outside the project
 on purpose. The JSON state file (Step 6) is the **authoritative** task table — the
-wrangler dispatches from it, not from GOAL.md. If you hand-edit GOAL.md's task table
-after approval, mirror the change into the state file (or re-run planning) or it will
-not take effect. After handover, GOAL.md belongs to the wrangler — it ticks the boxes
+Workflow script dispatches from it, not from GOAL.md. If you hand-edit GOAL.md's task
+table after approval, mirror the change into the state file (or re-run planning) or it
+will not take effect. After handover, GOAL.md belongs to the script — it ticks the boxes
 and keeps Status current.
 
 **Step 3 — Head Imp review (mandatory):**
@@ -325,7 +329,7 @@ changes, stay in plan mode and revise `GOAL.md`; when approved, proceed.
 
 **Step 6:** Cut the run's dedicated working branch, then write the durable state file
 **now** — this is your last write to it; from Phase 3 onward it belongs to the
-wrangler. **Never write the branch you happen to be on into the state file** — that
+Workflow script. **Never write the branch you happen to be on into the state file** — that
 includes the default branch, and doing so is exactly how a run ends up committing every
 task's work straight onto `master`. Always cut a fresh branch off a clean fetch of the
 default branch, the same way `commands/issue-mode.md` Phase 1 cuts its holding branch:
@@ -345,7 +349,7 @@ current branch.
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "task": "<REFINED_TASK>",
   "repo": "<repo from discovery>",
   "branch": "<RUN_BRANCH>",
@@ -364,9 +368,29 @@ current branch.
   "pr": null,
   "verdicts": null,
   "discussion_comment_url": null,
-  "source_discussion": null
+  "source_discussion": null,
+  "gate_commands": null,
+  "learnings_saved": null,
+  "operator_decision": null,
+  "last_result": null
 }
 ```
+
+`gate_commands`, `learnings_saved`, `operator_decision`, and `last_result` are new in
+schema 3 (the Workflow-script rewrite) — additive only, nothing existing was removed or
+repurposed. `gate_commands` persists the once-per-run gate-command discovery result so it
+survives across the fresh invocations described in Phase 3/4 (a real state-file field
+replaces what used to live only in the wrangler's own session memory for the run's
+duration). `operator_decision` carries the pending decision string (the same resume-verb
+vocabulary as before) from Phase 4 into the next fresh invocation. `last_result` is the
+full result object the script returned last time (verbatim) — a fresh invocation reads
+`last_result.status` alongside `operator_decision` to know exactly what to resume into,
+rather than re-deriving routing state from `phase`/`segment` alone. `learnings_saved`
+guards the learnings-append step exactly like `pr`/`verdicts`/`discussion_comment_url`
+guard their own side effects. A legacy schema-2 file (missing these four fields) is
+treated as having them all `null` — the script's own dispatch/gate/learnings logic
+re-derives
+whatever it needs rather than assuming they exist.
 
 Discussion-seed mode: set `source_discussion` to
 `{ "owner": "...", "repo": "...", "number": <int>, "id": "<GraphQL node ID>", "url": "<discussion URL>" }`
@@ -374,107 +398,145 @@ Discussion-seed mode: set `source_discussion` to
 `null`. Imps are unnamed — each is identified by a themed Nerd Font glyph derived from
 its task ID (see the dispatch banner), so the state file carries no `name` field.
 
-Then proceed immediately to Phase 3 — no `/clear` handoff is needed: the wrangler is a
-fresh context by construction, so dispatch never inherits this planning window.
+Then proceed immediately to Phase 3 — no `/clear` handoff is needed: every Workflow
+invocation is fresh by construction (see Phase 4's design note), so dispatch never
+inherits this planning window regardless.
 
 ---
 
-## Phase 3 — Handover to the Imp Wrangler
+## Phase 3 — Sync and run the Workflow script
 
-Everything from here to run completion happens inside one **imp-wrangler** subagent
-(see `agents/imp-wrangler.md` for its full protocol): git preflight, dispatching the
-task DAG as staged background `imp` agents, monitoring them, merges, the Head Imp diff
-review, gates, the endstate PR, the persona panel, and finalize. Only compact JSON
-checkpoints come back.
+Everything from here to run completion is real control flow inside one Workflow script
+(`scripts/imps-run.workflow.js`): git preflight, dispatching the task DAG as staged
+`agent()` calls, merging, the Head Imp diff review, gates, the endstate PR, the persona
+panel, and finalize. **This command has a hard dependency on the `Workflow` tool — there
+is no prose fallback.** If `Workflow` is unavailable in this session, tell the user
+plainly (`/imps:imps` requires it) and stop; do not attempt to execute the old
+subagent-dispatch protocol inline.
 
-**Step 1:** Load SendMessage first (`ToolSearch: "select:SendMessage"`) — every
-checkpoint is answered through it, and the wrangler keeps its context across resumes.
+**Step 1 — sync the canonical script.** Workflow scripts only load from a user's own
+`~/.claude/workflows/*.js` — a plugin cannot ship one that runs directly. Each run,
+re-sync the bundled copy over whatever is there so it always matches the installed
+plugin version (a plain overwrite, not a version/hash check):
 
-**Step 2:** Spawn the wrangler **in the background** via the Agent tool:
-
-```
-Agent(
-  subagent_type: 'imps:📣',
-  run_in_background: true,
-  prompt: `Mode: fresh dispatch          ← or "resume" from the guard's Case B
-    State file: ~/.claude/imps/runs/<slug>.json
-    Plugin root: ${CLAUDE_PLUGIN_ROOT}
-    Persona briefs: <absolute paths of the four code-persona files and
-                     ux-designer.md, resolved from ${CLAUDE_PLUGIN_ROOT}/personas/>`
-)
+```bash
+mkdir -p ~/.claude/workflows
+cp "${CLAUDE_PLUGIN_ROOT}/scripts/imps-run.workflow.js" ~/.claude/workflows/imps-run.js
 ```
 
-Keep the `agentId` from the spawn result in this conversation — Phase 4 resumes this
-same wrangler. Do not write it to the state file: the file belongs to the wrangler from
-the spawn onward, and an agentId is useless across `/clear` anyway (resume always
-re-spawns fresh).
+**Step 2 — invoke it.** Every invocation is a **fresh** `Workflow` call — never
+`resumeFromRunId` (see the design note at the end of this file for why). The script's own
+first step reads the state file and decides what's already done; there is nothing for the
+harness's own resume mechanism to add, and relying on it would risk silently re-triggering
+side effects the script itself must guard against instead.
 
-**Agent-type fallback:** if `imps:📣` is not registered in this session, spawn
-`general-purpose` with the full body of `agents/imp-wrangler.md` prepended to the
-prompt. If subagents are unavailable entirely, execute that file's protocol inline in
-this session (same steps, no offload) and note the degradation.
+```
+Workflow({
+  scriptPath: "~/.claude/workflows/imps-run.js",
+  args: {
+    pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
+    stateFilePath: "~/.claude/imps/runs/<slug>.json",
+    goalFilePath: "~/.claude/imps/runs/<slug>.md",
+    personaPostingProtocolPath: "${CLAUDE_PLUGIN_ROOT}/references/persona-posting.md",
+    personaBriefPaths: {
+      "solution-architect": "${CLAUDE_PLUGIN_ROOT}/personas/solution-architect.md",
+      "grumpy-engineer": "${CLAUDE_PLUGIN_ROOT}/personas/grumpy-engineer.md",
+      "sre": "${CLAUDE_PLUGIN_ROOT}/personas/sre.md",
+      "business-analyst": "${CLAUDE_PLUGIN_ROOT}/personas/business-analyst.md",
+      "ux-designer": "${CLAUDE_PLUGIN_ROOT}/personas/ux-designer.md"
+    }
+  }
+})
+```
 
-**Step 3:** Print the dispatch banner and return control — do not block:
+**Step 3 — print the dispatch banner and stop; you'll be notified.** `Workflow` runs in
+the background — this turn ends here, not after the run finishes.
 
 ```bash
 SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}") ; python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-banner.py" "$SLUG"
 ```
 
-The wrangler works silently until its first checkpoint (`gates_green`, or a `blocked`
-if something needs the operator). Progress between checkpoints is visible in the state
-file — the wrangler heartbeats `last_heartbeat` and `tasks_done` every poll — which is
-what the banner's `progress:` hint points at. There is no automated hang detector: if
-the heartbeat goes stale for much longer than `poll_interval_seconds`, treat the
-wrangler as dead (see Phase 4).
+Progress between results is visible in the state file — the script heartbeats
+`last_heartbeat` and `tasks_done` as tasks complete, same fields as before, for the
+banner's `progress:` hint to read. Whether a single hung (non-erroring) `agent()` call has
+a platform-level timeout is **not verified** — this is a residual, carried-over risk, not
+one this rewrite claims to have solved (today's design also had no automated hang
+detector for this case, only a human-visible heartbeat staleness signal).
 
 ---
 
-## Phase 4 — Checkpoint relay loop
+## Phase 4 — Result relay loop
 
-Each wrangler segment ends in exactly one JSON checkpoint, arriving as a task
-notification. You relay operator decisions back via `SendMessage` to the wrangler's
-`agentId`, using its resume verbs **verbatim** (`resolved, continue` ·
+Each phase of the script ends in exactly one returned `status`, arriving as a
+`<task-notification>` when the background `Workflow` run reaches that point. There is no
+`SendMessage`/`agentId` to resume — an operator decision is **persisted into the state
+file**, then the script is **re-invoked fresh** (Phase 3 Steps 1–3 again, verbatim). The
+script's own opening step reads the state file and skips whatever it says is already
+done; this is how "resume" works throughout, deliberately not via `resumeFromRunId` (see
+the design note at the end of this file).
+
+To persist a decision, patch the state file's `operator_decision` field before
+re-invoking (a single preapprovable command, not a hand-rolled multi-line edit):
+
+```bash
+jq --arg d '<the decision string, same vocabulary as today — see below>' \
+  '.operator_decision = $d' ~/.claude/imps/runs/<slug>.json > "$TMPDIR/imps-state.json" \
+  && mv "$TMPDIR/imps-state.json" ~/.claude/imps/runs/<slug>.json
+```
+
+The decision vocabulary is almost unchanged from before: `resolved, continue` ·
 `retry <gate>: <guidance>` · `skip <gate>` · `reconciled, continue` ·
-`retry tasks #N,#M: <guidance>` · `skip tasks #N,#M` · `wait <hours>` ·
-`integrate partial` · `PR: yes` · `PR: yes, no-post` · `PR: no` ·
-`learnings: <json|none>` · `abort`).
+`retry tasks #N,#M: <guidance>` · `skip tasks #N,#M` · `integrate partial` ·
+`PR: yes` · `PR: yes, no-post` · `PR: no` · `learnings: <json|none>` · `abort` — the
+delivery mechanism changed (from a `SendMessage` to a spawned subagent, to a state-file
+field read by a fresh script invocation), and one verb is dropped: `wait <hours>` existed
+to extend `max_dispatch_hours`'s manual poll-loop timeout, which no longer exists (see
+the design note) — there is no `dispatch_timeout` blocked reason for it to resume from
+either. `integrate partial` is still supported: it confirms every currently-unresolved
+task failure as an accepted omission (the same effect as naming them all in
+`skip tasks`), so re-dispatch doesn't re-block on the same failures.
 
-**Wrangler death:** if SendMessage errors, the wrangler returns malformed/non-JSON
-output, or the state-file heartbeat goes stale mid-run, do not guess at the tree state —
-re-spawn a fresh `imps:📣` per Phase 3 with mode `resume`. Its segments are
-idempotent. If the re-spawn also fails, fall back to executing its protocol inline.
+**If a result never arrives** (session lost, `/clear`, or the run legitimately needs
+picking up later): do nothing special here — the **Guard: resume check** at the top of
+this command already handles it. Re-running `/imps:imps` reads the state file's `phase`
+and `segment`, and Phase 3 re-syncs and re-invokes the script fresh; its own opening step
+reconciles against the state file and git ground truth exactly as the old `resume`-mode
+wrangler did (worktree branches, GOAL.md checkboxes, published artifacts) — see the
+design note for what the script must implement to preserve this.
 
-**`blocked` checkpoints** — surface the problem, agree the next step with the user,
-relay the verb:
+**`blocked` results** — surface the problem, agree the next step with the user, persist
+the decision, re-invoke:
 - `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
-  the tree (or decides); send `resolved, continue` or `abort`.
+  the tree (or decides); persist `resolved, continue` or `abort`.
 - `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
-  those tasks / abort) and relay `retry tasks #N: ...`, `skip tasks #N`, or `abort`.
-- `dispatch_timeout` — the imps exceeded `max_dispatch_hours`. Relay `wait <hours>`,
-  `integrate partial`, or `abort`.
+  those tasks / integrate without any of the unresolved ones / abort) and persist
+  `retry tasks #N: ...`, `skip tasks #N`, `integrate partial`, or `abort`.
 - `merge_conflict` — the conflict is live in the shared working tree. List the branch +
-  files; let the user resolve (or resolve trivial conflicts yourself), then send
+  files; let the user resolve (or resolve trivial conflicts yourself), then persist
   `resolved, continue`.
 - `gate_red` — surface the gate name + log tail; agree retry guidance, skip, or abort.
-- `branch_mismatch` — reconcile branch state with the user, then `reconciled, continue`.
+- `branch_mismatch` — reconcile branch state with the user, then persist
+  `reconciled, continue`.
 
-If the user chooses abort at any gate, send `abort`. The wrangler posts any Discussion
-abort notice itself, leaves the tree as-is, and returns an `aborted` checkpoint —
-surface its `tree_state` and stop (the state file stays for a later resume decision).
+If the user chooses abort at any gate, persist `abort` and re-invoke. The script posts
+any Discussion abort notice itself before returning, leaves the tree as-is, and returns
+`{status: "aborted", ...}` — surface its `tree_state` and stop (the state file stays for
+a later resume decision).
 
-**`gates_green`** — print a one-block summary from the checkpoint fields (merged tasks,
-failed tasks, Head Imp verdict + amendments, gate results, diff stat, and the
-`dispatch` block: elapsed, tokens, model counts, published artifacts). Then the
-operator gate:
+**`awaiting_authorization`** — print a one-block summary from the result's fields (merged
+tasks, failed tasks, Head Imp verdict + amendments, gate results, diff stat, and the
+`dispatch` block: model counts and published artifacts — `tokens_spent` is usually
+`null`, the script has no documented way to read an `agent()` call's own token usage;
+omit that line rather than printing an empty one). Then the operator gate:
 
 **Push & PR decision.** The persona panel posts its findings as comments on a PR
 thread, so the PR must exist first. This is the correct moment: branches are merged,
 the Head Imp reviewed the diff, gates are green — and nothing has been pushed yet.
 
-**Self-review disclosure.** If the `gates_green` checkpoint's `head_imp.amendments` is
-non-zero, this session wrote code directly into the diff during the Head Imp fix-loop —
+**Self-review disclosure.** If the `awaiting_authorization` result's `head_imp.amendments`
+is non-zero, this session wrote code directly into the diff during the Head Imp fix-loop —
 say so before asking below. Persona posting through each's dedicated GitHub App identity
-(`commands/issue-mode.md § Personas → Posting identity`) is attribution/audit-trail
+(`${CLAUDE_PLUGIN_ROOT}/references/persona-posting.md`) is attribution/audit-trail
 only; it is not an independent review of content this same session authored, and
 pushing/PR-creation is a separate authorization from letting personas post live GitHub
 reviews — one does not imply the other.
@@ -483,7 +545,7 @@ Ask with **AskUserQuestion**:
 - **question**: `"Push this branch and open the endstate PR for review?"`
 - **header**: `"Push & PR?"`
 - **options**:
-  1. `Push & open PR, personas post live reviews` — the wrangler pushes the branch,
+  1. `Push & open PR, personas post live reviews` — the script pushes the branch,
      opens a draft PR (flipped to ready at finalize), and personas post real GitHub
      reviews on that thread under their own identities. Activates the handoff for the
      `/imps:prs` monitor.
@@ -497,22 +559,25 @@ Ask with **AskUserQuestion**:
 
 Opening the endstate PR is the default for free-text runs that produced code changes —
 only `Not yet` skips it. Option 2 exists specifically for the self-review case named in
-the disclosure above — offer it deliberately, not as a throwaway third choice. Relay
-exactly `PR: yes`, `PR: yes, no-post`, or `PR: no`. The wrangler then runs the PR +
-persona panel + fix loop + finalize as one segment.
+the disclosure above — offer it deliberately, not as a throwaway third choice. Persist
+exactly `PR: yes`, `PR: yes, no-post`, or `PR: no` and re-invoke. The script then runs the
+PR + persona panel + fix loop + finalize steps in the same invocation.
 
-**`run_complete`** — the run is done (PR ready, panel + fix loop finished, Discussion
-comment posted; the wrangler deletes the state file at `done`). In order:
+**`final`** — the run's substantive work is done (PR ready, panel + fix loop finished,
+Discussion comment posted) but the state file is **not yet deleted** — the script never
+deletes it until the learnings step below completes, specifically so a death between here
+and there still resumes gracefully instead of silently losing the `.prs.json` handoff. In
+order:
 
-1. Print the final banner by piping the checkpoint to the bundled script — via a temp
+1. Print the final banner by piping the result to the bundled script — via a temp
    file, never shell-quoted inline (the JSON routinely contains `'` and `$`):
    ```bash
-   cat > "${CLAUDE_JOB_DIR:-/tmp}/imps-run-complete.json" <<'CHECKPOINT_JSON'
-   <the run_complete JSON verbatim>
-   CHECKPOINT_JSON
+   cat > "${CLAUDE_JOB_DIR:-/tmp}/imps-run-complete.json" <<'RESULT_JSON'
+   <the final result JSON verbatim>
+   RESULT_JSON
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/final-banner.py" < "${CLAUDE_JOB_DIR:-/tmp}/imps-run-complete.json"
    ```
-   Then the results from the checkpoint fields:
+   Then the results from the result's fields:
    ```
      merged:    #6 <label>    (3 files)
      published: #3 Discussion → https://github.com/...
@@ -520,34 +585,68 @@ comment posted; the wrangler deletes the state file at `done`). In order:
      PR:        <url, "ready for review"> | "no PR — branch is local"
    ```
    Render `run_stats` as a short stats block (Achieved / Decision points / Timing /
-   Imps / Tokens — omit empty sections). If `findings_inline` is populated (`PR: no`)
+   Imps — omit empty sections; `tokens_spent` is typically `null`, per the note above,
+   so omit a Tokens line rather than print an empty one). If `findings_inline` is
+   populated (`PR: no`)
    or `unresolved` lists blockers/majors that survived 3 rounds, surface them verbatim —
    they are the review record.
 2. If `prs_monitor` is non-null: invoke the `/imps:prs` skill (no args — it reads the
-   `.prs.json` the wrangler already wrote), then print:
+   `.prs.json` the script already wrote), then print:
    `PR monitor active — watching PR #<N>. I'll address comments, fix CI failures, and
    resolve merge conflicts automatically.`
    If `pr` is null, print instead: "Branch is local only and no PR was opened — push
    and open a PR, then invoke `/imps:prs` to activate the monitor."
-3. **Learnings gate.** If `learnings_candidates` is non-empty, present them with
-   **AskUserQuestion** (`multiSelect: true`):
+3. **Learnings gate — its own explicit step, not folded into printing the summary
+   above.** If `learnings_candidates` is non-empty, present them with **AskUserQuestion**
+   (`multiSelect: true`):
    - **question**: `"Any of these worth saving as a learning?"`
    - **header**: `"Learnings"`
    - **options**: one option per candidate (each already phrased as a rule to apply
      next time)
 
-   Relay the outcome verbatim as one message:
-   `learnings: ["<text 1>", "<text 2>"]`
-   — or `learnings: none` if nothing was confirmed (or there were no candidates; still
-   send it so the wrangler can close out). The wrangler classifies each confirmed
-   learning's scope (project vs. user) itself — no scope question needed.
+   Persist the outcome into the state file's `operator_decision` field exactly like any
+   other decision (same `jq` pattern as above): `learnings: ["<text 1>", "<text 2>"]` —
+   or `learnings: none` if nothing was confirmed (or there were no candidates; still
+   persist it so the script can close out). **Re-invoke the script fresh once more** —
+   this final invocation performs the actual `learnings.md` append (classifying each
+   confirmed learning's scope itself, project vs. user — no scope question needed),
+   guarded by a `learnings_saved` marker so a crash between the append and the state-file
+   delete can't double-append on a subsequent invocation, and only *then* deletes the
+   state file (`~/.claude/imps/runs/<slug>.md` — GOAL.md — stays; it's the human-readable
+   record).
 
-**`done`** — the wrangler wrote the learnings files. Print the closing line using the
-scope each learning was auto-classified into (from `learnings_saved`):
+**`done`** — this last invocation wrote the learnings files and deleted the state file.
+Print the closing line using the scope each learning was auto-classified into (from
+`learnings_saved`):
 ```
 Learnings saved: "<rule 1>" [project] · "<rule 2>" [user]
 ```
 (or `No learnings saved this run.`). The run is over.
+
+---
+
+## Design note — why every Workflow invocation above is fresh, never `resumeFromRunId`
+
+A live spike against the actual `Workflow` tool found two things that rule out
+`resumeFromRunId` as this command's resume mechanism: (1) it is documented as
+same-session only, so it cannot survive `/clear` or a new session — exactly the case the
+**Guard: resume check** above exists to handle; (2) its caching is a
+longest-unchanged-*prefix* match, not independent per-call content addressing — changing
+one call (e.g. a retried gate) causes every subsequent call to re-execute with a fresh
+cache key even when its own inputs are unchanged, which would silently defeat any
+duplicate-post guard that assumed the cache would just skip an unaffected downstream call
+(persona posting, PR creation, the learnings append).
+
+So `imps-run.workflow.js` does not use `resumeFromRunId` at all. Every invocation
+described above is a fresh `Workflow` call; the script's first step reads the state file
+and reconciles against it and git ground truth (worktree branches, GOAL.md checkboxes,
+published artifacts) exactly as the old `resume`-mode wrangler did. Idempotency for
+side-effecting steps has two distinct sources: **merge** relies on `git merge` of an
+already-merged branch being a no-op (no marker needed); **PR creation, persona posting,
+and the learnings append** each check an explicit persisted marker in the state file
+(`pr`, `verdicts`, `discussion_comment_url`, `learnings_saved`) before acting — the same
+correctness mechanism the old design used, ported in effect rather than replaced by
+trusting the platform's cache.
 
 ---
 
@@ -567,20 +666,22 @@ in the prompts above stand for those current IDs.
 
 ## Constraints
 
-- Never hand over to the wrangler without explicit approval of the task list
+- Never hand over to the Workflow script without explicit approval of the task list
   (`ExitPlanMode` is that gate).
 - Never `git merge --force`, `git reset --hard`, or `git push` without explicit user
-  instruction — **exceptions**: (1) after plan approval the Imp Wrangler dispatches
+  instruction — **exceptions**: (1) after plan approval the Workflow script dispatches
   the imps, rebases the working branch, and merges imp branches autonomously, and it
   pushes + opens the endstate PR only after one of the operator's `Push & open PR ...`
-  answers is relayed to it (pushing fix-loop commits to that same PR branch); (2) the
-  `/imps:prs` PR monitor pushes fix commits to the PR branch autonomously once activated.
+  answers is persisted and a fresh invocation picks it up (pushing fix-loop commits to
+  that same PR branch); (2) the `/imps:prs` PR monitor pushes fix commits to the PR
+  branch autonomously once activated.
 - Never create GitHub PRs without user instruction — the Push & PR gate in Phase 4 is
   that instruction for the endstate PR.
 - Persona live-posting is a separate authorization from push/PR creation, not implied by
-  it — only the `Push & open PR, personas post live reviews` answer (relayed as
+  it — only the `Push & open PR, personas post live reviews` answer (persisted as
   `PR: yes`) authorizes personas to post real GitHub reviews; `PR: yes, no-post` and
   `PR: no` both forbid it.
 - If a task touches a production system, pause and confirm before that task runs.
-- The wrangler owns the run state file and `.prs.json` from handover onward; this
-  session's last state-file write is Phase 2 Step 6.
+- The Workflow script owns the run state file and `.prs.json` from handover onward; this
+  session's last direct state-file write is Phase 2 Step 6 (later writes are the
+  `operator_decision` patches in Phase 4, applied via `jq` as documented there).

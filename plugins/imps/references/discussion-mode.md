@@ -3,7 +3,7 @@
 *Read by the orchestrator only when Mode detection matched a GitHub Discussion
 reference. This is not a separate phase sequence like issue-driven mode — it's a fetch
 step that seeds free-text mode (Phase 0 onward) with the discussion's content, then adds
-one obligation the Imp Wrangler fulfills at finalize.*
+one obligation the Workflow script fulfills at finalize.*
 
 **1. Resolve owner/repo/number.**
 - Full URL → strip any `?query` or `#fragment` first, then parse `owner`, `repo`, `number`
@@ -47,9 +47,9 @@ mid-run doesn't lose the reply target.
 
 **5. Mandatory reply obligation.** Regardless of what Phase 1 discovery answers for
 "expected output artifacts," a discussion-seeded run posts one summary comment back to
-the source discussion whenever finalize is reached. **The Imp Wrangler owns this** — it
-posts the outcome comment in its finalize segment, and on an operator `abort` at any
+the source discussion whenever finalize is reached. **The Workflow script owns this** — it
+posts the outcome comment in its finalize step, and on an operator `abort` at any
 gate it posts a short abort notice instead, both keyed off `source_discussion` in the
-state file (see `references/finalize.md` §3). It is not a dispatched task, and Phase 1
-Q2 may still surface additional artifacts (PRs, code) on top of it. The orchestrator
-never posts to the discussion itself.
+state file (see `scripts/imps-run.workflow.js`'s `finalizeRun` function). It is not a
+dispatched task, and Phase 1 Q2 may still surface additional artifacts (PRs, code) on top
+of it. The orchestrator never posts to the discussion itself.
