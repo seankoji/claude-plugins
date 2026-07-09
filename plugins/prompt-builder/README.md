@@ -28,9 +28,11 @@ Chain-of-Thought and Few-Shot are applied on top of any framework when the task 
 
 ## Prerequisites
 
-None. This is a pure instruction command — no scripts, no MCP servers, no shell dependencies.
+None required. The skill's own logic is pure instruction — no MCP servers, no shell dependencies for diagnosis, drafting, or critique. It bundles one small script, `scripts/audit-log.sh`, that appends a structured entry to `~/.claude/audit.jsonl` at the end of a session; it needs `jq` on `PATH` and skips itself with a warning (not a failure) if `jq` is missing.
 
 **Optional:** `~/.claude/prompt-builder/learnings.md` — if present, the skill reads it at session start to apply validated patterns, avoid recorded failure modes, and reuse exemplar prompts as few-shot scaffolding. It grows automatically as you use the skill.
+
+**Also written:** `~/.claude/audit.jsonl` — one JSON line per full (non-embedded) session: `{plugin, command, exit_status, duration_ms, ...}`. Shared across every plugin in this marketplace that logs a structured audit trail; see the marketplace's `AGENTS.md` for the schema.
 
 ## Install
 

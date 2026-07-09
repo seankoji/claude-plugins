@@ -58,7 +58,10 @@ run_exec_case() {
   test_home="$(mktemp -d)"
   out="$(mktemp)"
   err="$(mktemp)"
-  ( cd "$test_home" && PATH="$STUBS:$PATH" bash "$target" "${args[@]+"${args[@]}"}" >"$out" 2>"$err" )
+  # HOME is pinned to the disposable test_home so any script that defaults to a
+  # $HOME/... path (e.g. audit-log.sh's ~/.claude/audit.jsonl) can't touch the real
+  # user's home directory during a test run.
+  ( cd "$test_home" && HOME="$test_home" PATH="$STUBS:$PATH" bash "$target" "${args[@]+"${args[@]}"}" >"$out" 2>"$err" )
   exit_code=$?
 
   local want_exit=0
@@ -120,6 +123,25 @@ for case_dir in "$ROOT"/tests/fixtures/unit/**/; do
   [ -f "$case_dir/arg" ] || [ -f "$case_dir/stdin" ] || continue
   run_unit_case "$case_dir"
 done
+
+# Cross-plugin consistency: audit-log.sh is bundled identically into every plugin that
+# uses it (no shared runtime path exists between independently-installed plugins — see
+# AGENTS.md). Diff the copies so a future edit to one doesn't silently drift from the rest.
+audit_log_plugins=(imps prompt-builder claude-tuneup)
+first_plugin="${audit_log_plugins[0]}"
+first="$ROOT/plugins/$first_plugin/scripts/audit-log.sh"
+if [ -f "$first" ]; then
+  consistent=1 detail=""
+  for p in "${audit_log_plugins[@]:1}"; do
+    other="$ROOT/plugins/$p/scripts/audit-log.sh"
+    if ! diff -q "$first" "$other" >/dev/null 2>&1; then
+      consistent=0
+      detail="$detail
+plugins/$p/scripts/audit-log.sh differs from plugins/$first_plugin/scripts/audit-log.sh"
+    fi
+  done
+  report "consistency/audit-log.sh" "$consistent" "$detail"
+fi
 
 echo "---"
 echo "$pass passed, $fail failed"
