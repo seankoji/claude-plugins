@@ -1,6 +1,6 @@
 # elephant-goldfish
 
-A self-validating `/elephant` command for [Claude Code](https://code.claude.com/) that writes and gate-checks a repo's durable design document — **`elephant.md`** — using a cold, different-lineage Gemini reader as the judge.
+A self-validating `/elephant` command for [Claude Code](https://code.claude.com/) that writes and cold-checks a repo's durable design document — **`elephant.md`** — using a different-lineage Gemini reader as the judge.
 
 Inspired by [Rensin's Elephant-Goldfish model](https://drensin.medium.com/elephants-goldfish-and-the-new-golden-age-of-software-engineering-c33641a48874).
 
@@ -10,36 +10,46 @@ Inspired by [Rensin's Elephant-Goldfish model](https://drensin.medium.com/elepha
 
 > "Design is the new code." — One repo = one `elephant.md` that lets a zero-context session re-bootstrap the project without reading all the code.
 
-The command fans out parallel **haiku scouts** to map the codebase, then an **Opus author** writes the doc. It then runs a **Goldfish Gate**: a closed judge → patch → re-judge loop (up to 5 rounds) where the judge is a cold Gemini read via `agy` — a different model lineage from the Claude author. A pass means *a real zero-context reader can bootstrap from this doc*, not just that the author believes it's good.
+The command writes or updates `elephant.md` grounded in the repo, then runs a closed
+judge → patch → re-judge loop (up to 5 rounds) where the judge is a cold Gemini read via
+the `gemini` CLI — a different model lineage from the Claude author, with the doc inlined
+into its prompt and no other repo access. A PASS means *a real zero-context reader can
+bootstrap from this doc* — see **Limitations** below for what a PASS does **not** mean.
 
-**Modes** (passed as arguments):
+**Invocations:**
 
-| Invocation | Mode | What it does |
-|---|---|---|
-| `/elephant-goldfish:elephant` (no doc) | CREATE | Write a fresh `elephant.md`, then run the Goldfish Gate |
-| `/elephant-goldfish:elephant` (doc exists) | INTERACTIVE | Show a menu (Update / Regenerate / Check / Validate) |
-| `/elephant-goldfish:elephant update` | UPDATE | Drift pass — doc stays authoritative, code is checked against it — then the Goldfish Gate |
-| `/elephant-goldfish:elephant check` | CHECK | Read-only drift report; no writes, no gate |
-| `/elephant-goldfish:elephant validate` | VALIDATE | Run the Goldfish Gate on the existing doc without any rewrite first |
-| `/elephant-goldfish:elephant regenerate` | REGENERATE | Rebuild from code; preserve human rationale and Alternatives, then the Goldfish Gate |
-| `/elephant-goldfish:elephant <failure report>` | FEEDBACK | Fold in a manual goldfish failure report |
+| Invocation | What it does |
+|---|---|
+| `/elephant-goldfish:elephant` | Write/update `elephant.md`, then run the judge loop |
+| `/elephant-goldfish:elephant check` | Read-only factual drift check (citations + structure); no writes, no judge |
+| `/elephant-goldfish:elephant <failure report>` | Fold in a goldfish failure report pasted back from a prior run |
+
+## Limitations — read before trusting a PASS
+
+The judge measures **plausibility, not truth**. It reads only the doc, by design — repo
+access would let the doc cheat its own gaps — but that same design means a confidently
+wrong doc can still pass; the judge has no way to catch a claim that's fluent, specific,
+and false. Use `check` mode for factual accuracy; use the judge for bootstrap-sufficiency.
+The two are complementary, not interchangeable.
 
 ---
 
 ## Prerequisites
 
-**`agy` (Antigravity CLI) must be on your PATH, pointed at a Gemini model.**
+**The `gemini` CLI must be on your PATH.**
 
-The goldfish judge calls `agy` to run a cold Gemini read. If `agy` is missing or returns empty output, the judge fails **closed** (exit 2 — never a false pass). It will not silently skip validation.
+The goldfish judge calls `gemini` for a cold, different-lineage read. If it's missing or
+returns empty output, the judge fails **closed** (exit 2 — never a false pass). It will
+not silently skip validation.
 
-- Install: follow the [Antigravity CLI docs](https://antigravity.dev) for your platform.
-- Do **not** point `agy` at a Claude model — that reintroduces the "clone grading its own homework" problem. `agy`'s default is already Gemini.
+Do **not** point `GEMINI_MODEL` at a Claude model — that reintroduces the "clone grading
+its own homework" problem.
 
 Verify before using:
 
 ```sh
-agy --help
-agy -p "say VERDICT: READY"   # should print a VERDICT line
+gemini --help
+gemini -p "say VERDICT: READY"   # should print a VERDICT line
 ```
 
 ---
@@ -61,30 +71,28 @@ Run from the root of any git repo:
 /elephant-goldfish:elephant
 ```
 
-The command runs interactively inside a Claude Code session. Auto / accept-edits mode is recommended — the Goldfish Gate loop runs Bash (the judge) and Writes the doc multiple times without prompting.
+The command runs interactively inside a Claude Code session. Auto / accept-edits mode is recommended — the judge loop runs Bash (the judge) and Writes the doc multiple times without prompting.
 
 ### Env vars you can override
 
 | Var | Default | Notes |
 |---|---|---|
-| `AGY_MODEL` | `gemini-3.1-pro` | Any Gemini model name accepted by `agy` |
-| `OLLAMA_MODEL` | _(unset)_ | Optional second-opinion judge via `ollama run`, run sequentially after `agy`. Set to any model name `ollama` accepts (e.g. `qwen3:14b-q8_0`). READY requires both judges to agree. Honors `OLLAMA_HOST` for a remote instance. Do not use a Claude model. |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Any Gemini model name accepted by `gemini` |
+| `OLLAMA_MODEL` | _(unset)_ | Optional second-opinion judge via `ollama run`, run sequentially after `gemini`. Set to any model name `ollama` accepts (e.g. `qwen3:14b-q8_0`). READY requires both judges to agree. Honors `OLLAMA_HOST` for a remote instance. Do not use a Claude model. |
 | `OLLAMA_NO_THINK` | `true` | Prepend `/no_think` to the Ollama prompt to suppress thinking-model preamble (qwen3, etc.) so `VERDICT:` is the first output line. Set `false` for non-thinking models that don't recognise the token. |
-| `OLLAMA_HOST` | _(ollama default)_ | Override Ollama endpoint, e.g. `http://pc.robot.house:11434` for a remote instance. |
-| `GOLDFISH_JUDGE` | `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh` | Path to the cold-judge helper; bundled with this plugin |
-| `MAX_GOLDFISH_ITERS` | `5` | Hard cap on judge → patch → re-judge rounds |
-| `JUDGE_TIMEOUT` | `180` | Seconds before a hung `agy`/`ollama` judge call is killed (needs `timeout` or `gtimeout` on PATH; otherwise unguarded) |
-| `GOLDFISH_AFTER_CREATE` | `true` | Set `false` to skip the gate after initial creation |
+| `OLLAMA_HOST` | _(ollama default)_ | Override Ollama endpoint, e.g. a LAN host, for a remote instance. |
+| `JUDGE_TIMEOUT` | `180` | Seconds before a hung `gemini`/`ollama` judge call is killed (needs `timeout` or `gtimeout` on PATH; otherwise unguarded) |
 
 ---
 
 ## The `goldfish-judge.sh` script
 
-The bundled `scripts/goldfish-judge.sh` is the per-round oracle — a cold, read-only Gemini pass
-(primary) plus an optional local second opinion via Ollama. All judges must produce a
-`VERDICT: READY` or `VERDICT: NOT READY` line; anything else, or a disagreement, is **exit 2**
-(fail-closed). Consensus is AND: READY only when every judge that ran says READY. See the script's
-header comments for full behavioral notes.
+The bundled `scripts/goldfish-judge.sh` is the per-round oracle — a cold, read-only Gemini
+pass (primary, doc inlined into the prompt, no file access or sandbox needed) plus an
+optional local second opinion via Ollama. All judges must produce a `VERDICT: READY` or
+`VERDICT: NOT READY` line; anything else, or a disagreement, is **exit 2** (fail-closed).
+Consensus is AND: READY only when every judge that ran says READY. See the script's header
+comments for full behavioral notes.
 
 Run it standalone to test:
 
