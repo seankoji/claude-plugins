@@ -1,6 +1,6 @@
 {
   "name": "prompt-builder",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Iterative prompt engineering assistant — diagnoses the brief, selects a structural framework (RTF/RISEN/CO-STAR/CRISPE/RACE/APE/CARE/TAG), drafts, critiques, and delivers a finished artefact with test cases and failure modes.",
   "author": {
     "name": "seankoji",
