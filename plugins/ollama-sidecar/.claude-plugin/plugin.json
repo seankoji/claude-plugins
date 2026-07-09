@@ -1,6 +1,6 @@
 {
   "name": "ollama-sidecar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP tool that offloads mechanical file transforms to a local/LAN Ollama model — Claude passes file paths, not content, keeping token cost and data on your machine.",
   "author": {
     "name": "seankoji",
