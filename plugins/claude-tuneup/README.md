@@ -1,6 +1,6 @@
 # claude-tuneup
 
-A three-phase permission audit and settings tuneup command for [Claude Code](https://code.claude.com/) — scans recent transcripts to surface missing allowlist entries, classifies them by global vs project scope, deduplicates across settings files, and self-logs findings so each run is smarter than the last.
+A three-phase permission audit and settings tuneup command for [Claude Code](https://code.claude.com/) — scans recent transcripts to surface missing allowlist entries, classifies them by global vs project scope, deduplicates across settings files, and logs findings to a running notes file you can act on.
 
 ---
 
@@ -28,13 +28,38 @@ Before touching anything, Phase 2 validates that `~/.claude/settings.json`, `.cl
 
 **Phase 3 — Self-reflect**
 
-After each run, appends a dated entry to `~/.claude/claude-tuneup.notes.md` noting what the scan missed, what the audit flagged, and any recurring papercuts. When the same finding appears in two or more distinct runs, proposes a concrete edit to the command itself — with your explicit approval before anything changes.
+After each run, appends a dated entry to `~/.claude/claude-tuneup.notes.md` noting what the scan missed, what the audit flagged, and any recurring papercuts. This is a log, not a self-editing mechanism — the command never proposes or applies edits to its own body; read the notes file back yourself if you want to spot a recurring papercut and fix the command.
 
 ---
 
 ## Prerequisites
 
 Claude Code only — no external tools required. The transcript scanner (`scan_perms.py`) is bundled with this plugin and invoked automatically.
+
+---
+
+## Configuration (optional)
+
+The shipped scope rules are generic defaults — no directory layout or self-hosted
+service names are hardcoded. If your setup has a specific infra layout (a fixed set of
+directories that hold hostnames/SSH aliases, container manifests outside the standard
+Compose filenames, extra Bash heads you consider globally safe), drop an optional
+`~/.claude/claude-tuneup.config.json`:
+
+```json
+{
+  "extra_global_bash_heads": ["lychee", "axiom"],
+  "extra_global_read_paths": ["~/.cloudflare/**"],
+  "project_scan_dirs": ["network/", "hardware/"],
+  "project_compose_globs": ["stacks/*.yml"],
+  "project_service_names": ["n8n"]
+}
+```
+
+(The values above are one maintainer's actual homelab setup — a real example of what
+this looks like filled in, not universal defaults.) Every field is optional; anything
+omitted falls back to the generic default described in `commands/claude-tuneup.md`. The
+command works with zero configuration.
 
 ---
 

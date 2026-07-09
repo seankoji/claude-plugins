@@ -1,20 +1,38 @@
 # ollama-sidecar
 
-An MCP tool that offloads mechanical, format-checkable file transforms — either to a
-local or LAN [Ollama](https://ollama.com) instance, or (for fully deterministic
-transforms) to plain local Python with no model call at all. Either way, Claude
-exchanges only a file path and an operation name (a few dozen tokens), never the file
-contents. The transform runs entirely on your machine; only a small status payload
-comes back.
+**Use this when `jq`/Python can't do the transform in one deterministic pass** — the
+input is too irregular for a fixed rule (messy unstructured text, ad-hoc YAML, "does
+this look like a secret") but still too big or too tedious to worth Claude's own
+context budget. For anything a `jq` filter or a short Python script *can* express
+exactly, that's strictly better — deterministic, instant, free, and you can verify it
+yourself — and this plugin's own `deterministic` operations (below) cover the common
+cases of that (dedup, sort, filter, decode, hash, format conversions) with no model
+call at all. Reach for the LLM-backed operations only for the remainder: input that
+genuinely needs judgment about its meaning, not just a mechanical pass.
+
+Either way, Claude exchanges only a file path and an operation name (a few dozen
+tokens) with this plugin's MCP tool, never the file contents. The transform runs
+entirely on your machine; only a small status payload comes back.
 
 ---
 
 ## Why
 
 Some tasks (reformatting a log file, extracting messy data into JSON, converting
-between formats) don't need Claude's judgment — they need a mechanical pass. Passing
-10,000 lines through Claude's context costs real input *and* output tokens for no
-benefit. This plugin gives Claude a `process_local_file` tool that instead:
+between formats) don't need Claude's judgment — they need a mechanical pass, and
+passing 10,000 lines through Claude's context costs real input *and* output tokens for
+no benefit. But "mechanical" is doing a lot of work in that sentence: if the pass is
+truly rule-based, `jq`/Python already solves it strictly better than a model call —
+deterministic, instant, free, and verifiable — and Claude can write and run that
+one-liner via Bash without the file's contents ever entering context either. This
+plugin's own local Python `deterministic` operations exist for exactly that reason: no
+model in the loop, so `"success"` means the documented algorithm ran on the whole
+input.
+
+The narrower, real niche is input irregular enough that no fixed rule covers it — but
+still too large, too repetitive, or too low-stakes to spend Claude's own judgment on
+one file at a time. For that slice, this plugin gives Claude a `process_local_file`
+tool that:
 
 1. Reads the input file directly from disk.
 2. Runs the requested operation — either as pure local Python (deterministic
