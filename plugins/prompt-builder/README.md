@@ -1,30 +1,34 @@
 # prompt-builder
 
-Iteratively build high-quality, reusable Claude prompts. Diagnoses your brief, picks the right structural framework, drafts, critiques, and delivers a finished artefact — complete with test cases, known failure modes, and a recommended model.
+Iteratively build high-quality, reusable Claude prompts. Diagnoses your brief, structures
+it using Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers
+a finished artefact — complete with test cases, known failure modes, and a recommended
+model.
 
 ## What it does
 
 1. **Diagnose** — asks targeted questions (hard cap: 20 per session) to nail down goal, inputs, output format, constraints, and success criteria. If the cap is hit before diagnosis is complete, it proceeds on explicitly-flagged assumptions rather than stalling.
-2. **Select framework** — chooses from eight prompt frameworks (see below) and announces the choice — and the reasoning behind it — before drafting; if it switches framework mid-session, it says so explicitly.
-3. **Draft** — produces a structured prompt with variables documented, format locked down, and constraints phrased as prohibitions.
+2. **Structure** — applies evidence-based techniques (see below) instead of a named acronym framework — none of those are evidence-based, and picking between near-identical ones wastes time without changing the output.
+3. **Draft** — produces a structured prompt with variables documented, format locked down, and constraints phrased as what to do (not just what to avoid).
 4. **Critique** — runs a pre-delivery quality checklist internally before presenting.
 5. **Deliver** — outputs a complete artefact: prompt body, test cases, known failure modes, model recommendation, and suggested save path.
 6. **Refine** — loops until you're satisfied, then optionally logs learnings for future sessions.
 
-## Frameworks supported
+## Techniques applied
 
-| Framework | Best for |
+Sourced from Anthropic's own prompting guidance, not acronym-framework folklore:
+
+| Technique | When it's used |
 |---|---|
-| **RTF** (Role, Task, Format) | Simple, well-scoped, low-stakes tasks |
-| **CO-STAR** (Context, Objective, Style, Tone, Audience, Response) | Tone- or audience-sensitive outputs |
-| **CRISPE** (Capacity/Role, Insight, Statement, Personality, Experiment) | Brainstorming, ideation, exploratory prompts |
-| **RISEN** (Role, Input, Steps, Expectation, Narrowing) | Multi-step agentic tasks, complex chaining |
-| **RACE** (Role, Action, Context, Expectation) | Content, marketing, SEO — lighter than CO-STAR |
-| **APE** (Action, Purpose, Expectation) | Minimal; constrain the output format only |
-| **CARE** (Context, Action, Result, Example) | Style/format mimicry when a reference example exists |
-| **TAG** (Task, Action, Goal) | Highly constrained, well-understood tasks |
+| **XML-tag structuring** | Every prompt — separates instructions, context, input data, and examples unambiguously |
+| **Context/motivation** | Explaining *why* an instruction matters, not just stating it |
+| **Long-context layout** | Long or multiple input documents — placed above the query, quote-grounded |
+| **Chain-of-Thought** (`<thinking>`/`<answer>` tags + self-check) | Reasoning-heavy tasks (maths, debugging, multi-hop logic) |
+| **Prompt chaining** (self-correction loop) | Multi-stage work needing an inspectable intermediate output |
+| **Few-shot examples** | Pattern-matching or classification tasks |
+| **Do-vs-don't phrasing** | Every constraint — states the target style, not just the forbidden one |
 
-Chain-of-Thought and Few-Shot are applied on top of any framework when the task warrants it.
+Prefilling is deliberately **not** used — it's deprecated on current models.
 
 ## Prerequisites
 
@@ -57,15 +61,17 @@ Or invoke with no arguments to be prompted interactively.
 
 ## Self-improvement
 
-The skill improves across sessions through two gated mechanisms:
+The skill improves across sessions by logging, not by rewriting itself. At the end of each
+session, it may append validated patterns, failure modes, exemplar prompts, or overridden
+defaults to `~/.claude/prompt-builder/learnings.md`, and reads that file back at the start
+of future sessions to apply them silently. It always tells you what it recorded. The log
+has a ~150-line soft cap; stale entries are consolidated when sections fill up.
 
-**Layer 1 — Learnings log:** At the end of each session, the skill may append validated patterns, failure modes, exemplar prompts, or overridden defaults to `~/.claude/prompt-builder/learnings.md`. It always tells you what it recorded. The log has a ~150-line soft cap; stale entries are consolidated when sections fill up.
+It does not propose or apply edits to its own command body — if a logged pattern seems
+worth promoting into the command permanently, it says so and leaves that edit to you (or,
+on a specific occasion, if you explicitly ask it to draft the diff).
 
-**Layer 2 — Self-revision (gated):** When the same default is overridden multiple times or a failure mode recurs, the skill proposes editing its own command body. It shows the diff and the evidence, then waits for explicit approval before touching anything. No silent edits.
-
-**Install-path caveat:** self-revision behaves differently depending on how you installed this command. If you installed it as a plugin (`claude plugin install prompt-builder@seankoji` — the path documented above), the skill resolves the real installed location with `claude plugin path prompt-builder`, then proposes the diff against the source in this marketplace repo and offers to open a PR — it will not hand-edit the installed plugin file, since `claude plugin update` can overwrite local changes there. Self-revision only edits a file directly, and prompts you to commit, when you're running a manually-copied install under `~/.claude/commands/` or a project's `.claude/commands/`.
-
-If your `~/.claude/` is tracked in a dotfiles repo, the skill will prompt you to commit after any write to a manually-copied install.
+If your `~/.claude/` is tracked in a dotfiles repo, the skill will prompt you to commit after any write to `learnings.md`.
 
 ## Example output
 

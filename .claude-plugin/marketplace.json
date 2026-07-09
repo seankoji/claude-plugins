@@ -19,9 +19,9 @@
     },
     {
       "name": "prompt-builder",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "source": "./plugins/prompt-builder",
-      "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
+      "description": "Iterative prompt engineering assistant — structures with Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers a finished artefact with test cases."
     },
     {
       "name": "imps",
