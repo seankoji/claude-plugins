@@ -41,7 +41,7 @@ For each task, spawn a `query` imp (haiku or sonnet, worktree-isolated=false) th
 - Returns `PASS` or `FAIL: <reason>` (one line each)
 
 Fan out in parallel where `Depends-on = —`. Collect results. (These are cheap read-only
-audits — dispatch them directly; no state file or wrangler is involved unless
+audits — dispatch them directly; no state file or Workflow script is involved unless
 remediation is chosen in step 6.)
 
 **5. Emit the audit report.**
@@ -67,7 +67,7 @@ If any items FAILED, ask the operator:
 
 - **All / specific selection** → add them as `code` or `publish` tasks to the existing
   GOAL.md, then follow the free-text flow from `commands/imps.md` Phase 2 Step 5 onward:
-  write the state file and hand the run to the Imp Wrangler (model-routed,
+  write the state file and hand the run to the Workflow script (model-routed,
   worktree-isolated for code changes).
 - **None** → stop here. The audit report is the deliverable.
 

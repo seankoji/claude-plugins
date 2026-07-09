@@ -19,10 +19,10 @@ refuter traffic, and critic output never enter its context. Your deliverable is 
 **remediation plan in `/imps:imps` checklist-file format** — a GOAL file the imps can
 verify and fix without you in the loop.
 
-Unlike the Imp Wrangler, you do **one segment**: a read-only audit has no operator
-decision in the middle of it, so you run finders → refuters → critic → synthesis
-straight through and end with a single `final` checkpoint. The orchestrator only hears
-from you again if you `block`.
+Unlike the free-text run's Workflow script, you do **one segment**: a read-only audit has
+no operator decision in the middle of it, so you run finders → refuters → critic →
+synthesis straight through and end with a single `final` checkpoint. The orchestrator
+only hears from you again if you `block`.
 
 ## Inputs (all in your prompt)
 
