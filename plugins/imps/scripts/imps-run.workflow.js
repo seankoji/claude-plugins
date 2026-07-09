@@ -1,0 +1,787 @@
+// imps-run.workflow.js — the free-text run's dispatch/merge/gate/review/finalize pipeline.
+//
+// Canonical copy at ${CLAUDE_PLUGIN_ROOT}/scripts/imps-run.workflow.js. commands/imps.md
+// syncs it into ~/.claude/workflows/imps-run.js on every invocation (plugins can't ship a
+// runnable Workflow directly) and calls Workflow({scriptPath, args}) FRESH every time —
+// never resumeFromRunId (see the design note in commands/imps.md Phase 4 for why: it is
+// same-session only, and its caching is a longest-unchanged-prefix match that would
+// silently re-execute downstream side-effecting calls like PR creation and persona
+// posting whenever an earlier retried call changed anything upstream).
+//
+// Resume works the way it always did: this script's own first step reads the run's state
+// file and reconciles against it and git ground truth. Idempotency for side-effecting
+// steps has two sources — merge relies on `git merge` of an already-merged branch being a
+// no-op; PR creation, persona posting, and the learnings append each check an explicit
+// persisted marker in the state file (`pr`, `verdicts`, `discussion_comment_url`,
+// `learnings_saved`) before acting.
+//
+// args shape (all required): {
+//   pluginRoot, stateFilePath, goalFilePath, personaPostingProtocolPath,
+//   personaBriefPaths: { "solution-architect", "grumpy-engineer", "sre",
+//                         "business-analyst", "ux-designer" }
+// }
+//
+// Every filesystem/git touch routes through an agent() call with a fixed, reviewable
+// prompt template — the script body itself has no FS access. "Deterministic" here means
+// the loop/branching logic is real JS, not that zero model calls happen.
+
+export const meta = {
+  name: 'imps-run',
+  description: 'Dispatch, merge, gate, review, and finalize one /imps:imps free-text run.',
+  phases: [
+    { title: 'Preflight' },
+    { title: 'Dispatch' },
+    { title: 'Integrate' },
+    { title: 'Publish' },
+    { title: 'Finalize' },
+  ],
+}
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const STATE_SCHEMA = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    schema: { type: 'number' },
+    task: { type: 'string' },
+    repo: { type: 'string' },
+    branch: { type: 'string' },
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'number' },
+          label: { type: 'string' },
+          model: { type: 'string' },
+          type: { type: 'string', enum: ['code', 'query', 'publish'] },
+          deps: { type: 'array', items: { type: 'number' } },
+        },
+        required: ['id', 'label', 'model', 'type', 'deps'],
+      },
+    },
+    phase: { type: 'string' },
+    segment: { type: ['string', 'null'] },
+    dispatched_at: { type: ['string', 'null'] },
+    poll_interval_seconds: { type: 'number' },
+    max_dispatch_hours: { type: 'number' },
+    last_heartbeat: { type: ['string', 'null'] },
+    tasks_done: { type: 'array', items: { type: 'number' } },
+    worktrees: { type: 'object', additionalProperties: { type: 'string' } },
+    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    pr: { type: ['object', 'null'], additionalProperties: true },
+    verdicts: { type: ['object', 'null'], additionalProperties: true },
+    discussion_comment_url: { type: ['string', 'null'] },
+    source_discussion: { type: ['object', 'null'], additionalProperties: true },
+    gate_commands: { type: ['object', 'null'], additionalProperties: true },
+    learnings_saved: { type: ['array', 'null'] },
+    operator_decision: { type: ['string', 'null'] },
+    last_result: { type: ['object', 'null'], additionalProperties: true },
+    failed_tasks: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+  required: ['schema', 'task', 'branch', 'tasks', 'phase'],
+}
+
+const IMP_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: 'number' },
+    label: { type: 'string' },
+    type: { type: 'string', enum: ['code', 'query', 'publish'] },
+    status: { type: 'string', enum: ['done', 'failed'] },
+    branch: { type: ['string', 'null'] },
+    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    notes: { type: 'string' },
+  },
+  required: ['id', 'label', 'type', 'status', 'branch', 'artifacts'],
+}
+
+const PREFLIGHT_SCHEMA = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    default_branch: { type: 'string' },
+    branch_reset: { type: 'boolean', description: 'true if a bad state-file branch equaled the default branch and a fresh branch was cut' },
+    new_branch: { type: ['string', 'null'] },
+    error: { type: ['string', 'null'] },
+  },
+  required: ['ok', 'default_branch', 'branch_reset', 'new_branch', 'error'],
+}
+
+const MERGE_SCHEMA = {
+  type: 'object',
+  properties: {
+    merged: { type: 'array', items: { type: 'object', properties: { id: { type: 'number' }, label: { type: 'string' }, files: { type: 'number' } }, required: ['id', 'label', 'files'] } },
+    conflict: { type: ['object', 'null'], properties: { branch: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } } },
+    default_branch_violation: { type: 'boolean', description: 'true if HEAD resolved to the default branch — merge must NOT proceed' },
+  },
+  required: ['merged', 'conflict', 'default_branch_violation'],
+}
+
+const HEAD_IMP_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['APPROVE', 'CHANGES_REQUESTED'] },
+    findings: { type: 'array', items: { type: 'string' } },
+    amendments_applied: { type: 'number' },
+  },
+  required: ['verdict', 'findings', 'amendments_applied'],
+}
+
+const GATE_DISCOVERY_SCHEMA = {
+  type: 'object',
+  properties: {
+    gates: {
+      type: 'array',
+      items: { type: 'object', properties: { name: { type: 'string' }, cmd: { type: 'string' } }, required: ['name', 'cmd'] },
+    },
+  },
+  required: ['gates'],
+}
+
+const GATE_RUN_SCHEMA = {
+  type: 'object',
+  properties: {
+    gate: { type: 'string' },
+    cmd: { type: 'string' },
+    pass: { type: 'boolean' },
+    tail: { type: 'string' },
+  },
+  required: ['gate', 'cmd', 'pass', 'tail'],
+}
+
+const PR_CREATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    number: { type: 'number' },
+    url: { type: 'string' },
+  },
+  required: ['number', 'url'],
+}
+
+const PERSONA_VERDICT_SCHEMA = {
+  type: 'object',
+  properties: {
+    slug: { type: 'string' },
+    verdict: { type: 'string', enum: ['APPROVE', 'CHANGES_REQUESTED'] },
+    posted: { type: 'boolean' },
+    findings: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['slug', 'verdict', 'posted', 'findings'],
+}
+
+const FINALIZE_SCHEMA = {
+  type: 'object',
+  properties: {
+    pr_ready: { type: 'boolean' },
+    discussion_comment_url: { type: ['string', 'null'] },
+    prs_monitor: { type: ['object', 'null'], additionalProperties: true },
+    run_stats: { type: 'object', additionalProperties: true },
+    learnings_candidates: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['pr_ready', 'discussion_comment_url', 'prs_monitor', 'run_stats', 'learnings_candidates'],
+}
+
+const LEARNINGS_APPEND_SCHEMA = {
+  type: 'object',
+  properties: {
+    saved: { type: 'array', items: { type: 'object', properties: { rule: { type: 'string' }, scope: { type: 'string' } }, required: ['rule', 'scope'] } },
+  },
+  required: ['saved'],
+}
+
+// ---------------------------------------------------------------------------
+// State-file helpers — every touch is an agent() call; the script body has no FS access.
+// ---------------------------------------------------------------------------
+
+function readState() {
+  return agent(
+    `Read the JSON file at ${args.stateFilePath} and return its exact contents, every field preserved (including any you don't recognize — this schema grows over time). If the file doesn't parse as JSON, that's a fatal setup error — return the error in an "error" field instead of guessing at a shape.`,
+    { label: 'read-state', phase: 'Preflight', model: 'haiku', schema: STATE_SCHEMA }
+  )
+}
+
+function patchState(patch, label) {
+  return agent(
+    `Read the JSON file at ${args.stateFilePath}. Apply this exact patch — merge these top-level keys into the existing object, overwriting only the keys given, leaving every other existing field untouched: ${JSON.stringify(patch)}. Write the merged result back to the same path (pretty-printed JSON). Return the full resulting file contents so the caller can confirm the write landed.`,
+    { label: label || 'patch-state', model: 'haiku', schema: STATE_SCHEMA }
+  )
+}
+
+function saveResult(result) {
+  return patchState({ last_result: result }, 'save-result')
+}
+
+// ---------------------------------------------------------------------------
+// Preflight — git branch guard (re-asserted every invocation, never assumed from upstream)
+// ---------------------------------------------------------------------------
+
+function preflight(state) {
+  return agent(
+    `Run this git preflight in the current working tree and report back — do not guess, run each command:
+
+1. \`git rev-parse --abbrev-ref HEAD\` — call this CURRENT.
+2. \`git remote show origin | grep 'HEAD branch'\` — extract the default branch name, call it DEFAULT.
+3. **Hard stop, checked every single invocation, not assumed from a prior run:** if CURRENT equals DEFAULT, the state file's branch field is wrong (or this is a legacy/hand-edited file) and dispatching or merging here would land every task's work straight onto DEFAULT. Do NOT proceed with rebase/dispatch/merge. Instead:
+   \`git fetch origin DEFAULT && git checkout -b "imps/<slug>-$(date -u +%Y%m%d-%H%M%S)" origin/DEFAULT\`
+   (derive <slug> from \`basename\` of the working directory). Report the new branch name as "new_branch" and set "branch_reset": true. If branch creation fails for any reason, do NOT fall back to DEFAULT — set "ok": false and describe the error.
+4. If CURRENT does not equal DEFAULT (the expected case — CURRENT should equal "${state.branch}"): fetch and rebase: \`git fetch origin && git rebase origin/DEFAULT\`. Rebase conflict → abort it (\`git rebase --abort\`), set "ok": false, describe the conflict files in "error".
+5. Report "default_branch": DEFAULT, "branch_reset" (bool), "new_branch" (the new branch name or null), "ok" (bool), "error" (string or null).`,
+    { label: 'preflight', phase: 'Preflight', model: 'sonnet', schema: PREFLIGHT_SCHEMA }
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch — topological staging (plain JS) + parallel agent() calls per stage
+// ---------------------------------------------------------------------------
+
+function stageTasks(tasks, doneIds, failed) {
+  // Topologically sort into stages: a task lands in the first stage after all its deps
+  // are satisfied. Plain graph code — no model call, matches the old wrangler's
+  // "topologically sort into stages" instruction, just as real code instead of prose.
+  // Tasks already in `failed` (terminally failed, or skip-confirmed by the operator) are
+  // excluded from re-staging entirely — they were resolved by a prior invocation's
+  // cascade or an explicit operator decision, not by completing. Their dependents were
+  // already cascade-failed when that happened (or will be, in this invocation's own
+  // stage loop) — this function only needs to not endlessly re-stage the resolved task
+  // itself.
+  const resolved = new Set([...doneIds, ...failed.keys()])
+  const remaining = tasks.filter((t) => !resolved.has(t.id))
+  const stages = []
+  const satisfied = new Set(resolved)
+  while (remaining.length) {
+    const stage = remaining.filter((t) => t.deps.every((d) => satisfied.has(d)))
+    if (!stage.length) break // cyclic or unsatisfiable — caller handles as dispatch_failed
+    stages.push(stage)
+    stage.forEach((t) => {
+      satisfied.add(t.id)
+      const idx = remaining.indexOf(t)
+      remaining.splice(idx, 1)
+    })
+  }
+  return { stages, unresolved: remaining }
+}
+
+function dispatchImp(task, state, guidance) {
+  const isCode = task.type === 'code'
+  return agent(
+    `You are one imp in a parallel swarm. Task #${task.id}: ${task.label}
+Type: ${task.type}
+${guidance ? `\nThis is a retry. Operator guidance: ${guidance}\n` : ''}
+${isCode ? 'You run in an isolated git worktree, created from the default branch\'s last committed HEAD (not the run\'s working branch — in-progress commits on a side branch are not visible to you). Make the minimal change that satisfies the task. Resolve this repo\'s gate/lint commands yourself and run them (plus any autofix) before committing — fix failures you caused, note pre-existing ones. Stage and commit; do not push. Return the branch name.' : ''}
+${task.type === 'query' ? 'Read-only. No file changes. Return structured data. Cite sources (file paths, line numbers, URLs) for every claim.' : ''}
+${task.type === 'publish' ? 'Create GitHub artifacts (PRs, issues, comments, Discussions) from the main working branch only, never from an isolated worktree branch. Use `gh api graphql` for Discussions. Confirm the artifact URL.' : ''}
+
+Do exactly this task. Nothing more — note anything else you notice but do not fix it.
+Return via the required schema: status "done" or "failed" (with a ≤50-word reason in notes if failed).`,
+    {
+      label: `imp-${task.id}${guidance ? '-retry' : ''}`,
+      phase: 'Dispatch',
+      model: task.model,
+      schema: IMP_RESULT_SCHEMA,
+      isolation: isCode ? 'worktree' : undefined,
+    }
+  )
+}
+
+// Parses `retry tasks #N,#M: <guidance>` / `skip tasks #N,#M` into structured form.
+function parseTaskDecision(decision) {
+  if (!decision) return null
+  const retryMatch = decision.match(/^retry tasks #([\d,#\s]+):\s*(.*)$/i)
+  if (retryMatch) {
+    const ids = retryMatch[1].split(',').map((s) => Number(s.replace('#', '').trim()))
+    return { kind: 'retry', ids, guidance: retryMatch[2].trim() }
+  }
+  const skipMatch = decision.match(/^skip tasks #([\d,#\s]+)$/i)
+  if (skipMatch) {
+    const ids = skipMatch[1].split(',').map((s) => Number(s.replace('#', '').trim()))
+    return { kind: 'skip', ids }
+  }
+  return null
+}
+
+async function runDispatch(state) {
+  const doneIds = new Set(state.tasks_done || [])
+  const failed = new Map((state.failed_tasks || []).map((f) => [f.id, f]))
+  let worktrees = { ...(state.worktrees || {}) }
+  let artifacts = [...(state.artifacts || [])]
+
+  const taskDecision = parseTaskDecision(state.operator_decision)
+  const retryGuidance = new Map()
+  if (taskDecision && taskDecision.kind === 'retry') {
+    for (const id of taskDecision.ids) {
+      failed.delete(id) // eligible for re-dispatch again
+      retryGuidance.set(id, taskDecision.guidance)
+    }
+  } else if (taskDecision && taskDecision.kind === 'skip') {
+    for (const id of taskDecision.ids) {
+      const existing = failed.get(id) || { id, label: `task #${id}` }
+      failed.set(id, { ...existing, notes: 'skipped by operator', skip_confirmed: true })
+    }
+  }
+
+  const { stages, unresolved } = stageTasks(state.tasks, doneIds, failed)
+  if (unresolved.length && !stages.length) {
+    return { blocked: true, reason: 'dispatch_failed', detail: { step: 'topo_sort', unresolved: unresolved.map((t) => t.id) } }
+  }
+
+  for (const stage of stages) {
+    // Dependency-failure propagation: never dispatch a task whose dep already failed
+    // (a dep that's only "skip_confirmed" but not truly failed still blocks — the
+    // dependent needs the skipped task's output, which doesn't exist).
+    const runnable = stage.filter((t) => t.deps.every((d) => !failed.has(d)))
+    const skipped = stage.filter((t) => !runnable.includes(t))
+    for (const t of skipped) {
+      if (!failed.has(t.id)) failed.set(t.id, { id: t.id, label: t.label, notes: `dependency failed` })
+    }
+    if (!runnable.length) continue
+
+    const results = await parallel(
+      runnable.map((t) => () => dispatchImp(t, state, retryGuidance.get(t.id)).then((r) => ({ task: t, result: r })))
+    )
+    for (const entry of results) {
+      if (!entry) continue
+      const { task, result } = entry
+      if (!result) {
+        failed.set(task.id, { id: task.id, label: task.label, notes: 'no result returned' })
+        continue
+      }
+      if (result.status === 'failed') {
+        failed.set(task.id, { id: task.id, label: task.label, notes: result.notes || 'failed' })
+      } else {
+        doneIds.add(task.id)
+        if (task.type === 'code' && result.branch) worktrees[String(task.id)] = result.branch
+        if (result.artifacts && result.artifacts.length) artifacts.push(...result.artifacts)
+      }
+    }
+    await patchState(
+      { tasks_done: [...doneIds], worktrees, artifacts, failed_tasks: [...failed.values()], last_heartbeat: 'agent-supplies-timestamp' },
+      'heartbeat'
+    )
+    // If this cascade drained the whole remaining pipeline, stop early rather than
+    // continuing to "run" empty stages.
+    if (failed.size && doneIds.size + failed.size >= state.tasks.length) break
+  }
+
+  return { blocked: false, doneIds, failed: [...failed.values()], worktrees, artifacts }
+}
+
+// ---------------------------------------------------------------------------
+// Integrate — merge, Head Imp diff review, sync default branch, gates
+// ---------------------------------------------------------------------------
+
+function mergeBranches(worktrees, doneIds, defaultBranch) {
+  const branchList = Object.entries(worktrees).filter(([id]) => doneIds.has(Number(id)))
+  if (!branchList.length) return { merged: [], conflict: null, default_branch_violation: false }
+  return agent(
+    `Merge these branches into the current working tree, one at a time, in order: ${branchList.map(([, b]) => b).join(', ')}.
+Before merging ANYTHING: run \`git rev-parse --abbrev-ref HEAD\` and compare to \`${defaultBranch}\` (re-derive the default branch yourself with \`git remote show origin\` if you don't trust this value) — if HEAD equals the default branch, STOP, do not merge, set "default_branch_violation": true and return immediately. This check is not optional even if a caller claims preflight already verified it; a stale state file or a concurrent branch change is exactly what this guards against.
+For each branch, \`git merge <branch>\`. On conflict: leave it in the tree (do not \`--abort\`), stop merging further branches, and report the conflicting branch + \`git diff --name-only --diff-filter=U\` in "conflict".
+Report "merged": [{id, label, files changed}] for each that merged cleanly (map branch names back to task ids/labels from this list: ${JSON.stringify(branchList)}), "conflict" (or null), "default_branch_violation" (bool).`,
+    { label: 'merge', phase: 'Integrate', model: 'sonnet', schema: MERGE_SCHEMA }
+  )
+}
+
+function headImpReview(defaultBranch) {
+  return agent(
+    `You are the Head Imp — a single adversarial reviewer combining two personas (read ${args.pluginRoot}/agents/head-imp.md for your full brief and follow it exactly). Review this diff by running it yourself, never accept it pasted: \`git diff origin/${defaultBranch}..HEAD -- ':!*lock*' ':!dist'\`. If it produces no output, say so and stop rather than inventing a diff range.
+Argue against the diff per your brief (Technical Architect + Chissy Engineer personas). Apply the amendments your blocker/major findings demand yourself where the fix is small and disjoint; note larger fixes as findings without applying them.
+Return via the required schema: "verdict" (APPROVE|CHANGES_REQUESTED), "findings" (list of one-line finding summaries), "amendments_applied" (count of fixes you made directly, 0 if none).`,
+    { label: 'head-imp-diff', phase: 'Integrate', model: 'opus', schema: HEAD_IMP_SCHEMA }
+  )
+}
+
+function syncDefaultBranch(defaultBranch) {
+  return agent(
+    `Sync the default branch into the current working tree (merge, not rebase — one merge commit keeps SHAs stable for the diff about to be reviewed): \`git fetch origin ${defaultBranch} && git merge origin/${defaultBranch}\`. On conflict, leave it in the tree and report it. Return via the required schema (reuse "merged": [] and "conflict" fields; "default_branch_violation": false always here since this step only ever merges FROM the default branch, never onto it).`,
+    { label: 'sync-default', phase: 'Integrate', model: 'sonnet', schema: MERGE_SCHEMA }
+  )
+}
+
+function discoverGates() {
+  return agent(
+    `Resolve this repo's gate commands once: inspect package.json scripts, Makefile, pyproject.toml, CI config (.github/workflows/*), and AGENTS.md/CONTRIBUTING.md for the canonical build/lint/test/type commands. Return the ordered list (build, then lint, then test, then type — omit any that don't apply to this repo) via the required schema: "gates": [{name, cmd}].`,
+    { label: 'discover-gates', phase: 'Integrate', model: 'sonnet', schema: GATE_DISCOVERY_SCHEMA }
+  )
+}
+
+function runGate(gate, guidance) {
+  return agent(
+    `Run this command, redirecting output to a file and reading only the tail (the log itself can be large): \`${gate.cmd} > "$TMPDIR/imps-gate-${gate.name}.log" 2>&1; echo "exit: $?"\`.${guidance ? ` Apply this guidance first if it suggests a fix: ${guidance}` : ''}
+Return via the required schema: "gate": "${gate.name}", "cmd": "${gate.cmd}", "pass" (exit 0), "tail" (last 20 lines of the log).`,
+    { label: `gate-${gate.name}`, phase: 'Integrate', model: 'sonnet', schema: GATE_RUN_SCHEMA }
+  )
+}
+
+function fixGate(gate, tail, guidance) {
+  return agent(
+    `Gate "${gate.name}" (\`${gate.cmd}\`) failed. Log tail:\n${tail}\n${guidance ? `Operator guidance: ${guidance}\n` : ''}Diagnose and fix the failure — make the minimal change needed to get this gate green. Do not touch unrelated code. When done, report what you changed in one line.`,
+    { label: `fix-${gate.name}`, phase: 'Integrate', model: 'sonnet' }
+  )
+}
+
+// Parses `retry <gate>: <guidance>` / `skip <gate>` into structured form. Gate names are
+// matched against the discovered gate list's own names (build/lint/test/type), not
+// task IDs — distinguished from parseTaskDecision by the absence of "tasks #".
+function parseGateDecision(decision) {
+  if (!decision) return null
+  const retryMatch = decision.match(/^retry (\w+):\s*(.*)$/i)
+  if (retryMatch) return { kind: 'retry', gate: retryMatch[1], guidance: retryMatch[2].trim() }
+  const skipMatch = decision.match(/^skip (\w+)$/i)
+  if (skipMatch) return { kind: 'skip', gate: skipMatch[1] }
+  return null
+}
+
+async function runGatesWithRetry(gates, gateDecision) {
+  const skipGate = gateDecision && gateDecision.kind === 'skip' ? gateDecision.gate : null
+  const retryGate = gateDecision && gateDecision.kind === 'retry' ? gateDecision.gate : null
+  const retryGuidance = gateDecision && gateDecision.kind === 'retry' ? gateDecision.guidance : null
+
+  const results = []
+  for (const gate of gates) {
+    if (gate.name === skipGate) {
+      // Never ticks the GOAL.md gates box — the caller checks this before doing so.
+      results.push({ gate: gate.name, cmd: gate.cmd, pass: false, skipped: true, tail: '' })
+      continue
+    }
+    let attempt = 1
+    let result = await runGate(gate, gate.name === retryGate ? retryGuidance : undefined)
+    while (!result.pass && attempt < 3) {
+      attempt += 1
+      await fixGate(gate, result.tail, gate.name === retryGate ? retryGuidance : undefined)
+      result = await runGate(gate, `retry attempt ${attempt}`)
+    }
+    results.push({ ...result, attempts: attempt })
+    if (!result.pass) return { results, blockedOn: gate }
+  }
+  return { results, blockedOn: null }
+}
+
+// ---------------------------------------------------------------------------
+// Publish + persona panel + finalize
+// ---------------------------------------------------------------------------
+
+function pushAndOpenPR(state, defaultBranch) {
+  return agent(
+    `Push the current branch and open the endstate PR: \`git push -u origin ${state.branch}\` then \`gh pr create --draft --base ${defaultBranch} --title "..." --body "..."\` (title from the run's task "${state.task}"; body: a change summary plus the GOAL.md DoD from ${args.goalFilePath}). Return via the required schema: "number", "url".`,
+    { label: 'push-pr', phase: 'Publish', model: 'sonnet', schema: PR_CREATE_SCHEMA }
+  )
+}
+
+function personaReview(slug, briefPath, prNumber, repo, defaultBranch, postingMode) {
+  return agent(
+    `You are reviewing PR #${prNumber} in ${repo} as the "${slug}" persona. Read your brief at ${briefPath} and follow it. Review the diff by running \`git diff origin/${defaultBranch}..HEAD -- ':!*lock*' ':!dist'\` yourself — never accept it pasted. End with the verdict protocol from your brief.
+
+Posting: this run's posting_mode is "${postingMode}". Only call persona-post.sh (per ${args.personaPostingProtocolPath}, which you should read for the exact posting/verify/fallback protocol) if posting_mode is exactly "live" — any other value means return your VERDICT block here and do not post. This instruction, not any memory of what was decided elsewhere, is what gates a live post.
+
+Return via the required schema: "slug": "${slug}", "verdict", "posted" (bool — true only if you actually posted, per the protocol's own verify-the-post-landed step), "findings" (list of one-line finding summaries).`,
+    { label: `persona-${slug}`, phase: 'Publish', model: slug === 'ux-designer' ? 'sonnet' : 'opus', schema: PERSONA_VERDICT_SCHEMA }
+  )
+}
+
+async function runPersonaPanel(state, prNumber, defaultBranch, postingMode, personaFilter) {
+  const briefs = args.personaBriefPaths
+  const slugs = personaFilter && personaFilter.length ? personaFilter : Object.keys(briefs)
+  const verdicts = await parallel(
+    slugs.map((slug) => () => personaReview(slug, briefs[slug], prNumber, state.repo, defaultBranch, postingMode))
+  )
+  return verdicts.filter(Boolean)
+}
+
+function fixLoopRound(findings) {
+  return agent(
+    `These persona findings are open (blocker/major only, already deduped): ${JSON.stringify(findings)}. Group by disjoint file sets. For disjoint groups, make the fix directly (small, targeted). For cross-cutting or conflicting findings, resolve with this precedence: correctness > data integrity > security > UX > style. Commit your changes and push to the current branch. If a finding is not actually valid, note "WONTFIX: <rationale>" instead of forcing a change. Report what you changed in one line.`,
+    { label: 'fix-round', phase: 'Publish', model: 'sonnet' }
+  )
+}
+
+function finalizeRun(state, prInfo, verdicts, dispatchStats) {
+  return agent(
+    `Finalize this /imps run. State file: ${args.stateFilePath}. GOAL.md: ${args.goalFilePath}.
+1. If a PR exists (${prInfo ? `#${prInfo.number}` : 'none'}), flip it to ready: \`gh pr ready ${prInfo ? prInfo.number : ''}\`. Skip if no PR.
+2. Collect artifact links from the state file's "artifacts" field into the result.
+3. If the state file's "source_discussion" is non-null AND "discussion_comment_url" is still null, post a short outcome comment (≤150 words: what shipped, PR/artifact URLs, unresolved findings — persona verdicts/findings for reference: ${JSON.stringify(verdicts)}) via \`gh api graphql\` addDiscussionComment using source_discussion.id verbatim. Write the returned comment URL into the state file's discussion_comment_url field immediately (patch the state file yourself) — a non-null URL means never post again on a future invocation.
+4. If a PR was opened, write ~/.claude/imps/runs/<slug>.prs.json (derive slug from the state file path) with: repo, pr_number, pr_url, branch, base_branch, poll_interval_seconds (from state file), started_at (now, ISO), handled_comment_ids: [], ci_fix_attempts: {}, max_age_hours: 48.
+5. Assemble run_stats: dispatched_at (from state file), elapsed (now minus dispatched_at, "Xm Ys"), tokens_spent and model_counts (from: ${JSON.stringify(dispatchStats)}), tasks ([{id, model}] for every task), achieved (≤5 one-liners in plain value terms — what changed for the user, not implementation detail), decision_points (one line per pivot: Head Imp amendments, conflicts resolved, skipped gates/tasks — omit if none).
+6. Best-effort, never blocking: run \`${args.pluginRoot}/scripts/audit-log.sh --plugin imps --command /imps:imps --exit-status completed --duration-ms <computed> --scope <project-or-user> --notes "<one-line summary>"\`.
+7. Set the state file's "phase" to "final" (NOT deleted yet — deletion happens only after the learnings step, so a death here still resumes gracefully).
+
+Return via the required schema: pr_ready (bool), discussion_comment_url (string or null), prs_monitor (object or null: {state_file, pr_number}), run_stats (object), learnings_candidates (array of ≤10 concise "rule to apply next time" strings — surprising, wrong, or notably effective things about this run; empty array if trivial/no surprises).`,
+    { label: 'finalize', phase: 'Finalize', model: 'sonnet', schema: FINALIZE_SCHEMA }
+  )
+}
+
+function appendLearnings(candidates) {
+  // Deliberately does NOT delete the state file here — the caller must persist the
+  // learnings_saved marker FIRST (via patchState) and only delete afterward. Deleting
+  // inside this same call, before the marker is durably written, is exactly the ordering
+  // bug a Head Imp review caught: a crash between the append and the delete leaves
+  // learnings_saved unset, so the next fresh invocation's guard (`if (state.learnings_saved)`)
+  // is false and re-appends — and deleting from inside this agent call would also mean a
+  // subsequent patchState() targets a file that no longer exists.
+  return agent(
+    `The operator confirmed these learnings should be saved: ${JSON.stringify(candidates)}. For each, classify its scope: project-specific (mentions this repo's stack, commands, file paths, conventions) -> append to .claude/imps/learnings.md in the repo root; generally applicable (model routing, task boundaries, dispatch patterns) -> append to ~/.claude/imps/learnings.md. Format: under a "## YYYY-MM-DD — <project> <task>" heading (create "## Active rules" section first if the file doesn't have one yet, ≤10 bullets, promote a repeated rule into it). Do NOT touch the run's state file or GOAL.md in this step — that happens separately, afterward.
+Return via the required schema: "saved": [{rule, scope}] for each learning actually written.`,
+    { label: 'append-learnings', phase: 'Finalize', model: 'sonnet', schema: LEARNINGS_APPEND_SCHEMA }
+  )
+}
+
+function deleteStateFile() {
+  return agent(
+    `Delete the run state file at ${args.stateFilePath}. Do NOT delete ${args.goalFilePath} (GOAL.md) — it is the human-readable record and stays after the run ends.`,
+    { label: 'delete-state-file', phase: 'Finalize', model: 'haiku' }
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+phase('Preflight')
+let state = await readState()
+
+// ---- Route on operator_decision + last_result.status for a resumed/blocked run ----
+const decision = state.operator_decision
+const lastStatus = state.last_result && state.last_result.status
+
+if (decision === 'abort') {
+  if (state.source_discussion) {
+    await agent(
+      `Post "Run aborted: ${(state.last_result && state.last_result.reason) || 'operator abort'}. No changes were merged." as a Discussion comment via \`gh api graphql\` addDiscussionComment using source_discussion.id verbatim: ${JSON.stringify(state.source_discussion)}.`,
+      { label: 'abort-notice', phase: 'Finalize', model: 'haiku' }
+    )
+  }
+  const result = { status: 'aborted', tree_state: 'left as-is per operator abort', abort_notice_posted: !!state.source_discussion }
+  await saveResult(result)
+  return result
+}
+
+if (lastStatus === 'final' && decision && decision.startsWith('learnings:')) {
+  const raw = decision.slice('learnings:'.length).trim()
+  const candidates = raw === 'none' ? [] : JSON.parse(raw)
+  if (state.learnings_saved) {
+    // Already appended (marker is set) by a prior invocation that died before the
+    // state-file delete completed — do NOT re-append, just finish the delete.
+    await deleteStateFile()
+    return { status: 'done', learnings_saved: state.learnings_saved }
+  }
+  // Order matters: append, THEN persist the marker, THEN delete — in that exact
+  // sequence. A crash between append and marker-write re-appends once more on the next
+  // invocation (learnings.md dedup risk is accepted as the lesser failure); a crash
+  // between marker-write and delete is safe (the branch above just finishes the delete).
+  // Deleting before the marker is set, or inside the same call as the append, is the bug
+  // a Head Imp review caught in an earlier draft — never do that.
+  const appended = await appendLearnings(candidates)
+  await patchState({ learnings_saved: appended.saved }, 'mark-learnings-saved')
+  await deleteStateFile()
+  return { status: 'done', learnings_saved: appended.saved }
+}
+
+if (lastStatus === 'awaiting_authorization' && decision && decision.startsWith('PR:')) {
+  const postingMode = decision === 'PR: yes' ? 'live' : decision === 'PR: yes, no-post' ? 'no-post' : 'none'
+  phase('Publish')
+  let prInfo = state.pr
+  if (postingMode !== 'none' && !prInfo) {
+    prInfo = await pushAndOpenPR(state, state.last_result.default_branch)
+    await patchState({ pr: prInfo }, 'save-pr')
+  }
+  // `verdicts` stores {slug: {verdict, findings}} — full content, not just the verdict
+  // label, so a no-post/findings-inline run still has each persona's actual findings to
+  // show the operator (a bare verdict word is not "the review record").
+  let verdicts = state.verdicts
+  if (!verdicts && prInfo) {
+    const results = await runPersonaPanel(state, prInfo.number, state.last_result.default_branch, postingMode)
+    let current = Object.fromEntries(results.map((v) => [v.slug, { verdict: v.verdict, findings: v.findings }]))
+
+    // Fix loop, max 3 rounds. Deliberately does NOT persist `verdicts` to the state file
+    // until the whole loop (or a resume of it) is done — persisting early made a crash
+    // mid-loop look "done" to a resumed invocation, silently skipping the remaining
+    // rounds and finalizing with unaddressed persona findings.
+    let round = 0
+    let dissenting = results.filter((v) => v.verdict === 'CHANGES_REQUESTED')
+    while (dissenting.length && round < 3) {
+      round += 1
+      const findings = dissenting.flatMap((v) => v.findings)
+      await fixLoopRound(findings)
+      if (postingMode !== 'none') {
+        await agent(`Push fix-round ${round}'s commits to the PR branch: git push.`, { label: `push-fix-${round}`, phase: 'Publish', model: 'haiku' })
+      }
+      const reReview = await runPersonaPanel(
+        state,
+        prInfo.number,
+        state.last_result.default_branch,
+        postingMode,
+        dissenting.map((v) => v.slug) // only re-review personas that dissented — not the whole panel
+      )
+      for (const v of reReview) current[v.slug] = { verdict: v.verdict, findings: v.findings }
+      dissenting = reReview.filter((v) => v.verdict === 'CHANGES_REQUESTED')
+    }
+    verdicts = current
+    await patchState({ verdicts }, 'save-verdicts')
+  }
+
+  phase('Finalize')
+  // finalizeRun itself is not internally idempotent (it can rewrite .prs.json and
+  // re-append to audit.jsonl) — guard against re-running it on a resume that only
+  // needed to catch up the persona panel/fix loop above. `phase: "final"` is set as
+  // finalizeRun's own last step, so its presence means finalize already completed.
+  if (state.phase === 'final' && state.last_result && state.last_result.status === 'final') {
+    return state.last_result
+  }
+  const finalized = await finalizeRun(state, prInfo, verdicts, state.last_result.dispatch)
+  const result = {
+    status: 'final',
+    pr: prInfo ? { url: prInfo.url, number: prInfo.number, ready: finalized.pr_ready } : null,
+    verdicts,
+    diff_stat: state.last_result.diff_stat,
+    discussion_comment_url: finalized.discussion_comment_url,
+    prs_monitor: finalized.prs_monitor,
+    run_stats: finalized.run_stats,
+    learnings_candidates: finalized.learnings_candidates,
+    // Full findings content, not just the verdict label — this is the operator's only
+    // record of what each persona actually found when nothing was posted to GitHub.
+    findings_inline:
+      postingMode === 'none' || postingMode === 'no-post'
+        ? Object.entries(verdicts || {}).flatMap(([slug, v]) => (v.findings || []).map((f) => `${slug}: ${f}`))
+        : [],
+  }
+  await saveResult(result)
+  return result
+}
+
+if (decision === 'integrate partial') {
+  // Only reachable after `imps_failed` — confirm every currently-unresolved failure as
+  // an accepted omission (same effect as the operator naming them all in `skip tasks`)
+  // so the triage step below doesn't immediately re-block on the same failures. Without
+  // this, `integrate partial` would silently loop: dispatch reruns, nothing new
+  // completes, triage sees the same unconfirmed failures, and re-emits `imps_failed`.
+  const stillFailed = (state.failed_tasks || []).filter((f) => !f.skip_confirmed)
+  if (stillFailed.length) {
+    const confirmed = stillFailed.map((f) => ({ ...f, skip_confirmed: true }))
+    const untouched = (state.failed_tasks || []).filter((f) => f.skip_confirmed)
+    state = await patchState({ failed_tasks: [...untouched, ...confirmed] }, 'confirm-partial-integrate')
+  }
+}
+// `retry tasks #N,#M`, `skip tasks #N,#M`, `resolved, continue`, `reconciled, continue`,
+// and (having just been normalized above) `integrate partial` all fall through to the
+// normal dispatch/integrate flow below — the relevant step reads `decision` itself (e.g.
+// runGate/fixGate honor retry guidance; dispatch honors retry/skip task lists via the
+// state file's tasks_done/failed_tasks, which the operator's chosen path — or the
+// normalization above — already updated before re-invoking).
+
+// ---- Normal flow: dispatch -> integrate -> awaiting_authorization ----
+
+phase('Dispatch')
+if (!state.dispatched_at) {
+  const pre = await preflight(state)
+  if (!pre.ok) {
+    const result = { status: 'blocked', reason: 'dispatch_failed', detail: { error: pre.error } }
+    await saveResult(result)
+    return result
+  }
+  if (pre.branch_reset) {
+    state = await patchState({ branch: pre.new_branch }, 'branch-reset')
+  }
+  await patchState({ dispatched_at: 'agent-supplies-timestamp', segment: 'dispatch' }, 'claim-run')
+}
+
+const dispatchOutcome = await runDispatch(state)
+if (dispatchOutcome.blocked) {
+  const result = { status: 'blocked', reason: dispatchOutcome.reason, detail: dispatchOutcome.detail }
+  await saveResult(result)
+  return result
+}
+
+const unconfirmedFailures = dispatchOutcome.failed.filter((f) => !f.skip_confirmed)
+if (unconfirmedFailures.length) {
+  // Triage against GOAL.md's DoD is itself a judgment call — ask once, not per task.
+  // Tasks the operator already confirmed "skip" are excluded — don't re-ask the same
+  // question a second time just because they still show up in the failed list.
+  const triage = await agent(
+    `Read the DoD in ${args.goalFilePath}. These tasks failed: ${JSON.stringify(unconfirmedFailures)}. Does any failure block an acceptance criterion? Return "blocking": true/false and, if true, nothing else changes — the caller emits a blocked result.`,
+    { label: 'triage-failures', phase: 'Dispatch', model: 'sonnet', schema: { type: 'object', properties: { blocking: { type: 'boolean' } }, required: ['blocking'] } }
+  )
+  if (triage.blocking) {
+    const result = { status: 'blocked', reason: 'imps_failed', detail: { failed: unconfirmedFailures, done: [...dispatchOutcome.doneIds] } }
+    await saveResult(result)
+    return result
+  }
+}
+
+phase('Integrate')
+await patchState({ segment: 'integrate' }, 'enter-integrate')
+const defaultBranchInfo = await agent('Run `git remote show origin | grep \'HEAD branch\'` and return just the branch name.', { label: 'get-default-branch', phase: 'Integrate', model: 'haiku', schema: { type: 'object', properties: { default_branch: { type: 'string' } }, required: ['default_branch'] } })
+const defaultBranch = defaultBranchInfo.default_branch
+
+const mergeResult = await mergeBranches(dispatchOutcome.worktrees, dispatchOutcome.doneIds, defaultBranch)
+if (mergeResult.default_branch_violation) {
+  const result = { status: 'blocked', reason: 'branch_mismatch', detail: { note: 'HEAD resolved to the default branch at merge time' } }
+  await saveResult(result)
+  return result
+}
+if (mergeResult.conflict) {
+  const result = { status: 'blocked', reason: 'merge_conflict', detail: mergeResult.conflict }
+  await saveResult(result)
+  return result
+}
+
+let headImp = null
+const hasDiff = mergeResult.merged.length > 0
+if (hasDiff) {
+  headImp = await headImpReview(defaultBranch)
+}
+
+const syncResult = await syncDefaultBranch(defaultBranch)
+if (syncResult.conflict) {
+  const result = { status: 'blocked', reason: 'merge_conflict', detail: syncResult.conflict }
+  await saveResult(result)
+  return result
+}
+
+let gateCommands = state.gate_commands
+if (!gateCommands) {
+  const discovery = await discoverGates()
+  gateCommands = discovery.gates
+  await patchState({ gate_commands: gateCommands }, 'save-gate-commands')
+}
+
+const gateOutcome = await runGatesWithRetry(gateCommands, parseGateDecision(state.operator_decision))
+if (gateOutcome.blockedOn) {
+  const failedResult = gateOutcome.results[gateOutcome.results.length - 1]
+  const result = { status: 'blocked', reason: 'gate_red', detail: { gate: gateOutcome.blockedOn.name, cmd: gateOutcome.blockedOn.cmd, tail: failedResult.tail } }
+  await saveResult(result)
+  return result
+}
+
+const diffStatInfo = await agent(`Run \`git diff origin/${defaultBranch}..HEAD --stat\` and return the summary line (e.g. "12 files changed, 340 insertions(+), 25 deletions(-)").`, { label: 'diff-stat', phase: 'Integrate', model: 'haiku', schema: { type: 'object', properties: { diff_stat: { type: 'string' } }, required: ['diff_stat'] } })
+
+const anyGateSkipped = gateOutcome.results.some((g) => g.skipped)
+if (!anyGateSkipped) {
+  await agent(`Mark the gates Definition-of-Done checkbox "[x]" in ${args.goalFilePath} (the line reading roughly "Gates green (build · lint · test · type ...)").`, { label: 'tick-gates-box', phase: 'Integrate', model: 'haiku' })
+}
+
+// model_counts is derivable from the task table itself (plain JS, no agent call needed).
+// tokens_spent is NOT available here: unlike the old design (which read the Agent tool's
+// own `subagent_tokens` usage metadata directly off each imp's completion), a Workflow
+// script's agent() call has no documented way to surface per-call token usage — left
+// null rather than faked. commands/imps.md's summary rendering must treat this as
+// "often unavailable," not "always populated."
+const modelCounts = {}
+for (const t of state.tasks) modelCounts[t.model] = (modelCounts[t.model] || 0) + 1
+
+const result = {
+  status: 'awaiting_authorization',
+  merged: mergeResult.merged,
+  failed_tasks: dispatchOutcome.failed,
+  head_imp: headImp ? { verdict: headImp.verdict, amendments: headImp.amendments_applied } : null,
+  gates: gateOutcome.results,
+  diff_stat: diffStatInfo.diff_stat,
+  default_branch: defaultBranch,
+  dispatch: { model_counts: modelCounts, tokens_spent: null, artifacts: dispatchOutcome.artifacts },
+}
+await patchState({ segment: 'publish_finalize' }, 'enter-publish')
+await saveResult(result)
+return result
