@@ -1,5 +1,5 @@
 ---
-description: Iteratively build high-quality, reusable Claude prompts — diagnose the brief, pick a structural framework, draft, critique, and deliver a finished artefact ready to run or save
+description: Iteratively build high-quality, reusable Claude prompts — diagnose the brief, structure with evidence-based techniques, draft, critique, and deliver a finished artefact ready to run or save
 argument-hint: '[initial brief]'
 ---
 
@@ -8,7 +8,7 @@ argument-hint: '[initial brief]'
 > 🏗️ **prompt-builder** — engineering reusable Claude prompts
 >
 > This builds a high-quality, reusable prompt from your brief — not a one-off answer. It works
-> through diagnosis, framework selection, drafting, and critique before delivering a finished
+> through diagnosis, structuring, drafting, and critique before delivering a finished
 > artifact ready to drop into any Claude session. Each run builds on learnings from previous ones.
 
 Capture the session start time now — run `date +%s` and hold the value for the audit log
@@ -39,7 +39,7 @@ Everything after that first line is the raw brief.
    expectations, and acceptance criteria. Skip reuse intent, MCP tooling, target model,
    and examples — irrelevant to a one-shot internal brief. Hard cap: **3 questions**,
    batched in one turn. If the brief is already unambiguous, ask nothing.
-5. Do not select or announce a framework, and do not produce the deliverable template
+5. Do not announce a structural approach, and do not produce the deliverable template
    (no Save as, no test cases, no known failure modes, no model recommendation).
 6. Respond with **only**:
    ```
@@ -74,7 +74,7 @@ If empty, ask directly: "What's the prompt for?"
 
 ## Diagnosing the brief
 
-Before picking a framework or drafting, establish:
+Before structuring or drafting, establish:
 
 - **Goal**: what problem does the prompt solve?
 - **Reuse intent**: one-shot, or template with variables?
@@ -93,58 +93,62 @@ If the cap is reached before diagnosis is sufficient, stop asking — proceed on
 
 ---
 
-## Framework selection
+## Structuring the prompt
 
-After enough diagnosis to form a view, announce the framework and why before asking further questions. If the brief is too vague, ask one or two diagnostic questions first.
+Don't reach for a named acronym framework (RTF, CO-STAR, CRISPE, RISEN, RACE, APE, CARE,
+TAG, …) — none of them are evidence-based, and choosing between near-identical acronyms
+burns time without changing the output. Structure every prompt around these load-bearing
+pieces instead, and use **XML tags** to keep them unambiguous once a prompt mixes
+instructions, context, and data — this is the single most Claude-specific lever available
+and the one thing no acronym framework teaches:
 
-If you switch framework mid-session, say so explicitly.
+- **Role** (optional): one line in the system prompt if a persona sharpens focus ("You are
+  a code security reviewer"). Skip it when it doesn't change behavior.
+- **Task**: the specific ask, stated directly.
+- **Context**: anything not inferable from the task alone — project conventions, and *why*
+  an instruction matters. Claude generalizes better from a reason than a bare rule (e.g. "no
+  ellipses — this gets read aloud by TTS" beats "no ellipses").
+- **Input data**: wrap in `<document>`/`<input>` tags, separate from the instructions. For
+  long or multiple documents, put them **above** the instructions/query rather than after —
+  this alone can meaningfully lift quality on long-context tasks. For grounding-heavy tasks,
+  ask Claude to pull the relevant quotes out first, before answering, to cut noise.
+- **Format**: pin structure, length, and starting token explicitly — don't assume the model
+  infers it.
+- **Constraints**: phrase as what TO do, not just what NOT to do — "write flowing prose"
+  beats "don't use markdown." State the target style; don't just fence off the unwanted one.
 
-### Quick selection heuristic
+Wrap each of these sections in its own descriptive, consistent XML tag (`<instructions>`,
+`<context>`, `<document>`, `<examples>`) — Claude parses tag-delimited sections more
+reliably than prose that blends them, and it scales as the prompt grows.
 
-| If the task is… | Reach for… |
-|---|---|
-| Simple, needs a defined persona/role | **RTF** |
-| Simple, format is the only real constraint — no persona needed | **APE** |
-| Trivial, well-understood, format already implicit | **TAG** |
-| Tone- or audience-sensitive, voice is load-bearing | **CO-STAR** |
-| Brainstorming, ideation, exploring options | **CRISPE** |
-| Multi-step, technical, constraint-heavy | **RISEN** |
-| Content, marketing, SEO — tone detail less critical (lighter than CO-STAR) | **RACE** |
-| Style or format mimicry (reference example available) | **CARE** |
-| Reasoning-heavy (maths, logic, debugging) | Any + **Chain-of-Thought** |
-| Pattern-matching or classification | Any + **Few-shot** |
+### Reasoning (Chain-of-Thought)
 
-### Frameworks
+For tasks where reasoning quality matters (maths, debugging, multi-hop logic), prefer a
+general "think this through carefully before answering" over a rigidly prescribed sequence
+of steps — over-specifying steps can lock reasoning onto a worse path than an open-ended
+one would find. Structure it with tags: reasoning goes in `<thinking>`, the final response
+in `<answer>`, so the two are cleanly separable and the answer can be extracted without the
+scratchpad. If pairing CoT with few-shot examples, show the `<thinking>` block in the
+examples too, not just the final answer. Add a self-check before finalizing — "verify your
+answer meets every constraint above before responding" — a cheap addition that catches a
+real class of error.
 
-**1. RTF — Role, Task, Format**
-Simple and effective for most narrow tasks. Role establishes persona; Task is the specific ask; Format pins output structure.
+Do **not** rely on response prefilling to force a starting token or skip preamble — it's
+deprecated on current models (Claude 4.6+ rejects it with a 400). Use an explicit
+no-preamble instruction, structured/XML output, or a forced tool call instead.
 
-**2. CO-STAR — Context, Objective, Style, Tone, Audience, Response**
-Strong when how something is said matters as much as what is said. Use for communication drafts, user-facing outputs, anything where voice is load-bearing.
+### Prompt chaining
 
-**3. CRISPE — Capacity/Role, Insight, Statement, Personality, Experiment**
-Good for exploratory or creative prompts where you want the model to try things and reason about them.
+For multi-stage work, only split into sequential calls when you need to inspect or gate on
+an intermediate output — a single well-structured prompt is simpler and cheaper otherwise.
+The highest-value chain is a self-correction loop: draft → critique the draft against
+explicit criteria → revise. Each stage should be a complete, independently well-formed
+prompt, not a fragment that only makes sense mid-chain.
 
-**4. RISEN — Role, Input, Steps, Expectation, Narrowing**
-Best for multi-step agentic tasks or anything where sequencing and constraints matter. The Steps section handles complex chaining; Narrowing prunes the output space.
+### Few-shot
 
-**5. RACE — Role, Action, Context, Expectation**
-Lightweight version of CO-STAR for content/comms work. Faster to fill out when tone detail is less critical.
-
-**6. APE — Action, Purpose, Expectation**
-Minimal. Use when the task is obvious and you mostly want to constrain the output format.
-
-**7. CARE — Context, Action, Result, Example**
-Best when you have a concrete reference example. The Example section is load-bearing — without it, this collapses to RACE.
-
-**8. TAG — Task, Action, Goal**
-Even more minimal than APE. Appropriate for highly constrained, well-understood tasks where format is already implicit.
-
-### Layered techniques
-
-**Chain-of-Thought (CoT):** Add "reason step by step before giving your answer" or a structured scratchpad section to any framework. Use when correctness of reasoning matters (maths, debugging, multi-hop logic). Adds latency and token cost.
-
-**Few-Shot:** Add labelled examples in `Input:` / `Output:` pairs. Use when the model must match a pattern that is hard to describe in prose. See guidance below.
+Add labelled examples (`Input:`/`Output:` pairs) when the model must match a pattern that's
+hard to describe in prose. See detailed guidance below.
 
 ---
 
@@ -296,16 +300,18 @@ Recommend 3 test inputs after delivering the prompt — normal, edge case, and n
 
 ## Continuous improvement
 
-This skill is self-improving through two mechanisms. Neither runs silently — both surface what they're about to record or change.
+This skill improves by logging, not by rewriting itself. Never runs silently — always
+surfaces what it's about to record.
 
-### Layer 1 — append to the learnings log
+At the **end of a session** (after the operator accepts a prompt, or reports back on one
+that failed), consider whether anything is worth persisting to
+`~/.claude/prompt-builder/learnings.md`. Append an entry only if it's genuinely reusable
+across future sessions — not session-specific trivia:
 
-At the **end of a session** (after the operator accepts a prompt, or reports back on one that failed), consider whether anything is worth persisting to `~/.claude/prompt-builder/learnings.md`. Append an entry only if it's genuinely reusable across future sessions — not session-specific trivia:
-
-- **Validated pattern** — a framework→task-type pairing or structural choice that clearly worked.
+- **Validated pattern** — a structural choice or technique that clearly worked for a given task type.
 - **Failure mode & fix** — a delivered prompt failed at X; the fix was Y. (This is the self-healing core — feed it every reported failure.)
 - **Exemplar prompt** — a final prompt strong enough to reuse as few-shot scaffolding.
-- **Default override** — the operator changed one of this skill's defaults. If the log already shows the *same* default overridden before, that's the promotion signal (see Layer 2).
+- **Default override** — the operator changed one of this skill's defaults. Record it even if it recurs; this skill does not edit its own body based on the log — see it as context to apply silently on future runs, not a trigger for a self-revision protocol.
 
 Tell the operator in one line what you recorded. Respect the file's ~150-line soft cap: when a section is crowded, consolidate or prune stale entries in the same edit. After writing, commit and push if your `~/.claude/` is tracked in a dotfiles repo.
 
@@ -326,22 +332,7 @@ elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
 Use `--exit-status failed` if the operator reported the delivered prompt failed and this
 session was purely diagnosing/fixing it, with no new artifact delivered.
 
-### Layer 2 — gated self-revision
-
-When a learning hardens from a data point into an **always-applies rule** — typically signalled by the *same* default being overridden 2+ times, or the same failure mode recurring — propose editing **this skill's own body** rather than just logging it again.
-
-**Resolve the real install path first — never assume `~/.claude/commands/prompt-builder.md`.** How this command was installed changes both where the file lives and what "commit if tracked" means:
-
-- **Plugin-installed** (`claude plugin install prompt-builder@seankoji` — the only install path the README documents): run `claude plugin path prompt-builder` to find the installed command file. It lives under a plugin-cache directory, not `~/.claude/commands/`, and a later `claude plugin update` can silently overwrite local edits there. Do not hand-edit that file. Instead, propose the diff against the source in the `seankoji/claude-plugins` marketplace repo and offer to open a PR — that is this repo's real contribution model, and it's the only revision path that survives an update.
-- **Manually copied** to `~/.claude/commands/prompt-builder.md` (or a project's `.claude/commands/`): this is a plain file the operator owns directly. Edit it in place and commit if that directory is tracked in a dotfiles/project repo.
-
-If it's unclear which install this is, ask before proposing anything — don't guess and risk writing to a path `claude plugin update` will clobber.
-
-Protocol, strictly:
-
-1. **Never edit the skill body silently.** Show the proposed diff and state the evidence (which log entries justify it).
-2. Wait for explicit approval.
-3. On approval: apply the edit at the resolved path (or open the marketplace PR for a plugin install), remove the now-promoted entries from the learnings log, commit if tracked.
-4. If declined, leave both files as-is.
-
-Guardrails: keep edits surgical (change the specific default/rule, don't rewrite sections); everything is version-controlled so any bad revision is one `git revert` away. The honest limit — this only improves if the operator reports outcomes back; a run-and-forget session teaches it nothing.
+If a recorded pattern seems worth promoting into this command file permanently, say so
+and let the operator decide whether to edit it themselves (or ask explicitly, on a given
+occasion, to draft that edit) — this skill does not propose or apply edits to its own body
+unprompted.

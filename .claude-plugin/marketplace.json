@@ -19,15 +19,15 @@
     },
     {
       "name": "prompt-builder",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "source": "./plugins/prompt-builder",
-      "description": "Iterative prompt engineering assistant — pick a framework, draft, critique, and deliver a finished artefact with test cases."
+      "description": "Iterative prompt engineering assistant — structures with Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers a finished artefact with test cases."
     },
     {
       "name": "imps",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "source": "./plugins/imps",
-      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, hands the run to a wrangler subagent, merges through gates and persona review. Plus /imps:imp-agency: whole-repo audit → imps-ready remediation plan."
+      "description": "Swarm orchestrator — decomposes tasks into parallel model-routed agents, dispatches via a real Workflow script, merges through gates and persona review. Plus /imps:imp-agency: whole-repo audit → imps-ready remediation plan."
     },
     {
       "name": "ape",
@@ -37,9 +37,9 @@
     },
     {
       "name": "ollama-sidecar",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "source": "./plugins/ollama-sidecar",
-      "description": "MCP tool that offloads mechanical file transforms to a local/LAN Ollama model — Claude passes file paths, not content, keeping token cost and data on your machine."
+      "description": "MCP tool for file transforms too irregular for jq/Python — offloaded to a local/LAN Ollama model (or run deterministically in-process where possible) so Claude passes file paths, not content."
     }
   ]
 }

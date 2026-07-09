@@ -11,7 +11,7 @@ A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](http
 | [prompt-builder](./plugins/prompt-builder/) | Iterative prompt engineering assistant |
 | [imps](./plugins/imps/) | Swarm orchestrator — parallel model-routed agents, Workflow dispatch, deterministic gates, persona-review panel |
 | [ape](./plugins/ape/) | Forages OSS repos for transferable techniques — parallel gibbon discovery, orangutan deep analysis, silverback synthesis |
-| [ollama-sidecar](./plugins/ollama-sidecar/) | MCP tool offloading mechanical file transforms to a local/LAN Ollama model — paths in, paths out, no file content through Claude's context |
+| [ollama-sidecar](./plugins/ollama-sidecar/) | MCP tool for file transforms too irregular for jq/Python, offloaded to a local/LAN Ollama model — paths in, paths out, no file content through Claude's context |
 
 ---
 
