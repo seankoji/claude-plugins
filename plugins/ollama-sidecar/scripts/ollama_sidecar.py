@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """ollama-sidecar MCP server.
 
-Offloads mechanical, format-checkable text transforms to a local/LAN Ollama
-model — or, where a transform is fully deterministic, runs it directly in
-this process with no model call at all. Either way, Claude exchanges only
-file paths and an operation name over MCP (a few dozen tokens) — file
-contents are read and written entirely on this machine and never cross into
-the assistant's context, in either direction.
+For transforms jq/Python can express exactly, use those instead — deterministic,
+instant, free, and verifiable. This server's own "deterministic" operations already
+cover the common mechanical cases (dedup, sort, filter, decode, hash, format
+conversions) with no model call. Its "llm" operations exist for the narrower remainder:
+input too irregular for a fixed rule (messy unstructured text, ad-hoc YAML, "does this
+look like a secret") where interpreting it requires judgment, not just a mechanical
+pass — offloaded to a local/LAN Ollama model rather than spending Claude's own context
+on it. Either way, Claude exchanges only file paths and an operation name over MCP (a
+few dozen tokens) — file contents are read and written entirely on this machine and
+never cross into the assistant's context, in either direction.
 
 Design constraints (see plan for the full rationale):
   * Standard library only. No pip install, no build step, no committed
@@ -923,23 +927,27 @@ ALL_OPERATION_NAMES = sorted(list(OPERATIONS.keys()) + ["split_file", "merge_fil
 TOOL_DEFINITION = {
     "name": "process_local_file",
     "description": (
-        "Run a mechanical text transform on a local file, entirely on this "
-        "machine. Only file paths and an operation name are exchanged — file "
-        "contents never enter the assistant's context, and the response never "
-        "contains file content, only a small status payload. Some operations "
-        "('kind': deterministic — dedupe_lines, sort_lines, filter_lines, "
-        "base64_decode, hash_file, strip_ansi_codes, normalize_log_timestamps, "
-        "extract_field_list, plist_to_json, sqlite_dump_to_json, split_file, "
-        "merge_files) run as pure local code with no Ollama call at all. "
-        "Others (extract_json, convert_format, clean_text, yaml_to_json, "
-        "redact_secrets) call a local Ollama model because interpreting the "
-        "input needs judgment. Use ONLY for genuinely mechanical, "
-        "deterministic transforms whose output is format-checkable. The "
-        "built-in validators catch FORMAT failures (bad JSON, ragged CSV, "
-        "gross truncation or record-loss) — they do NOT verify content is "
-        "semantically correct. Do not use for tasks requiring judgment, and "
-        "for tasks where subtle content fidelity matters, spot-check the "
-        "output file directly instead of trusting a bare 'success' status."
+        "Run a text transform on a local file, entirely on this machine, when "
+        "jq/Python can't express it as one deterministic pass. Only file paths "
+        "and an operation name are exchanged — file contents never enter the "
+        "assistant's context, and the response never contains file content, "
+        "only a small status payload. If the transform IS a fixed rule (pick "
+        "columns, dedupe, sort, decode, hash, reformat by a known schema), "
+        "prefer this tool's 'kind': deterministic operations (dedupe_lines, "
+        "sort_lines, filter_lines, base64_decode, hash_file, strip_ansi_codes, "
+        "normalize_log_timestamps, extract_field_list, plist_to_json, "
+        "sqlite_dump_to_json, split_file, merge_files) or a plain jq/Python "
+        "one-liner run via Bash — both are strictly better than a model call: "
+        "deterministic, instant, free, verifiable. Reach for the 'llm' "
+        "operations (extract_json, convert_format, clean_text, yaml_to_json, "
+        "redact_secrets) only when the input is genuinely too irregular for a "
+        "fixed rule and interpreting it needs judgment. The built-in "
+        "validators catch FORMAT failures (bad JSON, ragged CSV, gross "
+        "truncation or record-loss) — they do NOT verify content is "
+        "semantically correct, so a wrong-but-well-formed output can still "
+        "report 'success'. For tasks where subtle content fidelity matters, "
+        "spot-check the output file directly instead of trusting a bare "
+        "'success' status."
     ),
     "inputSchema": {
         "type": "object",
