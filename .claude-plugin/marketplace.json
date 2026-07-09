@@ -34,6 +34,12 @@
       "version": "0.2.3",
       "source": "./plugins/ape",
       "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, silverback synthesis, all run by one ape-wrangler so the orchestrator only sees the fingerprint and final recommendations."
+    },
+    {
+      "name": "ollama-sidecar",
+      "version": "0.1.0",
+      "source": "./plugins/ollama-sidecar",
+      "description": "MCP tool that offloads mechanical file transforms to a local/LAN Ollama model — Claude passes file paths, not content, keeping token cost and data on your machine."
     }
   ]
 }
