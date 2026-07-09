@@ -8,3 +8,6 @@
 
 # macOS
 .DS_Store
+
+# Session scratch spine (written by plan mode / CLAUDE.md workflow, not a repo artifact)
+GOAL.md

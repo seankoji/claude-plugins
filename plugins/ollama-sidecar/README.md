@@ -61,6 +61,37 @@ commands for your Claude Code version.
 
 ---
 
+## Sizing `num_ctx`
+
+`num_ctx` is the total token window Ollama allocates for one request — the system
+prompt, your input file, *and* the model's generated output all have to fit inside it.
+This plugin's context-budget guard (see below) reserves roughly half of `num_ctx` for
+output, so as a rule of thumb: **set `num_ctx` to roughly 2× the token size of the
+largest file you expect to process.** ~4 characters per token is a reasonable estimate
+for logs/prose; dense code or JSON runs a bit richer per token.
+
+The trade-off is VRAM: `num_ctx` sizes the KV cache Ollama holds in memory *on top of*
+the model's own weights, and that cost scales with the window size regardless of how
+much of it a given request actually uses — doubling `num_ctx` roughly doubles the
+context window's memory footprint. Set it too high for your GPU and Ollama will fail to
+load the model (or silently fall back to slow CPU/partial offload); set it too low and
+this plugin's budget guard will refuse files that would otherwise process fine.
+
+Starting points — adjust the `num_ctx` userConfig value (a numeric string; default `16384`):
+
+| Situation | Suggested `num_ctx` |
+|---|---|
+| Small files (a few hundred lines), tight VRAM (≤8GB) | `4096`–`8192` |
+| Default — moderate files, mid-range GPU (12–16GB) | `16384` *(default)* |
+| Larger files, GPU with headroom (16GB+, e.g. an RTX 4070 Ti Super) | `32768` |
+| Very large files on a high-VRAM box | `65536`+, if the model and quantization leave room |
+
+If a call fails with `"input too large for the current context budget"`, either raise
+`num_ctx` (if you have the VRAM) or split the input into smaller chunks and process each
+separately — the server refuses up front on purpose rather than silently truncating.
+
+---
+
 ## The tool: `process_local_file`
 
 ```json
