@@ -1,7 +1,7 @@
 {
   "name": "ape",
-  "version": "0.2.3",
-  "description": "Apes open-source repos for techniques transferable to your codebase — parallel gibbon discovery, orangutan deep analysis, silverback synthesis, all run by one ape-wrangler so the orchestrator only sees the fingerprint and final recommendations.",
+  "version": "0.2.4",
+  "description": "Apes open-source repos for techniques transferable to your codebase — discovery, ranking, cloning, per-repo analysis, and synthesis run as a real Workflow script, so the orchestrator only sees the fingerprint and final recommendations.",
   "author": {
     "name": "seankoji",
     "url": "https://github.com/seankoji"
@@ -11,7 +11,7 @@
   "license": "MIT",
   "keywords": [
     "research",
-    "subagents",
+    "workflow",
     "github",
     "code-foraging",
     "orchestration",
