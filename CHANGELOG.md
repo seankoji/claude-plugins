@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-09
+
+### Changed
+
+- `plugins/ape` — Refactored orchestration logic into a real Workflow script with
+  deterministic state management (#59).
+- `plugins/elephant-goldfish` — Reduced scope to the cold-judge kernel; removed
+  hot-judge scaffolding and teaching-mode baggage (#58).
+- `plugins/claude-tuneup` — Generalized scope rules (now applicable to any plugin
+  config, not just tuneup); fixed stale docs; removed edit-proposal flow (#57).
+- `plugins/prompt-builder` — Removed acronym frameworks in favor of Anthropic's
+  evidence-based prompt-engineering techniques (#56).
+- `plugins/ollama-sidecar` — Reframed README and tool description to clarify the
+  "when jq can't parse YAML" use case (#55).
+
 ## [Unreleased] - 2026-06-25
 
 ### Added
