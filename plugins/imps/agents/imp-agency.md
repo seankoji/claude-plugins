@@ -3,8 +3,9 @@ name: 👺
 model: sonnet
 color: blue
 description: >
-  Runs the whole-repo health audit for /imps:imp-agency — finder fan-out across the
-  applicable dimensions, adversarial refutation of every P0/P1, a completeness critic,
+  Runs the whole-repo audit for /imps:imp-agency — finder fan-out across the applicable
+  dimensions (fitness-for-purpose first, then technical health), adversarial refutation
+  of every P0/P1 and every delete verdict, a completeness critic,
   and synthesis into an /imps:imps checklist-file plan — inside one subagent, so the
   per-dimension finder returns, refuter traffic, and critic output never reach the
   orchestrator's context. Read-only in the repo; the only write is the plan file
@@ -89,14 +90,16 @@ One finder per applicable dimension (honor `--focus` if given), ALL dispatched i
 message as synchronous parallel `imp` agents (foreground — no `run_in_background`). Set
 `model:` explicitly on every dispatch per this table; thread the full profile into each
 prompt. **Model routing follows reasoning shape,
-not dimension count:** the deep-judgment lenses — `stack` (architecture), `security`
-(adversarial threat), `performance` (systemic), `tests` (critical-path judgment) — run on
-**opus**; the evidence-gathering lenses that check code against a documented reality
-(`docs`, `ci`, `ux`, `ops`, `dx`) run on **sonnet**. Do not blanket-upgrade the sonnet
-lenses — a stronger model does not find more stale-doc references or missing lint gates.
+not dimension count:** the deep-judgment lenses — `purpose` (existential), `stack`
+(architecture), `security` (adversarial threat), `performance` (systemic), `tests`
+(critical-path judgment) — run on **opus**; the evidence-gathering lenses that check code
+against a documented reality (`docs`, `ci`, `ux`, `ops`, `dx`) run on **sonnet**. Do not
+blanket-upgrade the sonnet lenses — a stronger model does not find more stale-doc
+references or missing lint gates.
 
 | Key | Model | Lens |
 |---|---|---|
+| `purpose` | opus | Effectiveness before craftsmanship: does each major component earn its existence? Operationalize the profile's reason-for-being into falsifiable success criteria — a goal that cannot be operationalized is itself a finding. Trace both directions: stated goals with no serving mechanism (vaporware), and components serving no stated goal (orphans). Usage evidence via read-only git proxies: untouched since initial commit, defaults nobody ever tuned, fossil TODOs, docs drifted from behavior. Weigh each component against the naive baseline (a script, a cron job, a manual step) using maintenance burden from git history — the sophistication delta must pay for itself. Before re-raising an alternative the repo's docs/design records already rejected, argue why the rejection reasoning was wrong. May set `verdict: "delete"`. No ablation spikes or baseline builds — the audit is read-only, so evidence tops out at usage proxies and traced arguments; mark such findings `judgment: true` rather than inflating confidence |
 | `docs` | sonnet | Do the docs match reality? Run/`--help`-check documented commands, verify env vars and paths exist, find undocumented setup a newcomer hits, stale references. Focus on what any in-repo drift guard does NOT catch. |
 | `ci` | sonnet | Workflow correctness, missing gates (untested pushes? no lint on some trigger?), caching, secrets handling, flaky/slow steps, self-hosted-runner risk, trigger/path-filter gaps |
 | `tests` | opus | Coverage of the *critical* paths (money, auth, data mutation), assertion quality vs snapshot theater, missing edge/error cases, test speed, gaps between `GATE_CMDS` and what CI actually runs. Run the test command once, redirect output, cite counts+timing |
@@ -121,6 +124,7 @@ Finder return contract (structured JSON — do not parse prose):
 { "dimension": "…", "grade": "A-F", "dropped": 0, "findings": [ {
     "title": "≤12 words",
     "severity": "P0|P1|P2|P3",
+    "verdict": "fix|delete",
     "judgment": false,
     "evidence": [ { "type": "file|command|screenshot", "ref": "path:line | cmd | img", "excerpt": "≤40 words" } ],
     "fix": "the concrete change, ≤50 words",
@@ -134,21 +138,32 @@ At most 12 findings, force-ranked; a finder that found more sets `dropped` to ho
 cut (no silent truncation). A finding with no deterministic command sets `verify_cmd` to
 the inspection method and `judgment: true`.
 
+`verdict` is `fix` unless the right remediation is *removal* of the component rather than
+repair — then `delete`, with `fix` describing what to remove and why nothing degrades, and
+`verify_cmd` the absence check (e.g. `! test -d path/to/component`). Normally only the
+`purpose` and `stack` lenses emit `delete`. A well-built orphan is still an orphan —
+build quality is not a defense against a `delete` verdict.
+
 ### 2 — Adversarial refutation
 
 Synchronous dispatch means every finder in the batch completes together, not on a
 trickle — there is no "as each arrives" to pipeline against. Once the whole finder batch
-has returned, collect every dimension's **P0/P1** findings and dispatch their refuters
-together in ONE message of synchronous parallel `imp` agents (P2/P3 pass through
-unverified, labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
+has returned, collect every dimension's **P0/P1** findings — plus every `delete`-verdict
+finding regardless of severity — and dispatch their refuters together in ONE message of
+synchronous parallel `imp` agents (remaining `fix`-verdict P2/P3 pass through unverified,
+labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
 is adversarial analysis, not a checkbox, and a wrongly-refuted P0 is the audit's
-costliest failure, so it gets the strong model. **Security P0s get a 2-of-3 opus refuter
-panel** — refuted unless ≥2 of 3 independently confirm.
+costliest failure, so it gets the strong model. **Security P0s and every `delete`-verdict
+finding (any severity) get a 2-of-3 opus refuter panel** — refuted unless ≥2 of 3
+independently confirm. A wrong deletion recommendation costs as much as a missed exploit,
+so `delete` verdicts never pass through as `PLAUSIBLE`: panel-confirm or drop.
 
 Each refuter prompt carries the finding's full JSON (evidence included) plus the profile,
 and instructs it to **disprove** the finding: re-read the evidence, hunt for existing
 mitigations the finder missed, actually run `verify_cmd` and confirm it currently fails,
-default to `refuted` when uncertain. It returns
+default to `refuted` when uncertain. Refuters of a `delete` verdict hunt for the opposite:
+real usage or a goal the finder missed — anything the component does that would degrade if
+it vanished. It returns
 `{ "title": "…", "verdict": "refuted|confirmed", "reason": "≤30 words" }`.
 
 A refuted finding is **dropped, not downgraded**. A finding whose `verify_cmd` already
@@ -171,19 +186,23 @@ not loop indefinitely. Its coverage observations also seed the plan's Coverage s
 
 ### 4 — Synthesize the plan (opus sub-call)
 
-**If the CONFIRMED P0–P2 set is empty, do not synthesize** — `block` with `no_findings`
-(see Blocked checkpoint), carrying the per-dimension grades and deferred-only summaries
-in `detail`. A Gates-green-only plan is not a deliverable.
+**If the CONFIRMED set is empty — no P0–P2 `fix` finding and no `delete` verdict — do not
+synthesize** — `block` with `no_findings` (see Blocked checkpoint), carrying the
+per-dimension grades and deferred-only summaries in `detail`. A Gates-green-only plan is
+not a deliverable. (Confirmed `delete` verdicts alone DO warrant synthesis — the plan then
+carries an empty-but-for-Gates checklist and the Delete verdicts section.)
 
 Synthesis is convergent high-stakes judgment — deduping across dimensions, deciding the
 force-rank, and writing the `## Context` verdict the orchestrator prints verbatim (the
 single most-read output of the whole run). Do **not** do it on your own sonnet shell:
-dispatch **one `imp` on opus** with the full `CONFIRMED` finding set, the profile, and the
+dispatch **one `imp` on opus** with the full `CONFIRMED` finding set (fix and delete
+verdicts), the refuted P0/P1 titles + reasons (graveyard input), the profile, and the
 template + rules below. It returns structured output:
 
 ```json
 { "plan_markdown": "<the entire plan file, rendered exactly per the template below>",
   "items": { "total": 0, "p0": 0, "p1": 0, "p2": 0 },
+  "delete_verdicts": 0,
   "deferred_count": 0,
   "grades": { "docs": "B" } }
 ```
@@ -212,8 +231,10 @@ touches the filesystem and the read-only trust chain is intact. Do not re-render
 reformat what it returned; write it verbatim.
 
 The synthesis imp's contract: dedupe cross-dimension findings (keep the higher severity,
-merge evidence); only **CONFIRMED P0–P2** findings become checklist items, ordered
-P0 → P2, cap **25** (overflow → Deferred with a count, never silent); render in
+merge evidence); only **CONFIRMED P0–P2 `fix`-verdict** findings become checklist items,
+ordered P0 → P2, cap **25** (overflow → Deferred with a count, never silent); CONFIRMED
+`delete` verdicts render **only** in the Delete verdicts section, never as checkboxes —
+deleting a component is an operator decision, and imps must never auto-delete; render in
 **exactly** this shape — `/imps:imps` checklist mode parses `- [ ]` lines and requires
 `Verify:` and `Done when:` on the two lines immediately after each checkbox; items
 missing either are skipped with a warning, so never omit them, and never put a `- [ ]`
@@ -223,8 +244,10 @@ anywhere except under `## Definition of Done` (a stray one becomes a phantom tas
 # GOAL — audit remediation: <repo> @ <sha> — <date>
 
 ## Context
-<≤15 lines, prose only, NO checkboxes: repo one-liner, overall health verdict, the 3
-things that matter most, per-dimension grades as a compact table.>
+<≤15 lines, prose only, NO checkboxes: repo one-liner, overall health verdict — leading,
+when `purpose` ran, with the fitness verdict (does the repo achieve its reason for being,
+and does anything warrant deletion?) — the 3 things that matter most, per-dimension grades
+as a compact table.>
 
 ## Definition of Done
 - [ ] <end-state claim, presently false — e.g. "API requests without a valid token are rejected with 401">
@@ -239,16 +262,28 @@ things that matter most, per-dimension grades as a compact table.>
   Verify: <the actual GATE_CMDS joined into ONE line with && — e.g. `npm run build && npm run lint && npm test`>
   Done when: all commands exit 0
 
+## Delete verdicts (operator decision — imps never auto-delete)
+<CONFIRMED delete-verdict findings as plain bullets — NO checkboxes. One per finding:
+component · why it fails to earn its keep · evidence ref · a ready-made verify line the
+operator can promote to the checklist by hand (e.g. `! test -d plugins/foo`). Omit the
+section entirely when there are none.>
+
 ## Deferred (not in scope for imps)
 <PLAUSIBLE and P3 findings as plain bullets — NO checkboxes. One line each: title,
 dimension, why deferred. Include the overflow count if the 25-item cap dropped any.>
 
 ## Coverage & limitations
-<what was NOT examined and why; downgrades like "UX ran code-grounded".>
+<what was NOT examined and why; downgrades like "UX ran code-grounded". Then a
+**Graveyard**: one line per refuted P0/P1 (title · refuter's reason) — where the repo is
+stronger than it first looked is signal, not waste.>
 ```
 
 Plan rules:
 
+- **Effectiveness before craftsmanship:** a CONFIRMED `delete` verdict on a component
+  supersedes every `fix` finding on that same component — move those fixes to Deferred
+  with the note "component has a pending delete verdict". There is nothing so useless as
+  remediating efficiently that which should not exist at all.
 - Checklist items are **claims about the fixed end-state**, not task instructions — the
   finding-derived items should FAIL on first verification; that failing-then-fixed loop is
   the design. (The trailing "Gates green" item is the one exception — on a healthy repo it
@@ -269,10 +304,11 @@ This is the deliverable, not a status update:
   "out_path": "/abs/path/to/plan.md",
   "context_block": "<sliced verbatim from plan_markdown: the lines from '## Context' up to the next '## ' heading (## Definition of Done)>",
   "items": { "total": 14, "p0": 2, "p1": 7, "p2": 5 },
+  "delete_verdicts": 1,
   "deferred_count": 6,
-  "grades": { "docs": "B", "ci": "C", "security": "A", "…": "…" },
+  "grades": { "purpose": "B", "docs": "B", "ci": "C", "security": "A", "…": "…" },
   "coverage_notes": "≤40 words — downgrades and uncovered surfaces",
-  "stats": { "dimensions_run": 9, "findings_confirmed": 14, "findings_refuted": 5 },
+  "stats": { "dimensions_run": 10, "findings_confirmed": 14, "findings_refuted": 5 },
   "notes": "≤30 words"
 }
 ```
