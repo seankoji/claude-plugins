@@ -153,6 +153,8 @@ Pre-step A — validate before touching anything: for each of `~/.claude/setting
 
 Pre-step B — back up `~/.claude/settings.json` to `<dir>/settings.json.bak.$(date +%Y%m%d-%H%M%S)`. Resolve the symlink first so the `.bak` lives in the storage dir (where the matching `.gitignore` rule covers it).
 
+Prune stale backups right after creating the new one: keep only the 5 most-recent `settings.json.bak.*` in `<dir>` and delete the rest — `ls -t <dir>/settings.json.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f`. Keep-last-5 (not age-based) because runs are irregular — a `-mtime +30` cutoff would let backups pile up indefinitely between infrequent runs, while keep-last-5 bounds disk usage regardless of run cadence.
+
 **3a. Duplicates & cross-file prefix subsumption**
 
 Compute `global.allow ∩ project.allow` (exact string match). Each duplicate → strip from project.
