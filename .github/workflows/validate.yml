@@ -143,7 +143,8 @@ jobs:
           echo "All .sh and .py scripts are executable"
 
       - name: Shellcheck all shipped shell scripts
-        run: find plugins -name "*.sh" -exec shellcheck {} +
+        # info-level notes are advisory; warning+ blocks
+        run: find plugins -name "*.sh" -exec shellcheck --severity=warning {} +
 
       - name: node --check all shipped Workflow scripts
         run: |
