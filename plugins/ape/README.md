@@ -2,6 +2,13 @@
 
 Imitation is the sincerest form of engineering. Apes techniques from open-source GitHub repos into your codebase: discovery across three axes → a ranking judgment call → shallow clones → per-repo deep analysis → synthesis — the whole expedition run as one `Workflow` script so the orchestrator's context only ever sees the fingerprint and the final recommendations.
 
+## Prerequisites
+
+| Requirement | Needed for |
+| --- | --- |
+| **`gh` CLI** (authenticated) | Discovery and clone phases (`gh search`, `gh repo view`, `gh repo clone`). `/ape:forage` runs `gh auth status` at Phase 0 and stops if unauthenticated. |
+| **The `Workflow` tool** | **Hard dependency — no fallback.** `/ape:forage` syncs `scripts/ape-forage.workflow.js` into `~/.claude/workflows/` and invokes it; if `Workflow` is unavailable, the command has nothing to run. |
+
 ## How it runs
 
 ```mermaid
