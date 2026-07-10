@@ -1,9 +1,11 @@
 ---
 name: imp-agency
 description: >
-  Whole-repo health audit that produces an /imps:imps-ready remediation plan — a wrangler
-  subagent fans out finders across the applicable dimensions, refutes every P0/P1
-  adversarially, runs a completeness critic, and synthesizes a checklist-file GOAL plan.
+  Whole-repo audit — fitness for purpose first, then technical health — that produces an
+  /imps:imps-ready remediation plan. A wrangler subagent fans out finders across the
+  applicable dimensions (a purpose finder may verdict delete; operator-gated), refutes
+  every P0/P1 adversarially, runs a completeness critic, and synthesizes a checklist-file
+  GOAL plan.
 argument-hint: '[--focus dim1,dim2] [--out path]'
 ---
 
@@ -15,11 +17,14 @@ Arguments: `$ARGUMENTS`
 
 > 🔍 **imp-agency** — whole-repo audit → imps-ready plan
 >
-> A wrangler subagent runs the audit end to end — one finder per dimension (docs, CI,
-> tests, security, performance, UX, stack, ops, DX), every serious finding adversarially
-> refuted, a completeness critic, then synthesis into an `/imps:imps` checklist plan.
-> The finder traffic stays inside the subagent; you get back the plan and a one-line
-> verdict, ready to `/clear` and dispatch remediation.
+> A wrangler subagent runs the audit end to end — one finder per dimension (purpose,
+> docs, CI, tests, security, performance, UX, stack, ops, DX), every serious finding
+> adversarially refuted, a completeness critic, then synthesis into an `/imps:imps`
+> checklist plan. Effectiveness before craftsmanship: the purpose finder asks whether
+> each component earns its existence and may verdict **delete** — those land in an
+> operator-decision section of the plan, never as auto-remediation items. The finder
+> traffic stays inside the subagent; you get back the plan and a one-line verdict,
+> ready to `/clear` and dispatch remediation.
 
 ---
 
@@ -34,8 +39,9 @@ subagent.
 ## Input
 
 - `--focus <dims>` (optional) — comma-separated subset of the dimension keys
-  (`docs`, `ci`, `tests`, `security`, `performance`, `ux`, `stack`, `ops`, `dx`); default
-  is all applicable.
+  (`purpose`, `docs`, `ci`, `tests`, `security`, `performance`, `ux`, `stack`, `ops`,
+  `dx`); default is all applicable. A user unwilling to accept "delete this component"
+  as a finding should focus away from `purpose` — arguing with the output wastes the run.
 - `--out <path>` (optional) — where to write the plan. Default:
   `$HOME/.claude/audits/<repo-name>-<YYYY-MM-DD>.md`. Must resolve to an **absolute,
   whitespace-free path outside the repo** — `/imps:imps` checklist mode only triggers on a
@@ -62,6 +68,12 @@ Do this inline, or delegate the mechanical lookups to haiku scouts and assemble 
   record the downgrade so the wrangler notes it in Coverage.
 - **Project docs** — README, CLAUDE.md/AGENTS.md, CONTRIBUTING — the claims the `docs`
   finder checks against reality.
+- **Reason for being** — what problem the repo solves, for whom, and what observable
+  success looks like, distilled from the README/manifests/docs into ≤3 lines. Every
+  `purpose`-finder judgment keys off this, so it is the profile field most worth getting
+  right — and the one only the user can truly confirm. If part of the honest reason is
+  "the maintainer enjoys building it", record that as a stated goal; otherwise every
+  hobby component ablates to "delete".
 
 **Resolve and validate the `--out` path** (before spawning — the agent trusts that you did):
 
@@ -82,7 +94,9 @@ spawn the wrangler with an unresolved or in-repo path. Pass the resolved absolut
 as the agent's `Out path`.
 
 **Show the profile to the user before spawning the wrangler.** A wrong profile is cheap to
-correct now and expensive to discover after the fan-out.
+correct now and expensive to discover after the fan-out. Flag the **reason for being**
+line explicitly when `purpose` is in scope — confirming it doubles as kill authority: the
+user is agreeing that components which don't serve it are fair game for delete verdicts.
 
 ## Phase 1 — Audit (imp-agency wrangler)
 
@@ -145,6 +159,7 @@ the operator's next move):
 ```
 Plan saved: <out_path>
 Items: <total> (<p0> P0 · <p1> P1 · <p2> P2) — all should FAIL verification until remediated.
+Delete verdicts: <delete_verdicts> — operator decision, in the plan's "Delete verdicts" section; imps never auto-delete.
 
 Next steps:
 1. /clear                      (the audit context is spent; imps re-read everything from the plan)
@@ -153,6 +168,8 @@ Next steps:
 Checklist mode will re-verify every item, report the failures, and offer to
 dispatch remediation imps.
 ```
+
+Omit the `Delete verdicts:` line when the checkpoint's `delete_verdicts` is 0 or absent.
 
 Do not launch `/imps:imps` yourself, and do not start fixing findings — the operator
 decides when the imps run.
