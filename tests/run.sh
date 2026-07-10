@@ -126,18 +126,17 @@ done
 
 # Cross-plugin consistency: audit-log.sh is bundled identically into every plugin that
 # uses it (no shared runtime path exists between independently-installed plugins — see
-# AGENTS.md). Diff the copies so a future edit to one doesn't silently drift from the rest.
-audit_log_plugins=(imps prompt-builder claude-tuneup)
-first_plugin="${audit_log_plugins[0]}"
-first="$ROOT/plugins/$first_plugin/scripts/audit-log.sh"
-if [ -f "$first" ]; then
+# AGENTS.md). Diff the copies so a future edit to one doesn't silently drift from the
+# rest. Discovered dynamically so a new adopter is automatically covered.
+audit_log_copies=("$ROOT"/plugins/*/scripts/audit-log.sh)
+if [ -f "${audit_log_copies[0]:-}" ]; then
+  first="${audit_log_copies[0]}"
   consistent=1 detail=""
-  for p in "${audit_log_plugins[@]:1}"; do
-    other="$ROOT/plugins/$p/scripts/audit-log.sh"
+  for other in "${audit_log_copies[@]:1}"; do
     if ! diff -q "$first" "$other" >/dev/null 2>&1; then
       consistent=0
       detail="$detail
-plugins/$p/scripts/audit-log.sh differs from plugins/$first_plugin/scripts/audit-log.sh"
+${other#"$ROOT"/} differs from ${first#"$ROOT"/}"
     fi
   done
   report "consistency/audit-log.sh" "$consistent" "$detail"
