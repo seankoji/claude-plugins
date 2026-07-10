@@ -120,7 +120,9 @@ separately — the server refuses up front on purpose rather than silently trunc
 
 ---
 
-## The tool: `process_local_file`
+## Usage
+
+### The tool: `process_local_file`
 
 ```json
 {
@@ -205,6 +207,28 @@ same as the existing two.
 No build step in any case — just edit `scripts/ollama_sidecar.py` and it's live on the
 next server restart.
 
+### Diagnosing connectivity: `status`
+
+Cold-start and unreachable-endpoint timeouts are the most common thing to hand-debug
+with this plugin. Run the server's `status` mode directly (not through MCP) instead of
+guessing:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ollama_sidecar.py status
+```
+
+It reports, using the same `ollama_host`/`ollama_model` config as the plugin, and exits
+non-zero if the endpoint is unreachable:
+
+- reachability of the configured host and ping latency
+- available models (`ollama pull`ed) vs. currently loaded models (in VRAM right now)
+- a cold-start hint when the request times out, or a not-loaded hint when the
+  configured model is pulled but idle
+
+`OLLAMA_STATUS_TIMEOUT` (seconds, default `5`) controls how long it waits before
+reporting unreachable — short on purpose, since this is a diagnostic, not a transform
+that should wait out the full 120s operation timeout.
+
 ---
 
 ## Failure modes (all return a structured `status: "error"`, never a hang or silent bad write)
@@ -222,6 +246,12 @@ next server restart.
   for the configured `num_ctx`; Ollama's generation was cut off (`done_reason` other
   than `stop`).
 - Output fails its operation's validator (written to `<output_path>.rejected` instead).
+
+**Keep-warm pattern:** if cold-start timeouts recur often, a cron/launchd job that pings
+`ollama_host` every few minutes (e.g. `curl -s $OLLAMA_HOST/api/generate -d
+'{"model":"'"$OLLAMA_MODEL"'","keep_alive":"30m"}'`) keeps the model resident in VRAM so
+real requests never pay the load cost. `status` (above) tells you whether this is
+actually your problem before you reach for it.
 
 ---
 
