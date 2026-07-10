@@ -12,7 +12,7 @@ argument-hint: '[initial brief]'
 > artifact ready to drop into any Claude session. Each run builds on learnings from previous ones.
 
 Capture the session start time now — run `date +%s` and hold the value for the audit log
-entry in Layer 1 below (skipped entirely in embedded/brief-only mode).
+entry in Saving guidance below (skipped entirely in embedded/brief-only mode).
 
 ---
 
@@ -260,7 +260,27 @@ Every finished prompt gets written to a markdown file — never leave the delive
 | Project command (scoped) | `<project>/.claude/commands/<scope>/<name>.md` → `/<scope>:<name>` |
 | Run inline / copy-paste | `~/.claude/prompt-builder/prompts/<slug>.md` (archive copy, not a runnable command) |
 
-If intended use is ambiguous, ask; if the operator has no preference, default to the archive path so the prompt is never lost. State the path you saved to in the final message.
+If intended use is ambiguous, ask; if the operator has no preference, default to the archive path so the prompt is never lost.
+
+**Before stating the save path in the final message, you MUST append a structured entry
+to the shared cross-plugin audit log** (fail-soft — the script itself never blocks; this
+step is not optional, it's part of finishing the save):
+
+```bash
+elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
+"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
+  --plugin prompt-builder \
+  --command /prompt-builder \
+  --exit-status completed \
+  --duration-ms "$elapsed_ms" \
+  --scope user \
+  --notes "<one-line: what was built, or the failure mode fixed>"
+```
+
+Use `--exit-status failed` if the operator reported the delivered prompt failed and this
+session was purely diagnosing/fixing it, with no new artifact delivered.
+
+Then state the path you saved to in the final message.
 
 For **global commands** (and the archive path, since it also lives under `~/.claude/`): after writing the file, the operator should commit and push if `~/.claude/` is tracked in a dotfiles repo.
 
@@ -315,22 +335,8 @@ across future sessions — not session-specific trivia:
 
 Tell the operator in one line what you recorded. Respect the file's ~150-line soft cap: when a section is crowded, consolidate or prune stale entries in the same edit. After writing, commit and push if your `~/.claude/` is tracked in a dotfiles repo.
 
-Then append a structured entry to the shared cross-plugin audit log (best-effort — never
-let this block delivery; the script itself is fail-soft):
-
-```bash
-elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
-"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
-  --plugin prompt-builder \
-  --command /prompt-builder \
-  --exit-status completed \
-  --duration-ms "$elapsed_ms" \
-  --scope user \
-  --notes "<one-line: what was built, or the failure mode fixed>"
-```
-
-Use `--exit-status failed` if the operator reported the delivered prompt failed and this
-session was purely diagnosing/fixing it, with no new artifact delivered.
+The structured `audit.jsonl` append already happened in Saving guidance above — every
+delivered session reaches it, not just ones with a learnings entry worth recording.
 
 If a recorded pattern seems worth promoting into this command file permanently, say so
 and let the operator decide whether to edit it themselves (or ask explicitly, on a given

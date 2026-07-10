@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for the `gemini` CLI, used by goldfish-judge.sh's exec
+# fixtures. Exec fixtures have no way to set env vars (see tests/run.sh header),
+# so this stub can't just read GOLDFISH_STUB_MODE from the environment. Instead
+# it derives its mode from the PROMPT TEXT goldfish-judge.sh passes via `-p` —
+# that text is the fixture's own DOC file (see the files/ mechanism in
+# tests/run.sh) inlined verbatim, so a fixture selects stub behavior purely by
+# writing one of the marker strings below into its files/elephant.md. This is
+# simpler than a PWD mode-file: goldfish-judge.sh invokes gemini from a fresh
+# `mktemp -d` scratch dir (cold-read isolation), not the fixture's own $PWD, so
+# a mode file dropped in $PWD would never be visible to this stub anyway.
+set -euo pipefail
+
+prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) prompt="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+case "$prompt" in
+  *GOLDFISH_STUB_NOT_READY*)
+    echo "VERDICT: NOT READY"
+    echo "1. stub gap: this is a fixture-generated NOT READY report."
+    ;;
+  *GOLDFISH_STUB_NO_VERDICT*)
+    echo "stub gemini: no VERDICT line on purpose (fail-closed fixture)."
+    ;;
+  *)
+    echo "VERDICT: READY"
+    echo "Stub summary: fixture doc is ready for a cold reader."
+    ;;
+esac
