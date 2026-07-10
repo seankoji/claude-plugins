@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/seankoji/claude-plugins/schemas/command-frontmatter.schema.json",
+  "title": "Claude Command Frontmatter",
+  "description": "Schema for the YAML frontmatter block in plugins/*/commands/*.md.",
+  "type": "object",
+  "required": ["description"],
+  "additionalProperties": true,
+  "properties": {
+    "description": {
+      "type": "string",
+      "description": "One-line (or folded) description of what the command does."
+    }
+  }
+}
