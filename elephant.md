@@ -1,6 +1,6 @@
 # claude-plugins — Elephant (design of record)
 <!-- Authoritative design doc. "Design is the new code." A zero-context session re-bootstraps
-     from this file alone. Last reconciled: 2026-06-25 against a805f23. -->
+     from this file alone. Last reconciled: 2026-07-10 against 4753ad9 (issue #61 item 6). -->
 
 ## The Problem
 
@@ -19,15 +19,15 @@ machines with one command and kept in sync, instead of being copy-pasted into ea
 
 **What it solves:** Claude Code reads plugins from a *marketplace* — a git repo with a top-level
 `marketplace.json` index pointing at self-contained plugin packages. This repo IS that marketplace. It
-currently ships **4 plugins**: `elephant-goldfish`, `claude-tuneup`, `prompt-builder`, `imps`
-(`.claude-plugin/marketplace.json:7-28`).
+currently ships **6 plugins**: `elephant-goldfish`, `claude-tuneup`, `prompt-builder`, `imps`, `ape`,
+`ollama-sidecar` (`.claude-plugin/marketplace.json:7-45`).
 
 ## The Technical Plan
 
 ### Marketplace → plugin → command hierarchy
 
 ```
-.claude-plugin/marketplace.json      # the index: name "seankoji", owner, list of 4 plugins
+.claude-plugin/marketplace.json      # the index: name "seankoji", owner, list of 6 plugins
 schemas/marketplace.schema.json      # contract for the index
 schemas/plugin.schema.json           # contract for each plugin manifest
 plugins/<name>/
@@ -75,7 +75,7 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 
 | Component | Role | Owned by |
 |---|---|---|
-| Marketplace index | Lists the 4 plugins; defines the `seankoji` name | `.claude-plugin/marketplace.json` |
+| Marketplace index | Lists the 6 plugins; defines the `seankoji` name | `.claude-plugin/marketplace.json` |
 | Marketplace schema | Draft-07 contract for the index (requires name/owner/plugins) | `schemas/marketplace.schema.json` |
 | Plugin schema | Draft-07 contract for each manifest (8 required fields) | `schemas/plugin.schema.json` |
 | Maintainer guide | Layout, add-a-plugin checklist, invariants | `AGENTS.md` |
@@ -85,6 +85,8 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 | claude-tuneup | Permission audit + settings tuneup | `plugins/claude-tuneup/` |
 | prompt-builder | Iterative prompt-engineering assistant | `plugins/prompt-builder/` |
 | imps | Swarm orchestrator (parallel model-routed agents) | `plugins/imps/` |
+| ape | OSS-repo foraging for transferable techniques, run as a Workflow script | `plugins/ape/` |
+| ollama-sidecar | MCP file-transform offload to a local/LAN Ollama model | `plugins/ollama-sidecar/` |
 
 ## Alternatives
 
@@ -111,30 +113,33 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
   filesystem the single source of truth. *(Rationale inferred; the CI rejection is fact.)*
 - **Fail-closed judge vs fail-open.** elephant-goldfish's judge exits non-zero (code 2) on empty/unreachable
   output rather than treating "no gaps found" as a pass — an empty judge response must never certify a doc
-  (`plugins/elephant-goldfish/scripts/goldfish-judge.sh:20-23,82-86`). Stated invariant: "Fail-closed beats
+  (`plugins/elephant-goldfish/scripts/goldfish-judge.sh:64-72,164-167`). Stated invariant: "Fail-closed beats
   fail-open everywhere" (`AGENTS.md:42`).
 
 ## Detailed Implementation
 
-### The 4 plugins and their commands
+### The 6 plugins and their commands
 
 **elephant-goldfish** — `plugins/elephant-goldfish/`
 - Command: `/elephant-goldfish:elephant` (`commands/elephant.md`). A self-validating design-doc generator:
-  fans out parallel haiku discovery scouts, an opus author writes `elephant.md`, then a **Goldfish Gate**
-  runs a closed judge→patch→re-judge loop (up to 5 rounds) using a different-lineage Gemini reader.
-- Modes via argument (`README.md:15-24`, `commands/elephant.md:5-10`): bare = create-if-absent then gate
-  (or just gate an existing doc); `reconcile` = drift pass; `regenerate` = rebuild from code; any other text
-  = a manual goldfish failure report to fold in.
-- Bundled asset: `scripts/goldfish-judge.sh` — ONE cold comprehension pass on Gemini via the `agy`
-  (Antigravity CLI). Exit codes: `0`=READY, `10`=NOT READY, `2`=judge error/empty/no VERDICT line
-  (fail-closed), `1`=usage (`scripts/goldfish-judge.sh:13-18`). It hands `agy` a pseudo-TTY and refuses to
-  call anything READY without a literal `VERDICT:` line, because `agy` under a pipe can exit 0 with empty
-  output (`scripts/goldfish-judge.sh:19-23,82-100`).
-- Config env vars: `AGY_MODEL` (default `gemini-3.1-pro`), `GOLDFISH_JUDGE`
-  (default `${CLAUDE_PLUGIN_ROOT}/scripts/goldfish-judge.sh`), `MAX_GOLDFISH_ITERS` (5),
-  `GOLDFISH_AFTER_CREATE` (true) (`README.md:64-72`, `commands/elephant.md:30-42`).
-- Prerequisite: `agy` on PATH, pointed at a Gemini model — **not** a Claude model, or the judge shares the
-  author's priors (`README.md:27-41`).
+  writes/updates `elephant.md` grounded in the repo, then a **Goldfish Gate** runs a closed
+  judge→patch→re-judge loop (up to 5 rounds) using a different-lineage `gemini` CLI reader
+  (`commands/elephant.md:11-33`).
+- Modes via argument (`commands/elephant.md:2-6,35-36,51-58`): bare = write (or just gate an existing doc)
+  then run the judge loop; `check` = read-only factual-drift pass — a `model: haiku` agent verifies every
+  `path`/`path:line` citation and flags undocumented additions, no writes, no judge; any other text = a
+  goldfish failure report pasted back from a prior run, folded in directly.
+- Bundled asset: `scripts/goldfish-judge.sh` — ONE cold comprehension pass whose primary judge is the
+  `gemini` CLI, with an optional second-opinion judge via `ollama` (set `OLLAMA_MODEL`). Exit codes:
+  `0`=READY (every judge that ran agrees), `10`=NOT READY (any judge disagrees), `2`=judge error/empty/no
+  VERDICT line (fail-closed), `1`=usage (`scripts/goldfish-judge.sh:19-27,64-72,164-167`). Both judges get
+  the doc inlined into the prompt — never file access — so no sandbox flags are needed
+  (`scripts/goldfish-judge.sh:5-17`).
+- Config env vars: `GEMINI_MODEL` (default `gemini-2.5-pro`), `OLLAMA_MODEL` (unset — optional second
+  judge), `OLLAMA_NO_THINK` (`true`), `OLLAMA_HOST`, `JUDGE_TIMEOUT` (`180`s)
+  (`scripts/goldfish-judge.sh:36-45`, `README.md:76-84`).
+- Prerequisite: `gemini` CLI on PATH, pointed at a Gemini model — **not** a Claude model, or the judge
+  shares the author's priors (`README.md:37-53`).
 
 **claude-tuneup** — `plugins/claude-tuneup/`
 - Command: `/claude-tuneup:claude-tuneup` (`commands/claude-tuneup.md`). Three phases: **Scan** (read last
@@ -148,12 +153,18 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 
 **prompt-builder** — `plugins/prompt-builder/`
 - Command: `/prompt-builder:prompt-builder [initial brief]` (`commands/prompt-builder.md`). Iterative
-  prompt-engineering assistant: diagnose → select framework → draft → critique → deliver → refine
-  (`README.md:5-12`). Supports 8 frameworks (RTF, CO-STAR, CRISPE, RISEN, RACE, APE, CARE, TAG); CoT and
-  Few-Shot layer on top (`README.md:16-27`).
-- No bundled scripts/MCP — pure instruction command (`README.md:29-31`).
+  prompt-engineering assistant: diagnose → structure → draft → critique → deliver → refine
+  (`README.md:8-15`). PR #56 dropped the 8 acronym frameworks in favor of Anthropic's own evidence-based
+  prompting techniques — none of the acronyms are evidence-based and picking between near-identical ones
+  wasted time without changing output (`README.md:11`, `commands/prompt-builder.md:98-103`): XML-tag
+  structuring, context/motivation, long-context layout, Chain-of-Thought, prompt chaining, few-shot
+  examples, and do-vs-don't phrasing (`README.md:19-30`). Prefilling is deliberately not used — deprecated
+  on current models (`README.md:31`).
+- Bundled asset: `scripts/audit-log.sh` (byte-identical copy also in `imps` and `claude-tuneup`) — appends
+  one structured line to `~/.claude/audit.jsonl` at session end; needs `jq` on PATH and skips itself with a
+  warning (not a failure) if missing (`README.md:35`).
 - Optional runtime state: `~/.claude/prompt-builder/learnings.md` read at session start, grown over time
-  with a ~150-line soft cap (`README.md:33,57-64`).
+  with a ~150-line soft cap (`README.md:37,62-68`).
 
 **imps** — `plugins/imps/`
 - Four commands, all auto-discovered from `commands/`:
@@ -174,6 +185,47 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 - Prerequisites (`README.md:58-72`): Workflow tool (degrades to sequential `Agent` calls), `gh` CLI for
   issue-driven mode, GitHub MCP (`mcp__github__*`) for PR/issue reads, the `imp` agent type (falls back to
   `general-purpose`). Optional: `CLAUDE_CDP_URL` and Claude-in-Chrome MCP for the browser review half.
+
+**ape** — `plugins/ape/`
+- Two commands: `/ape:forage [focus]` (`commands/forage.md`) — Phase 0 (fingerprint) runs as a plain
+  command, then syncs the bundled `scripts/ape-forage.workflow.js` into `~/.claude/workflows/ape-forage.js`
+  (a plugin can't ship a runnable Workflow directly — `.js` workflows only load from a user's own
+  `~/.claude/workflows/`) and invokes it; `/ape:clean [--all]` (`commands/clean.md`) — sanctioned deletion
+  of clones, keeping reports unless `--all` (`README.md:48-59`).
+- The synced Workflow script runs: parallel 3-axis discovery (same domain, adjacent stack, curated
+  sources) → dedupe (plain code) + one judgment-call ranking agent → clone with one automatic retry →
+  parallel per-repo analysis → one synthesis agent producing `RECOMMENDATIONS.md` plus the top 2-3 picks
+  returned to the caller (`README.md:5-46`).
+- Bundled scripts: `scripts/init-workspace.sh`, `scripts/clone-candidates.sh`, `scripts/search-repos.sh`,
+  `scripts/triage-repos.sh`, `scripts/readme-peek.sh` — each batches what would otherwise be a
+  multi-command/for-loop bash block into one matchable command, since Claude Code's permission analyzer
+  can't statically verify a compound block against an `allowed-tools` prefix (`README.md:54-59,97-99`).
+- All artifacts land in `~/tmp/repo-research/<project-dir-name>/`: `fingerprint.md` (cached ≤30 days),
+  `repos/`, `reports/*.md`, `RECOMMENDATIONS.md` (`README.md:78-79`).
+- Prerequisite: `gh` CLI (discovery + cloning), the Workflow tool; `/ape:forage` dispatches a background
+  run, so the command's turn ends before the expedition finishes (`README.md:81-85`).
+
+**ollama-sidecar** — `plugins/ollama-sidecar/`
+- No `commands/` — this plugin ships only an MCP server (`scripts/ollama_sidecar.py`, run via
+  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ollama_sidecar.py` through the plugin's `.mcp.json`) exposing one
+  tool, `process_local_file`, for file transforms too irregular for a fixed `jq`/Python rule
+  (`README.md:1-16,65-68,123-134`).
+- Reads `input_path` from disk and writes `output_path` back to disk directly — Claude exchanges only a
+  path and an operation name, never file contents (`README.md:13-15`).
+- Two operation kinds: **deterministic** (pure local Python, no model call — `dedupe_lines`, `sort_lines`,
+  `filter_lines`, `base64_decode`, `hash_file`, `strip_ansi_codes`, `normalize_log_timestamps`,
+  `extract_field_list`, `plist_to_json`, `sqlite_dump_to_json`, `split_file`, `merge_files`) and **LLM**
+  (routed to the configured Ollama model — `extract_json`, `convert_format`, `clean_text`,
+  `yaml_to_json`, `redact_secrets`) (`README.md:150-184`).
+- Every output is validated before it's written (format checks, size-ratio bounds, record-count heuristics,
+  known-secret-shape scans depending on operation); a failed validation writes to
+  `<output_path>.rejected` and leaves the requested file untouched — never a false `"success"`
+  (`README.md:43-55,210-224`).
+- `userConfig` (prompted at install, reconfigurable later): `ollama_host` (default
+  `http://localhost:11434`), `ollama_model` (default `qwen2.5-coder:14b`), `num_ctx` (default `16384`)
+  (`plugin.json` `userConfig`, `README.md:79-119`).
+- Prerequisite: `python3` on PATH (stdlib only); a reachable Ollama instance with the configured model
+  already pulled, needed only for the 5 LLM-backed operations (`README.md:59-68`).
 
 ### Add-a-plugin checklist (cite `AGENTS.md:24-32`)
 
