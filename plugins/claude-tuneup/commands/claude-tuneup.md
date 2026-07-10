@@ -30,7 +30,8 @@ Flags:
 - (no flag) — run all three, scan first (adds can create new duplicates the audit catches)
 
 Capture the run start time now — run `date +%s` and hold the value for the audit log
-entry in Phase 3 below (only reached when Phase 3 runs).
+entry in step 7 (Report) below — that step always runs it, regardless of which flags
+skip Phase 3.
 
 ## Configuration (optional)
 
@@ -240,7 +241,22 @@ Don't touch git state for `~/.claude/settings.json` (managed via dotfiles, not t
 
 ### 7. Report
 
-Concise summary:
+**Before printing the summary below, you MUST run this** (the script itself is
+fail-soft — a missing `jq` or unwritable log dir just warns and exits 0 — but this
+step is not optional; the run isn't done until it executes):
+
+```bash
+elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
+"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
+  --plugin claude-tuneup \
+  --command /claude-tuneup \
+  --exit-status completed \
+  --duration-ms "$elapsed_ms" \
+  --scope user \
+  --notes "<one-line: N added, D duplicates stripped, F findings logged>"
+```
+
+Then print the concise summary:
 
 - Phase 1: N added (M global, K project) from T transcripts
 - Phase 2: D duplicates stripped, P moved global → project, G removed/moved project → global
@@ -280,24 +296,11 @@ Append a dated entry to `~/.claude/claude-tuneup.notes.md` (one level above `com
 
 Keep entries terse. Reuse the same wording across runs when the same finding recurs — exact-string matching makes it easy to spot at a glance which findings are one-offs vs. recurring, if you're ever scanning the file yourself.
 
-**8b′. Structured audit log**
-
-Best-effort — never let this block the report; the script itself is fail-soft.
-
-```bash
-elapsed_ms=$(( ($(date +%s) - <captured start time>) * 1000 ))
-"${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh" \
-  --plugin claude-tuneup \
-  --command /claude-tuneup \
-  --exit-status completed \
-  --duration-ms "$elapsed_ms" \
-  --scope user \
-  --notes "<one-line: N added, D duplicates stripped, F findings logged>"
-```
-
-This command does not propose or apply edits to its own body based on the notes log —
-`claude-tuneup.notes.md` and `audit.jsonl` are for you to read back if you want to spot
-a recurring papercut and fix the command yourself.
+The structured `audit.jsonl` append already happened in step 7 (Report) above — every
+run reaches it, not just runs where Phase 3 executes. This command does not propose or
+apply edits to its own body based on the notes log — `claude-tuneup.notes.md` and
+`audit.jsonl` are for you to read back if you want to spot a recurring papercut and fix
+the command yourself.
 
 ## Notes
 
