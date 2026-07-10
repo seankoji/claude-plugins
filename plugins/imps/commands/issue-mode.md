@@ -65,9 +65,10 @@ issues, re-enter at the first incomplete phase. Never redo merged work.
 
 ## Learnings
 
-Issue-driven mode reads the `## Active rules` section from two files at startup:
-- **User-scoped:** `~/.claude/imps/learnings.md` — stack-agnostic rules across all projects
-- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules for this project only
+Issue-driven mode reads the `## Active rules` section from two files at startup. `Read`
+is a tool call, not Bash — it does not expand `~`, so resolve `$HOME` yourself:
+- **User-scoped:** `$HOME/.claude/imps/learnings.md` — stack-agnostic rules across all projects
+- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules for this project only (already relative to cwd)
 
 Both are optional. Merge rules from both; project-scoped rules take precedence on conflicts.
 **Write new entries to the appropriate file based on scope** (see the Self-tune section below).
@@ -348,9 +349,10 @@ Set the live comment to "/imps complete — see PR #N."
 
 ## Self-tune
 
-After each run, append learnings to the appropriate file based on scope:
+After each run, append learnings to the appropriate file based on scope. `Write` does
+not expand `~` — resolve `$HOME` yourself for the user-scoped file:
 - **Project-specific** (this repo's stack, commands, conventions) → `.claude/imps/learnings.md` in the repo root
-- **Generally applicable** (model routing, task boundaries, agent patterns) → `~/.claude/imps/learnings.md`
+- **Generally applicable** (model routing, task boundaries, agent patterns) → `$HOME/.claude/imps/learnings.md`
 
 Use actual run data (dispatch concurrency achieved, model escalations, merge conflicts, gate failures, panel
 rounds, collector-vs-live-interaction finding counts):
