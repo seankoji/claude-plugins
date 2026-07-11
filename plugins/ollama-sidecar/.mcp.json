@@ -8,6 +8,10 @@
         "OLLAMA_HOST": "${user_config.ollama_host}",
         "OLLAMA_MODEL": "${user_config.ollama_model}",
         "OLLAMA_NUM_CTX": "${user_config.num_ctx}",
+        "OLLAMA_FAST_HOST": "${user_config.fast_ollama_host}",
+        "OLLAMA_FAST_MODEL": "${user_config.fast_ollama_model}",
+        "OLLAMA_FAST_NUM_CTX": "${user_config.fast_num_ctx}",
+        "OLLAMA_TLS_CA": "${user_config.tls_ca_file}",
         "SIDECAR_ROOT": "${CLAUDE_PROJECT_DIR}"
       }
     }

@@ -37,9 +37,9 @@
     },
     {
       "name": "ollama-sidecar",
-      "version": "0.1.4",
+      "version": "0.2.0",
       "source": "./plugins/ollama-sidecar",
-      "description": "MCP tool for file transforms too irregular for jq/Python — offloaded to a local/LAN Ollama model (or run deterministically in-process where possible) so Claude passes file paths, not content."
+      "description": "MCP tool for file transforms too irregular for jq/Python — routed between two Ollama endpoints (a deep large-model tier and a fast high-throughput tier), or run deterministically in-process where possible, so Claude passes file paths, not content."
     }
   ]
 }

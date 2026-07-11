@@ -58,9 +58,32 @@ class EnvHelpersTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SIDECAR_TEST_INT": "not-a-number"}):
             self.assertEqual(sidecar._env_int("SIDECAR_TEST_INT", 7), 7)
 
-    def test_get_num_ctx_invalid_falls_back(self):
+    def test_resolve_tier_invalid_num_ctx_falls_back(self):
         with mock.patch.dict(os.environ, {"OLLAMA_NUM_CTX": "nope"}):
-            self.assertEqual(sidecar.get_num_ctx(), sidecar.DEFAULT_NUM_CTX)
+            self.assertEqual(sidecar.resolve_tier("deep")["num_ctx"], sidecar.DEFAULT_NUM_CTX)
+
+    def test_resolve_tier_fast_falls_back_to_deep(self):
+        env = {
+            "OLLAMA_HOST": "http://deepbox:11434",
+            "OLLAMA_MODEL": "big",
+            "OLLAMA_FAST_HOST": "",
+            "OLLAMA_FAST_MODEL": "",
+        }
+        with mock.patch.dict(os.environ, env):
+            fast = sidecar.resolve_tier("fast")
+        self.assertEqual(fast["host"], "http://deepbox:11434")
+        self.assertEqual(fast["model"], "big")
+
+    def test_resolve_tier_fast_overrides(self):
+        env = {
+            "OLLAMA_HOST": "http://deepbox:11434",
+            "OLLAMA_FAST_HOST": "http://fastbox:11434",
+            "OLLAMA_FAST_MODEL": "small",
+        }
+        with mock.patch.dict(os.environ, env):
+            fast = sidecar.resolve_tier("fast")
+        self.assertEqual(fast["host"], "http://fastbox:11434")
+        self.assertEqual(fast["model"], "small")
 
 
 class PathScopingTest(unittest.TestCase):
@@ -177,11 +200,13 @@ class CallOllamaTest(unittest.TestCase):
         cm.__exit__.return_value = False
         return cm
 
+    _CFG = {"tier": "deep", "host": "http://h:11434", "model": "m", "num_ctx": 1024, "timeout": 5}
+
     def test_call_ollama_success(self):
         with mock.patch.object(
             sidecar.urllib.request, "urlopen", return_value=self._fake_response({"response": "ok"})
         ):
-            result = sidecar.call_ollama("http://h:11434", "m", "sys", "user", 1024)
+            result = sidecar.call_ollama(self._CFG, "sys", "user")
         self.assertEqual(result["response"], "ok")
 
     def test_call_ollama_http_error(self):
@@ -189,14 +214,18 @@ class CallOllamaTest(unittest.TestCase):
             "http://h:11434/api/generate", 500, "boom", hdrs=None, fp=io.BytesIO(b"detail")
         )
         with mock.patch.object(sidecar.urllib.request, "urlopen", side_effect=err):
-            with self.assertRaises(sidecar.OllamaError):
-                sidecar.call_ollama("http://h:11434", "m", "sys", "user", 1024)
+            with self.assertRaises(sidecar.OllamaError) as ctx:
+                sidecar.call_ollama(self._CFG, "sys", "user")
+        # HTTP errors are answers from a live server — they must NOT be
+        # marked unreachable, or they'd wrongly trigger tier failover.
+        self.assertFalse(ctx.exception.unreachable)
 
     def test_call_ollama_url_error(self):
         err = urllib.error.URLError("connection refused")
         with mock.patch.object(sidecar.urllib.request, "urlopen", side_effect=err):
-            with self.assertRaises(sidecar.OllamaError):
-                sidecar.call_ollama("http://h:11434", "m", "sys", "user", 1024)
+            with self.assertRaises(sidecar.OllamaError) as ctx:
+                sidecar.call_ollama(self._CFG, "sys", "user")
+        self.assertTrue(ctx.exception.unreachable)
 
     def test_call_ollama_non_json_response(self):
         cm = mock.MagicMock()
@@ -204,7 +233,7 @@ class CallOllamaTest(unittest.TestCase):
         cm.__exit__.return_value = False
         with mock.patch.object(sidecar.urllib.request, "urlopen", return_value=cm):
             with self.assertRaises(sidecar.OllamaError):
-                sidecar.call_ollama("http://h:11434", "m", "sys", "user", 1024)
+                sidecar.call_ollama(self._CFG, "sys", "user")
 
 
 class StatusDiagnosticTest(unittest.TestCase):
@@ -707,7 +736,7 @@ class HandleProcessLocalFileTest(unittest.TestCase):
 
     def test_llm_operation_input_too_large_for_budget(self):
         self._write("in.txt", "x" * 1000)
-        with mock.patch.object(sidecar, "get_num_ctx", return_value=64):
+        with mock.patch.dict(os.environ, {"OLLAMA_NUM_CTX": "64"}):
             result = sidecar.handle_process_local_file(
                 {"operation": "extract_json", "input_path": "in.txt", "output_path": "out.json"}
             )

@@ -26,12 +26,25 @@ Design constraints (see plan for the full rationale):
   * Two operation "kinds":
       - "llm": sends input_text to Ollama with a strict system prompt, then
         validates the response. Used when interpreting the input requires
-        judgment (extracting structure from messy text, translating YAML to
-        JSON, spotting things that look like secrets).
+        judgment (extracting structure from messy text, summarizing,
+        spotting things that look like secrets).
       - "deterministic": pure Python, no Ollama call, no network round-trip.
         Used for transforms with one unambiguous correct answer (dedup,
         sort, filter, decode, hash, format conversions backed by the
         standard library). Faster, free, and needs no Ollama instance.
+        The two yaml ops additionally use an OPTIONAL external binary (yq)
+        when it's on PATH — still deterministic, still local; json_to_yaml
+        fails with a structured "brew install yq" hint without it, and
+        yaml_to_json falls back to the llm path instead.
+  * Two LLM tiers, because the right box depends on the job:
+      - "deep": the primary endpoint — typically the biggest model your
+        local machine can hold. Low throughput is fine; judgment-heavy,
+        low-volume operations default here.
+      - "fast": an optional second endpoint — typically a smaller model
+        that fits entirely in a GPU's VRAM on a LAN box, generating tokens
+        several times faster. Bulk, output-heavy operations default here.
+        Every "fast" setting falls back to its "deep" value when unset, so
+        single-endpoint installs behave exactly as before.
 """
 
 import base64
@@ -39,18 +52,28 @@ import binascii
 import csv
 import datetime
 import hashlib
+import html.parser
 import io
 import json
 import os
 import plistlib
 import re
+import shutil
 import socket
 import sqlite3
+import ssl
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree
 from xml.parsers.expat import ExpatError
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # older interpreter — toml_to_json degrades to a structured error
+    tomllib = None
 
 # ---------------------------------------------------------------------------
 # Configuration — env-driven, all with hardcoded local-only defaults so the
@@ -59,11 +82,17 @@ from xml.parsers.expat import ExpatError
 # ---------------------------------------------------------------------------
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b"
+DEFAULT_OLLAMA_MODEL = "qwen3:14b"
 DEFAULT_NUM_CTX = 16384
-REQUEST_TIMEOUT_SECONDS = 120
+# The deep tier gets a longer leash: a 30B+ model on unified memory is slow
+# by design — that's the tier's whole trade. The fast tier should answer
+# quickly or it's misconfigured.
+DEFAULT_TIMEOUT_DEEP = 300
+DEFAULT_TIMEOUT_FAST = 120
+YQ_TIMEOUT_SECONDS = 60
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "ollama-sidecar"
+# Kept in lockstep with plugin.json / marketplace.json.
 SERVER_VERSION = "0.2.0"
 
 
@@ -80,28 +109,35 @@ def _env(name, default):
     return val or default
 
 
-def get_ollama_host():
-    return _env("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
-
-
-def get_ollama_model():
-    return _env("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
-
-
-def get_num_ctx():
-    raw = _env("OLLAMA_NUM_CTX", str(DEFAULT_NUM_CTX))
-    try:
-        return int(raw)
-    except ValueError:
-        return DEFAULT_NUM_CTX
-
-
 def _env_int(name, default):
     raw = _env(name, str(default))
     try:
         return int(raw)
     except ValueError:
         return default
+
+
+LLM_TIERS = ("deep", "fast")
+
+
+def resolve_tier(tier):
+    """Resolve one LLM tier to a concrete endpoint config.
+
+    "deep" is the primary endpoint (the pre-tier OLLAMA_* names, so existing
+    installs are automatically the deep tier). "fast" reads OLLAMA_FAST_*,
+    each field falling back to the deep value when unset — so with no fast
+    config at all, both tiers are the same endpoint and tier choice is a
+    no-op."""
+    host = _env("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    model = _env("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    num_ctx = _env_int("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX)
+    timeout = _env_int("OLLAMA_TIMEOUT", DEFAULT_TIMEOUT_DEEP)
+    if tier == "fast":
+        host = _env("OLLAMA_FAST_HOST", host)
+        model = _env("OLLAMA_FAST_MODEL", model)
+        num_ctx = _env_int("OLLAMA_FAST_NUM_CTX", num_ctx)
+        timeout = _env_int("OLLAMA_FAST_TIMEOUT", DEFAULT_TIMEOUT_FAST)
+    return {"tier": tier, "host": host, "model": model, "num_ctx": num_ctx, "timeout": timeout}
 
 
 # ---------------------------------------------------------------------------
@@ -240,25 +276,48 @@ def max_input_tokens_for(system_prompt, num_ctx):
 
 
 class OllamaError(Exception):
-    pass
+    """`unreachable=True` marks connection-level failures (host down, DNS,
+    timeout) — the only class of error worth retrying on the other tier.
+    HTTP errors (model not pulled, bad request) are real answers from a
+    live server and must surface as-is."""
+
+    def __init__(self, message, unreachable=False):
+        super().__init__(message)
+        self.unreachable = unreachable
 
 
-def call_ollama(host, model, system_prompt, user_prompt, num_ctx):
+def _tls_context_for(url):
+    """Optional custom CA bundle for https Ollama endpoints (OLLAMA_TLS_CA =
+    path to a PEM file). Lets a LAN reverse proxy with an mkcert/self-signed
+    CA verify properly instead of forcing plain http or an insecure skip.
+    Returns None for http URLs or when unconfigured (default verification)."""
+    ca_file = _env("OLLAMA_TLS_CA", "")
+    if not ca_file or not url.lower().startswith("https://"):
+        return None
+    try:
+        return ssl.create_default_context(cafile=ca_file)
+    except (OSError, ssl.SSLError) as e:
+        raise OllamaError(f"could not load OLLAMA_TLS_CA bundle '{ca_file}': {e}")
+
+
+def call_ollama(cfg, system_prompt, user_prompt):
+    host, model = cfg["host"], cfg["model"]
     url = host.rstrip("/") + "/api/generate"
+    tls_context = _tls_context_for(url)
     body = json.dumps(
         {
             "model": model,
             "system": system_prompt,
             "prompt": user_prompt,
             "stream": False,
-            "options": {"num_ctx": num_ctx},
+            "options": {"num_ctx": cfg["num_ctx"]},
         }
     ).encode("utf-8")
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(req, timeout=cfg["timeout"], context=tls_context) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace") if e.fp else ""
@@ -266,10 +325,10 @@ def call_ollama(host, model, system_prompt, user_prompt, num_ctx):
             f"ollama at {host} returned HTTP {e.code} for model '{model}': {detail[:300]}"
         )
     except urllib.error.URLError as e:
-        raise OllamaError(f"could not reach ollama at {host}: {e.reason}")
+        raise OllamaError(f"could not reach ollama at {host}: {e.reason}", unreachable=True)
     except OSError as e:
         # Covers socket.timeout and other low-level connection failures.
-        raise OllamaError(f"ollama request to {host} failed: {e}")
+        raise OllamaError(f"ollama request to {host} failed: {e}", unreachable=True)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
@@ -301,9 +360,10 @@ COLD_START_HINT = (
 
 def _http_get_json(url, timeout):
     """Thin GET+parse wrapper so tests can mock exactly one seam instead of
-    the whole urllib call graph."""
+    the whole urllib call graph. Honors OLLAMA_TLS_CA for https endpoints,
+    same as the transform path."""
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_tls_context_for(url)) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -327,6 +387,11 @@ def gather_status(host, model, timeout=DEFAULT_STATUS_TIMEOUT_SECONDS):
     start = time.monotonic()
     try:
         tags = _http_get_json(host.rstrip("/") + "/api/tags", timeout)
+    except OllamaError as e:
+        # e.g. OLLAMA_TLS_CA configured but unreadable — a config problem,
+        # reported like any other unreachability rather than raised.
+        status["error"] = str(e)
+        return status
     except (socket.timeout, TimeoutError):
         status["error"] = f"timed out reaching ollama at {host} after {timeout}s"
         status["hint"] = COLD_START_HINT
@@ -361,7 +426,7 @@ def gather_status(host, model, timeout=DEFAULT_STATUS_TIMEOUT_SECONDS):
         status["loaded_models"] = sorted(
             m.get("name", "") for m in ps.get("models", []) if isinstance(m, dict)
         )
-    except (socket.timeout, TimeoutError, urllib.error.URLError, OSError, json.JSONDecodeError):
+    except (OllamaError, socket.timeout, TimeoutError, urllib.error.URLError, OSError, json.JSONDecodeError):
         # /api/ps failing shouldn't blank out an otherwise-successful
         # /api/tags reachability check — loaded_models just stays empty.
         pass
@@ -406,15 +471,26 @@ def format_status_report(status):
 
 def cmd_status():
     """CLI entry point for `python3 ollama_sidecar.py status`. Prints a
-    report to stdout and returns a process exit code (0 reachable, 1 not) —
-    kept separate from gather_status/format_status_report so those two stay
-    pure and unit-testable without touching sys.exit or stdout."""
-    host = get_ollama_host()
-    model = get_ollama_model()
+    report to stdout and returns a process exit code (0 = every probed tier
+    reachable, 1 = at least one down) — kept separate from gather_status/
+    format_status_report so those two stay pure and unit-testable without
+    touching sys.exit or stdout. Probes each LLM tier; the fast tier is
+    skipped when it resolves to the same host+model as deep (single-endpoint
+    installs get one report, same as pre-tier versions)."""
     timeout = _env_int("OLLAMA_STATUS_TIMEOUT", DEFAULT_STATUS_TIMEOUT_SECONDS)
-    status = gather_status(host, model, timeout)
-    print(format_status_report(status))
-    return 0 if status["reachable"] else 1
+    deep = resolve_tier("deep")
+    fast = resolve_tier("fast")
+    tiers = [deep]
+    if (fast["host"], fast["model"]) != (deep["host"], deep["model"]):
+        tiers.append(fast)
+    reports = []
+    all_ok = True
+    for cfg in tiers:
+        status = gather_status(cfg["host"], cfg["model"], timeout)
+        reports.append(f"[{cfg['tier']} tier]\n" + format_status_report(status))
+        all_ok = all_ok and status["reachable"]
+    print("\n\n".join(reports))
+    return 0 if all_ok else 1
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +551,15 @@ def _prompt_redact_secrets(instruction, output_path):
         "access tokens, passwords, or private keys and replace each one with "
         "the literal text '[REDACTED]', leaving every other character of the "
         "input unchanged.",
+        instruction,
+    )
+
+
+def _prompt_summarize(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: write a concise, factual summary of the input as plain "
+        "text — key points, entities, numbers, and decisions, nothing invented.",
         instruction,
     )
 
@@ -603,6 +688,20 @@ def _validate_redact_secrets(input_text, output_text, output_path, instruction):
     return True, None
 
 
+def _validate_summarize(input_text, output_text, output_path, instruction):
+    if not output_text.strip():
+        return False, "output is empty"
+    # A "summary" of a big input that's bigger than the input means runaway
+    # generation. Small inputs are exempt — a faithful summary of two lines
+    # can legitimately be longer than them.
+    if len(input_text) > 4000 and len(output_text) >= len(input_text):
+        return False, (
+            f"summary ({len(output_text)} chars) is not smaller than the input "
+            f"({len(input_text)} chars) — likely runaway generation, not a summary"
+        )
+    return True, None
+
+
 # ---------------------------------------------------------------------------
 # Deterministic operations — pure Python, no Ollama call. Every transform
 # raises SidecarError on malformed input (surfaced as status:"error" just
@@ -686,8 +785,8 @@ def _val_sort_lines(input_bytes, output_bytes, output_path, params):
 
 def _det_filter_lines(input_bytes, params, instruction, output_path):
     pattern = params.get("pattern")
-    if not pattern:
-        raise SidecarError("params.pattern is required for filter_lines")
+    if not pattern or not isinstance(pattern, str):
+        raise SidecarError("params.pattern (a string) is required for filter_lines")
     mode = params.get("mode", "include")
     if mode not in ("include", "exclude"):
         raise SidecarError("params.mode must be 'include' or 'exclude'")
@@ -856,11 +955,11 @@ def _val_normalize_log_timestamps(input_bytes, output_bytes, output_path, params
 def _det_extract_field_list(input_bytes, params, instruction, output_path):
     fields = params.get("fields")
     if not fields or not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
-        raise SidecarError("params.fields (a list of field name strings) is required for extract_field_list")
+        raise SidecarError("params.fields (a list of field name strings) is required for extract_fields")
     ext = os.path.splitext(output_path)[1].lower()
     if ext not in SUPPORTED_CONVERT_EXTENSIONS:
         raise SidecarError(
-            f"unsupported output extension '{ext}' for extract_field_list — use .json or .csv"
+            f"unsupported output extension '{ext}' for extract_fields — use .json or .csv"
         )
     text = input_bytes.decode("utf-8", errors="replace")
 
@@ -882,7 +981,7 @@ def _det_extract_field_list(input_bytes, params, instruction, output_path):
             records = None
     if records is None:
         raise SidecarError(
-            "input is not valid JSON (array of objects) or CSV — extract_field_list "
+            "input is not valid JSON (array of objects) or CSV — extract_fields "
             "requires already-structured input"
         )
 
@@ -977,7 +1076,7 @@ def _det_sqlite_dump_to_json(input_path, params, instruction, output_path):
     return json.dumps(result, indent=2, default=str).encode("utf-8")
 
 
-def _val_sqlite_dump_to_json(input_path, output_bytes, output_path, params):
+def _val_sqlite_to_json(input_path, output_bytes, output_path, params):
     try:
         json.loads(output_bytes.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -985,33 +1084,543 @@ def _val_sqlite_dump_to_json(input_path, output_bytes, output_path, params):
     return True, None
 
 
+def _det_base64_encode(input_bytes, params, instruction, output_path):
+    url_safe = bool(params.get("url_safe", False))
+    encoder = base64.urlsafe_b64encode if url_safe else base64.b64encode
+    return encoder(input_bytes) + b"\n"
+
+
+def _val_base64_encode(input_bytes, output_bytes, output_path, params):
+    url_safe = bool(params.get("url_safe", False))
+    decoder = base64.urlsafe_b64decode if url_safe else base64.b64decode
+    try:
+        if decoder(output_bytes.strip()) != input_bytes:
+            return False, "encoded output does not decode back to the input bytes"
+    except (binascii.Error, ValueError) as e:
+        return False, f"encoded output is not valid base64: {e}"
+    return True, None
+
+
+def _parse_json_input(input_bytes, operation):
+    try:
+        return json.loads(input_bytes.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as e:
+        raise SidecarError(f"input is not valid JSON ({operation} requires it): {e}")
+
+
+def _det_json_format(input_bytes, params, instruction, output_path):
+    parsed = _parse_json_input(input_bytes, "json_format")
+    sort_keys = bool(params.get("sort_keys", False))
+    if params.get("minify", False):
+        out = json.dumps(parsed, separators=(",", ":"), sort_keys=sort_keys)
+    else:
+        try:
+            indent = int(params.get("indent", 2))
+        except (TypeError, ValueError):
+            raise SidecarError("params.indent must be an integer")
+        if indent < 0:
+            raise SidecarError("params.indent must be >= 0")
+        out = json.dumps(parsed, indent=indent, sort_keys=sort_keys)
+    return (out + "\n").encode("utf-8")
+
+
+def _val_json_format(input_bytes, output_bytes, output_path, params):
+    # Round-trip equality is checkable here, so check it — the strongest
+    # validator in the file.
+    try:
+        if json.loads(output_bytes.decode("utf-8")) != json.loads(
+            input_bytes.decode("utf-8", errors="replace")
+        ):
+            return False, "reformatted JSON does not parse back equal to the input"
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    return True, None
+
+
+def _det_jsonl_to_json(input_bytes, params, instruction, output_path):
+    text = input_bytes.decode("utf-8", errors="replace")
+    records = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            raise SidecarError(f"input line {i} is not valid JSON: {e}")
+    if not records:
+        raise SidecarError("input has no non-blank JSON lines")
+    return json.dumps(records, indent=2).encode("utf-8")
+
+
+def _val_jsonl_to_json(input_bytes, output_bytes, output_path, params):
+    n_in = _count_input_records(input_bytes.decode("utf-8", errors="replace"))
+    try:
+        parsed = json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    if not isinstance(parsed, list) or len(parsed) != n_in:
+        return False, (
+            f"output must be a JSON array with exactly one element per non-blank "
+            f"input line ({n_in}), got {len(parsed) if isinstance(parsed, list) else type(parsed).__name__}"
+        )
+    return True, None
+
+
+def _json_records(input_bytes, operation):
+    """Shared 'array of objects' input shape: a JSON array, or an object
+    whose largest list value is the record list (same convention as
+    extract_fields)."""
+    parsed = _parse_json_input(input_bytes, operation)
+    if isinstance(parsed, dict):
+        list_values = [v for v in parsed.values() if isinstance(v, list)]
+        parsed = max(list_values, key=len) if list_values else None
+    if not isinstance(parsed, list) or not parsed:
+        raise SidecarError(
+            f"{operation} requires a non-empty JSON array (or an object containing one)"
+        )
+    return parsed
+
+
+def _det_json_to_jsonl(input_bytes, params, instruction, output_path):
+    records = _json_records(input_bytes, "json_to_jsonl")
+    return ("\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n").encode("utf-8")
+
+
+def _val_json_to_jsonl(input_bytes, output_bytes, output_path, params):
+    try:
+        n_records = len(_json_records(input_bytes, "json_to_jsonl"))
+    except SidecarError as e:
+        return False, str(e)
+    lines = [l for l in output_bytes.decode("utf-8", errors="replace").splitlines() if l.strip()]
+    if len(lines) != n_records:
+        return False, f"output has {len(lines)} JSON lines but input has {n_records} records"
+    for i, line in enumerate(lines, start=1):
+        try:
+            json.loads(line)
+        except json.JSONDecodeError as e:
+            return False, f"output line {i} is not valid JSON: {e}"
+    return True, None
+
+
+def _det_csv_to_json(input_bytes, params, instruction, output_path):
+    delimiter = params.get("delimiter", ",")
+    if not isinstance(delimiter, str) or len(delimiter) != 1:
+        raise SidecarError("params.delimiter must be a single character")
+    # utf-8-sig so an Excel-style BOM doesn't end up inside the first header.
+    text = input_bytes.decode("utf-8-sig", errors="replace")
+    try:
+        rows = list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
+    except csv.Error as e:
+        raise SidecarError(f"input is not valid CSV: {e}")
+    if not rows:
+        raise SidecarError("input CSV has a header but no data rows")
+    if any(None in r for r in rows):
+        raise SidecarError("input CSV is ragged: some rows have more fields than the header")
+    return json.dumps(rows, indent=2).encode("utf-8")
+
+
+def _val_csv_to_json(input_bytes, output_bytes, output_path, params):
+    try:
+        parsed = json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    if not isinstance(parsed, list) or not parsed:
+        return False, "output must be a non-empty JSON array of row objects"
+    return True, None
+
+
+def _check_csv_consistent(text):
+    """(ok, reason) — parses as CSV with the same column count on every row."""
+    try:
+        rows = list(csv.reader(io.StringIO(text)))
+    except csv.Error as e:
+        return False, f"output is not valid CSV: {e}"
+    if not rows:
+        return False, "output CSV is empty"
+    ncols = len(rows[0])
+    for i, row in enumerate(rows):
+        if len(row) != ncols:
+            return False, (
+                f"inconsistent CSV column count at row {i}: expected {ncols}, got {len(row)}"
+            )
+    return True, None
+
+
+def _det_json_to_csv(input_bytes, params, instruction, output_path):
+    records = _json_records(input_bytes, "json_to_csv")
+    if not all(isinstance(r, dict) for r in records):
+        raise SidecarError("json_to_csv requires every record to be a JSON object")
+    fields = params.get("fields")
+    if fields is not None and (
+        not isinstance(fields, list) or not all(isinstance(f, str) for f in fields)
+    ):
+        raise SidecarError("params.fields must be a list of field name strings")
+    if not fields:
+        fields = []
+        for r in records:
+            for k in r:
+                if k not in fields:
+                    fields.append(k)
+
+    def cell(v):
+        # Nested structures survive as embedded JSON rather than Python repr.
+        return json.dumps(v, separators=(",", ":")) if isinstance(v, (dict, list)) else v
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for r in records:
+        writer.writerow({f: cell(r.get(f)) for f in fields})
+    return buf.getvalue().encode("utf-8")
+
+
+def _val_json_to_csv(input_bytes, output_bytes, output_path, params):
+    return _check_csv_consistent(output_bytes.decode("utf-8", errors="replace"))
+
+
+def _det_toml_to_json(input_bytes, params, instruction, output_path):
+    if tomllib is None:
+        raise SidecarError("toml_to_json needs Python 3.11+ (the stdlib tomllib module)")
+    try:
+        obj = tomllib.loads(input_bytes.decode("utf-8", errors="replace"))
+    except tomllib.TOMLDecodeError as e:
+        raise SidecarError(f"input is not valid TOML: {e}")
+    # TOML datetimes/dates/times have no JSON form — stringify them.
+    return json.dumps(obj, indent=2, default=str).encode("utf-8")
+
+
+def _val_toml_to_json(input_bytes, output_bytes, output_path, params):
+    try:
+        json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    return True, None
+
+
+def _xml_to_obj(el):
+    """Conventional XML→JSON mapping: attributes under '@attributes', text
+    content under '#text' (or as the value itself for a leaf), repeated child
+    tags collapse into a list. Lossy for mixed content (text interleaved
+    with elements keeps only the leading run) — documented in the README."""
+    obj = {}
+    if el.attrib:
+        obj["@attributes"] = dict(el.attrib)
+    for child in el:
+        val = _xml_to_obj(child)
+        if child.tag in obj:
+            existing = obj[child.tag]
+            if isinstance(existing, list):
+                existing.append(val)
+            else:
+                obj[child.tag] = [existing, val]
+        else:
+            obj[child.tag] = val
+    text = (el.text or "").strip()
+    if text:
+        if obj:
+            obj["#text"] = text
+        else:
+            return text
+    return obj if obj else None
+
+
+def _det_xml_to_json(input_bytes, params, instruction, output_path):
+    # ElementTree expands internal entities without limit (billion-laughs),
+    # and this server exists to chew on files nobody has vetted — refuse
+    # DOCTYPE/ENTITY up front rather than risk OOMing the whole server.
+    if re.search(rb"<!(DOCTYPE|ENTITY)\b", input_bytes, re.IGNORECASE):
+        raise SidecarError(
+            "xml_to_json refuses XML containing a DOCTYPE or ENTITY declaration "
+            "(entity-expansion safety) — strip the prolog first if the file is trusted"
+        )
+    try:
+        root = xml.etree.ElementTree.fromstring(input_bytes)
+    except xml.etree.ElementTree.ParseError as e:
+        raise SidecarError(f"input is not well-formed XML: {e}")
+    return json.dumps({root.tag: _xml_to_obj(root)}, indent=2).encode("utf-8")
+
+
+def _val_xml_to_json(input_bytes, output_bytes, output_path, params):
+    try:
+        json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    return True, None
+
+
+class _HTMLTextExtractor(html.parser.HTMLParser):
+    _SKIP = {"script", "style", "head", "template", "noscript"}
+    _BLOCK = {
+        "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article", "header", "footer", "ul", "ol", "table",
+        "blockquote", "pre", "hr", "dt", "dd",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def _det_html_to_text(input_bytes, params, instruction, output_path):
+    parser = _HTMLTextExtractor()
+    parser.feed(input_bytes.decode("utf-8", errors="replace"))
+    parser.close()
+    text = "".join(parser.parts)
+    # Whitespace normalization (loses <pre> formatting — documented): collapse
+    # intra-line runs, strip line edges, cap blank runs at one blank line.
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    out, blank_run = [], 0
+    for line in lines:
+        blank_run = blank_run + 1 if not line else 0
+        if blank_run <= 1:
+            out.append(line)
+    while out and not out[0]:
+        out.pop(0)
+    while out and not out[-1]:
+        out.pop()
+    return ("\n".join(out) + "\n" if out else "").encode("utf-8")
+
+
+def _val_html_to_text(input_bytes, output_bytes, output_path, params):
+    # No output scan: skipping script/style is structural in the extractor,
+    # and legitimate prose can contain the literal text "<script>" (an HTML
+    # page about HTML) once entities are decoded — a substring check here
+    # would reject valid output.
+    return True, None
+
+
+def _det_regex_replace(input_bytes, params, instruction, output_path):
+    pattern = params.get("pattern")
+    if not pattern or not isinstance(pattern, str):
+        raise SidecarError("params.pattern (a string) is required for regex_replace")
+    replacement = params.get("replacement", "")
+    if not isinstance(replacement, str):
+        raise SidecarError("params.replacement must be a string")
+    try:
+        count = int(params.get("count", 0) or 0)
+    except (TypeError, ValueError):
+        raise SidecarError("params.count must be an integer")
+    if count < 0:
+        raise SidecarError("params.count must be >= 0 (0 = replace all)")
+    flags = 0
+    if params.get("case_insensitive"):
+        flags |= re.IGNORECASE
+    if params.get("multiline"):
+        flags |= re.MULTILINE
+    if params.get("dotall"):
+        flags |= re.DOTALL
+    try:
+        rx = re.compile(pattern, flags)
+    except re.error as e:
+        raise SidecarError(f"params.pattern is not a valid regex: {e}")
+    text = input_bytes.decode("utf-8", errors="replace")
+    try:
+        out = rx.sub(replacement, text, count=count)
+    except (re.error, IndexError) as e:
+        raise SidecarError(f"params.replacement is not a valid template for this pattern: {e}")
+    return out.encode("utf-8")
+
+
+def _val_regex_replace(input_bytes, output_bytes, output_path, params):
+    # Nothing structural to verify — the replacement itself may legitimately
+    # add, remove, or reintroduce anything.
+    return True, None
+
+
+def _det_slice_lines(input_bytes, params, instruction, output_path):
+    head, tail = params.get("head"), params.get("tail")
+    start, end = params.get("start"), params.get("end")
+    modes = sum([head is not None, tail is not None, start is not None or end is not None])
+    if modes != 1:
+        raise SidecarError(
+            "slice_lines requires exactly one of: params.head, params.tail, "
+            "or params.start/params.end (1-based, inclusive)"
+        )
+    text = input_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines(keepends=True)
+    try:
+        if head is not None:
+            head = int(head)
+            if head <= 0:
+                raise SidecarError("params.head must be > 0")
+            picked = lines[:head]
+        elif tail is not None:
+            tail = int(tail)
+            if tail <= 0:
+                raise SidecarError("params.tail must be > 0")
+            picked = lines[-tail:]
+        else:
+            start = int(start) if start is not None else 1
+            end = int(end) if end is not None else len(lines)
+            if start < 1 or end < start:
+                raise SidecarError("params.start must be >= 1 and params.end >= params.start")
+            picked = lines[start - 1 : end]
+    except (TypeError, ValueError):
+        raise SidecarError("params.head/tail/start/end must be integers")
+    if not picked:
+        raise SidecarError("the requested slice selects no lines")
+    return "".join(picked).encode("utf-8")
+
+
+def _val_slice_lines(input_bytes, output_bytes, output_path, params):
+    n_in = len(input_bytes.decode("utf-8", errors="replace").splitlines())
+    n_out = len(output_bytes.decode("utf-8", errors="replace").splitlines())
+    if n_out > n_in:
+        return False, f"slice output has more lines ({n_out}) than input ({n_in})"
+    return True, None
+
+
+def _det_text_stats(input_bytes, params, instruction, output_path):
+    text = input_bytes.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    payload = {
+        "bytes": len(input_bytes),
+        "chars": len(text),
+        "lines": len(lines),
+        "non_blank_lines": len([l for l in lines if l.strip()]),
+        "words": len(text.split()),
+        "max_line_length": max((len(l) for l in lines), default=0),
+    }
+    return json.dumps(payload, indent=2).encode("utf-8")
+
+
+def _val_text_stats(input_bytes, output_bytes, output_path, params):
+    try:
+        obj = json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    missing = {"bytes", "chars", "lines", "words"} - set(obj)
+    if missing:
+        return False, f"output missing stats fields: {sorted(missing)}"
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# yq-backed operations. yq (https://github.com/mikefarah/yq, `brew install yq`)
+# is the one external binary this server will use — it makes YAML conversion
+# deterministic, which is strictly better than asking a model to do it. It
+# stays OPTIONAL: yaml_to_json falls back to the llm path without it, and
+# json_to_yaml fails with a structured install hint.
+# ---------------------------------------------------------------------------
+
+
+def yq_available():
+    return shutil.which("yq") is not None
+
+
+def _run_yq(argv, input_bytes):
+    if not yq_available():
+        raise SidecarError(
+            "the 'yq' binary is not on PATH — install it (`brew install yq`) to "
+            "run this conversion deterministically"
+        )
+    try:
+        proc = subprocess.run(
+            ["yq"] + argv, input=input_bytes, capture_output=True, timeout=YQ_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        raise SidecarError(f"yq timed out after {YQ_TIMEOUT_SECONDS}s")
+    except OSError as e:
+        raise SidecarError(f"failed to run yq: {e}")
+    if proc.returncode != 0:
+        raise SidecarError(f"yq failed: {proc.stderr.decode('utf-8', errors='replace')[:300]}")
+    return proc.stdout
+
+
+def _det_yaml_to_json(input_bytes, params, instruction, output_path):
+    # Single-document YAML only: multi-doc streams produce concatenated JSON
+    # documents, which the validator rejects rather than silently merging.
+    return _run_yq(["eval", "-o=json", "."], input_bytes)
+
+
+def _val_yaml_to_json_det(input_bytes, output_bytes, output_path, params):
+    try:
+        json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON (multi-document YAML input?): {e}"
+    return True, None
+
+
+def _det_json_to_yaml(input_bytes, params, instruction, output_path):
+    _parse_json_input(input_bytes, "json_to_yaml")  # fail fast with a clear message
+    return _run_yq(["eval", "-P", "-o=yaml", "."], input_bytes)
+
+
+def _val_json_to_yaml(input_bytes, output_bytes, output_path, params):
+    # Strongest available check: yq the YAML back to JSON and require equality
+    # with the original input.
+    try:
+        back = json.loads(_run_yq(["eval", "-o=json", "."], output_bytes).decode("utf-8"))
+        original = json.loads(input_bytes.decode("utf-8", errors="replace"))
+    except (SidecarError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"could not round-trip the YAML output back to JSON: {e}"
+    if back != original:
+        return False, "YAML output does not round-trip to the original JSON"
+    return True, None
+
+
 OPERATIONS = {
     # LLM-backed — need judgment about the input's meaning; validators catch
     # format failures only, per the trust boundary documented in the README.
+    # default_tier routes judgment-heavy/low-volume ops to "deep" (the big
+    # local model) and bulk/output-heavy ops to "fast" (the high-throughput
+    # endpoint); a per-call `tier` argument overrides.
     "extract_json": {
         "kind": "llm",
+        "default_tier": "deep",
         "system_prompt": _prompt_extract_json,
         "validate": _validate_extract_json,
     },
     "convert_format": {
         "kind": "llm",
+        "default_tier": "fast",
         "system_prompt": _prompt_convert_format,
         "validate": _validate_convert_format,
     },
     "clean_text": {
         "kind": "llm",
+        "default_tier": "fast",
         "system_prompt": _prompt_clean_text,
         "validate": _validate_clean_text,
     },
+    # Hybrid: runs deterministically through yq when it's on PATH (no model
+    # call at all), and only falls back to the llm path without it.
     "yaml_to_json": {
         "kind": "llm",
+        "default_tier": "fast",
         "system_prompt": _prompt_yaml_to_json,
         "validate": _validate_yaml_to_json,
+        "det_transform": _det_yaml_to_json,
+        "det_validate": _val_yaml_to_json_det,
     },
     "redact_secrets": {
         "kind": "llm",
+        "default_tier": "deep",
         "system_prompt": _prompt_redact_secrets,
         "validate": _validate_redact_secrets,
+    },
+    "summarize": {
+        "kind": "llm",
+        "default_tier": "deep",
+        "system_prompt": _prompt_summarize,
+        "validate": _validate_summarize,
     },
     # Deterministic — pure Python, no Ollama call, no network round-trip.
     "dedupe_lines": {
@@ -1029,15 +1638,35 @@ OPERATIONS = {
         "transform": _det_filter_lines,
         "validate": _val_filter_lines,
     },
+    "slice_lines": {
+        "kind": "deterministic",
+        "transform": _det_slice_lines,
+        "validate": _val_slice_lines,
+    },
+    "regex_replace": {
+        "kind": "deterministic",
+        "transform": _det_regex_replace,
+        "validate": _val_regex_replace,
+    },
     "base64_decode": {
         "kind": "deterministic",
         "transform": _det_base64_decode,
         "validate": _val_base64_decode,
     },
+    "base64_encode": {
+        "kind": "deterministic",
+        "transform": _det_base64_encode,
+        "validate": _val_base64_encode,
+    },
     "hash_file": {
         "kind": "deterministic",
         "transform": _det_hash_file,
         "validate": _val_hash_file,
+    },
+    "text_stats": {
+        "kind": "deterministic",
+        "transform": _det_text_stats,
+        "validate": _val_text_stats,
     },
     "strip_ansi_codes": {
         "kind": "deterministic",
@@ -1049,22 +1678,74 @@ OPERATIONS = {
         "transform": _det_normalize_log_timestamps,
         "validate": _val_normalize_log_timestamps,
     },
-    "extract_field_list": {
+    "extract_fields": {
         "kind": "deterministic",
         "transform": _det_extract_field_list,
         "validate": _val_extract_field_list,
+    },
+    "json_format": {
+        "kind": "deterministic",
+        "transform": _det_json_format,
+        "validate": _val_json_format,
+    },
+    "jsonl_to_json": {
+        "kind": "deterministic",
+        "transform": _det_jsonl_to_json,
+        "validate": _val_jsonl_to_json,
+    },
+    "json_to_jsonl": {
+        "kind": "deterministic",
+        "transform": _det_json_to_jsonl,
+        "validate": _val_json_to_jsonl,
+    },
+    "csv_to_json": {
+        "kind": "deterministic",
+        "transform": _det_csv_to_json,
+        "validate": _val_csv_to_json,
+    },
+    "json_to_csv": {
+        "kind": "deterministic",
+        "transform": _det_json_to_csv,
+        "validate": _val_json_to_csv,
+    },
+    "json_to_yaml": {
+        "kind": "deterministic",
+        "transform": _det_json_to_yaml,
+        "validate": _val_json_to_yaml,
+    },
+    "toml_to_json": {
+        "kind": "deterministic",
+        "transform": _det_toml_to_json,
+        "validate": _val_toml_to_json,
+    },
+    "xml_to_json": {
+        "kind": "deterministic",
+        "transform": _det_xml_to_json,
+        "validate": _val_xml_to_json,
+    },
+    "html_to_text": {
+        "kind": "deterministic",
+        "transform": _det_html_to_text,
+        "validate": _val_html_to_text,
     },
     "plist_to_json": {
         "kind": "deterministic",
         "transform": _det_plist_to_json,
         "validate": _val_plist_to_json,
     },
-    "sqlite_dump_to_json": {
+    "sqlite_to_json": {
         "kind": "deterministic",
         "reads_own_input": True,
         "transform": _det_sqlite_dump_to_json,
-        "validate": _val_sqlite_dump_to_json,
+        "validate": _val_sqlite_to_json,
     },
+}
+
+# Pre-0.3.0 names, kept working so existing transcripts/muscle memory don't
+# break. The schema enum advertises only the canonical names.
+OPERATION_ALIASES = {
+    "sqlite_dump_to_json": "sqlite_to_json",
+    "extract_field_list": "extract_fields",
 }
 
 # split_file and merge_files aren't in OPERATIONS: both have a shape the
@@ -1083,16 +1764,18 @@ TOOL_DEFINITION = {
         "and an operation name are exchanged — file contents never enter the "
         "assistant's context, and the response never contains file content, "
         "only a small status payload. If the transform IS a fixed rule (pick "
-        "columns, dedupe, sort, decode, hash, reformat by a known schema), "
-        "prefer this tool's 'kind': deterministic operations (dedupe_lines, "
-        "sort_lines, filter_lines, base64_decode, hash_file, strip_ansi_codes, "
-        "normalize_log_timestamps, extract_field_list, plist_to_json, "
-        "sqlite_dump_to_json, split_file, merge_files) or a plain jq/Python "
-        "one-liner run via Bash — both are strictly better than a model call: "
-        "deterministic, instant, free, verifiable. Reach for the 'llm' "
-        "operations (extract_json, convert_format, clean_text, yaml_to_json, "
-        "redact_secrets) only when the input is genuinely too irregular for a "
-        "fixed rule and interpreting it needs judgment. The built-in "
+        "columns, dedupe, sort, slice, decode, hash, reformat by a known "
+        "schema, convert between structured formats), prefer this tool's "
+        "deterministic operations or a plain jq/Python one-liner run via Bash "
+        "— both are strictly better than a model call: deterministic, "
+        "instant, free, verifiable. Reach for the 'llm' operations "
+        "(extract_json, convert_format, clean_text, redact_secrets, "
+        "summarize) only when the input is genuinely too irregular for a "
+        "fixed rule and interpreting it needs judgment. LLM operations route "
+        "between two Ollama endpoints: 'deep' (bigger model, slower — "
+        "judgment-heavy, low-volume work) and 'fast' (smaller model, high "
+        "token throughput — bulk transforms); each operation has a sensible "
+        "default and the 'tier' argument overrides it. The built-in "
         "validators catch FORMAT failures (bad JSON, ragged CSV, gross "
         "truncation or record-loss) — they do NOT verify content is "
         "semantically correct, so a wrong-but-well-formed output can still "
@@ -1135,14 +1818,18 @@ TOOL_DEFINITION = {
                 "type": "string",
                 "enum": ALL_OPERATION_NAMES,
                 "description": (
-                    "extract_json: pull structured data into JSON [llm]. "
+                    "extract_json: pull structured data into JSON [llm, deep]. "
                     "convert_format: convert to the format implied by "
-                    "output_path's extension, .json or .csv [llm]. "
+                    "output_path's extension, .json or .csv [llm, fast]. "
                     "clean_text: deterministic-looking cleanup/reformatting per "
-                    "instruction [llm]. "
-                    "yaml_to_json: parse YAML input into JSON [llm]. "
+                    "instruction [llm, fast]. "
                     "redact_secrets: mask values that look like credentials/"
-                    "tokens [llm]. "
+                    "tokens [llm, deep]. "
+                    "summarize: write a concise factual summary of the input "
+                    "[llm, deep]. "
+                    "yaml_to_json: parse YAML input into JSON [deterministic "
+                    "via yq when installed, else llm fast]. "
+                    "json_to_yaml: convert JSON to YAML [local; requires yq]. "
                     "dedupe_lines: remove duplicate lines, preserving order "
                     "[local; params.case_insensitive]. "
                     "sort_lines: sort lines [local; params.numeric/reverse/"
@@ -1151,26 +1838,65 @@ TOOL_DEFINITION = {
                     "optional context lines [local; params.pattern (required), "
                     "params.mode 'include'|'exclude', params.regex, "
                     "params.case_insensitive, params.context_before/after]. "
+                    "slice_lines: keep a line range, like head/tail/sed -n "
+                    "[local; exactly one of params.head, params.tail, or "
+                    "params.start/params.end (1-based, inclusive)]. "
+                    "regex_replace: sed-like regex substitution [local; "
+                    "params.pattern (required), params.replacement (default "
+                    "''), params.count (0=all), params.case_insensitive/"
+                    "multiline/dotall]. "
                     "base64_decode: decode base64 text to raw bytes [local; "
+                    "params.url_safe]. "
+                    "base64_encode: encode the file's bytes as base64 [local; "
                     "params.url_safe]. "
                     "hash_file: compute a checksum of the input file [local; "
                     "params.algorithm 'sha256'|'sha1'|'md5'|'sha512']. "
+                    "text_stats: line/word/char/byte counts as JSON [local]. "
                     "strip_ansi_codes: remove ANSI terminal escape sequences "
                     "[local]. "
                     "normalize_log_timestamps: rewrite known timestamp formats "
                     "(Apache/NCSA, US-style, syslog) to ISO 8601 [local]. "
-                    "extract_field_list: project a subset of fields from "
+                    "extract_fields: project a subset of fields from "
                     "already-structured JSON/CSV input into JSON or CSV output "
                     "[local; params.fields (required list of field names)]. "
+                    "json_format: pretty-print or minify JSON [local; params."
+                    "indent (default 2), params.minify, params.sort_keys]. "
+                    "jsonl_to_json: JSON Lines file into one JSON array "
+                    "[local]. "
+                    "json_to_jsonl: JSON array into JSON Lines [local]. "
+                    "csv_to_json: CSV with a header row into a JSON array of "
+                    "row objects [local; params.delimiter (default ',')]. "
+                    "json_to_csv: JSON array of objects into CSV [local; "
+                    "params.fields (optional column order)]. "
+                    "toml_to_json: parse TOML into JSON [local]. "
+                    "xml_to_json: well-formed XML into JSON ('@attributes'/"
+                    "'#text' convention) [local]. "
+                    "html_to_text: strip HTML to readable plain text [local]. "
                     "plist_to_json: convert an XML or binary macOS plist to "
                     "JSON [local]. "
-                    "sqlite_dump_to_json: dump a sqlite database's tables to "
+                    "sqlite_to_json: dump a sqlite database's tables to "
                     "JSON [local; params.tables (optional allowlist)]. "
                     "split_file: split input_path into numbered chunk files "
                     "inside the output_path directory [local; params."
                     "lines_per_chunk or params.num_chunks, one required]. "
                     "merge_files: concatenate input_paths into output_path "
                     "[local; params.separator, default newline]."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["deep", "fast"],
+                "description": (
+                    "LLM operations only: which Ollama endpoint to use. "
+                    "'deep' = the primary endpoint (largest model, low "
+                    "throughput — judgment-heavy, low-volume work). 'fast' = "
+                    "the secondary endpoint (smaller model, high token "
+                    "throughput — bulk transforms with large outputs). Omit to "
+                    "use the operation's default (shown in the operation "
+                    "descriptions). If the chosen endpoint is unreachable and "
+                    "the other tier points at a different host, the call "
+                    "automatically fails over and reports it. Ignored by "
+                    "deterministic operations."
                 ),
             },
             "instruction": {
@@ -1350,6 +2076,7 @@ def handle_split_file(args):
 
 def handle_process_local_file(args):
     operation = args.get("operation")
+    operation = OPERATION_ALIASES.get(operation, operation)
     if operation == "merge_files":
         return handle_merge_files(args)
     if operation == "split_file":
@@ -1362,6 +2089,13 @@ def handle_process_local_file(args):
     params = args.get("params") or {}
     overwrite = bool(args.get("overwrite", False))
 
+    engine = None
+    if op["kind"] == "llm" and "det_transform" in op and yq_available():
+        # Hybrid operation (yaml_to_json): yq is on PATH, so run it
+        # deterministically — no model call at all.
+        op = {"kind": "deterministic", "transform": op["det_transform"], "validate": op["det_validate"]}
+        engine = "yq"
+
     try:
         root = resolve_root()
         input_real = resolve_input_path(root, args.get("input_path", ""))
@@ -1373,8 +2107,8 @@ def handle_process_local_file(args):
         ext = os.path.splitext(output_real)[1].lower()
         if ext not in SUPPORTED_CONVERT_EXTENSIONS:
             # Checked up front, before reading the input or spending a
-            # potentially 120s model call, since this is knowable from
-            # output_path alone.
+            # potentially minutes-long model call, since this is knowable
+            # from output_path alone.
             return error_payload(
                 f"unsupported target format '{ext}' for convert_format — v1 "
                 "supports only .json and .csv output_path extensions "
@@ -1382,6 +2116,11 @@ def handle_process_local_file(args):
             )
 
     if op["kind"] == "llm":
+        tier_name = args.get("tier") or op.get("default_tier", "deep")
+        if tier_name not in LLM_TIERS:
+            return error_payload(f"tier must be one of {list(LLM_TIERS)}, got '{tier_name}'")
+        cfg = resolve_tier(tier_name)
+
         try:
             with open(input_real, "r", encoding="utf-8", errors="replace") as f:
                 input_text = f.read()
@@ -1392,23 +2131,35 @@ def handle_process_local_file(args):
             return error_payload("input file is empty")
 
         system_prompt = op["system_prompt"](instruction, output_real)
-        num_ctx = get_num_ctx()
-        budget = max_input_tokens_for(system_prompt, num_ctx)
+        budget = max_input_tokens_for(system_prompt, cfg["num_ctx"])
         input_tokens = estimate_tokens(input_text)
         if input_tokens > budget:
             return error_payload(
                 f"input too large for the current context budget: ~{input_tokens} "
                 f"estimated tokens exceeds the ~{budget}-token ceiling for "
-                f"num_ctx={num_ctx}. Split the file into smaller chunks and process "
-                "each separately."
+                f"num_ctx={cfg['num_ctx']} (tier '{tier_name}'). Split the file into "
+                "smaller chunks and process each separately."
             )
 
+        fell_back_from = None
         try:
-            result = call_ollama(
-                get_ollama_host(), get_ollama_model(), system_prompt, input_text, num_ctx
-            )
+            result = call_ollama(cfg, system_prompt, input_text)
         except OllamaError as e:
-            return error_payload(str(e))
+            other = resolve_tier("fast" if tier_name == "deep" else "deep")
+            if not (e.unreachable and other["host"] != cfg["host"]):
+                return error_payload(str(e))
+            # The chosen endpoint is down but the other tier is a different
+            # host — fail over rather than fail, and say so in the payload.
+            if input_tokens > max_input_tokens_for(system_prompt, other["num_ctx"]):
+                return error_payload(
+                    f"{e} — and the input is too large for the {other['tier']} "
+                    "tier's num_ctx, so no failover was possible"
+                )
+            try:
+                result = call_ollama(other, system_prompt, input_text)
+            except OllamaError as e2:
+                return error_payload(f"both tiers failed — {tier_name}: {e}; {other['tier']}: {e2}")
+            fell_back_from, cfg = tier_name, other
 
         done_reason = result.get("done_reason")
         if done_reason not in (None, "stop"):
@@ -1439,14 +2190,20 @@ def handle_process_local_file(args):
         except OSError as e:
             return error_payload(f"failed to write output: {e}")
 
-        return {
+        payload = {
             "status": "success",
             "message": f"processed '{operation}' -> {write_path}",
             "operation": operation,
+            "tier": cfg["tier"],
+            "model": cfg["model"],
+            "host": cfg["host"],
             "input_bytes": len(input_text.encode("utf-8")),
             "output_bytes": len(output_text.encode("utf-8")),
             "output_path": write_path,
         }
+        if fell_back_from:
+            payload["fell_back_from"] = fell_back_from
+        return payload
 
     # Deterministic path — no Ollama call.
     reads_own_input = op.get("reads_own_input", False)
@@ -1494,7 +2251,7 @@ def handle_process_local_file(args):
     except OSError as e:
         return error_payload(f"failed to write output: {e}")
 
-    return {
+    payload = {
         "status": "success",
         "message": f"processed '{operation}' -> {write_path}",
         "operation": operation,
@@ -1502,6 +2259,10 @@ def handle_process_local_file(args):
         "output_bytes": len(output_data),
         "output_path": write_path,
     }
+    if engine:
+        # Tells the caller the hybrid op ran deterministically (no model).
+        payload["engine"] = engine
+    return payload
 
 
 # ---------------------------------------------------------------------------
