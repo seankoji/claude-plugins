@@ -363,12 +363,15 @@ async function runDispatch(state) {
     const results = await parallel(
       runnable.map((t) => () => dispatchImp(t, state, retryGuidance.get(t.id)).then((r) => ({ task: t, result: r })))
     )
-    for (const entry of results) {
-      if (!entry) continue
-      const { task, result } = entry
+    results.forEach((entry, i) => {
+      // parallel() resolves a thunk that threw (e.g. worktree-creation contention) to
+      // null — entry.task is unavailable in that case, so recover the task from its
+      // position in `runnable` rather than silently dropping it uncounted.
+      const task = entry ? entry.task : runnable[i]
+      const result = entry ? entry.result : null
       if (!result) {
-        failed.set(task.id, { id: task.id, label: task.label, notes: 'no result returned' })
-        continue
+        failed.set(task.id, { id: task.id, label: task.label, notes: entry ? 'no result returned' : 'agent call errored (dropped by parallel())' })
+        return
       }
       if (result.status === 'failed') {
         failed.set(task.id, { id: task.id, label: task.label, notes: result.notes || 'failed' })
@@ -377,7 +380,7 @@ async function runDispatch(state) {
         if (task.type === 'code' && result.branch) worktrees[String(task.id)] = result.branch
         if (result.artifacts && result.artifacts.length) artifacts.push(...result.artifacts)
       }
-    }
+    })
     await patchState(
       { tasks_done: [...doneIds], worktrees, artifacts, failed_tasks: [...failed.values()], last_heartbeat: 'agent-supplies-timestamp' },
       'heartbeat'
