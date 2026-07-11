@@ -20,11 +20,13 @@ Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current d
 
 ## Phase 1 — Sync the Workflow script
 
-Workflow scripts only load from `~/.claude/workflows/*.js` — a plugin cannot ship one that runs directly. Each run, re-sync the bundled canonical copy over the previous one so it always matches the installed plugin version (a plain overwrite, not a version/hash check — simpler and can't drift):
+Workflow scripts only load from `~/.claude/workflows/*.js` — a plugin cannot ship one that runs directly. Each run, re-sync the bundled canonical copy over the previous one so it always matches the installed plugin version (a plain overwrite, not a version/hash check — simpler and can't drift). **The `Workflow` tool call below is not Bash — it does not expand `~`,** so resolve and echo the absolute path here first, and pass that literal echoed value (never the `~/...` form) into Phase 2:
 
 ```bash
 mkdir -p ~/.claude/workflows
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/ape-forage.workflow.js" ~/.claude/workflows/ape-forage.js
+WORKFLOW_DEST="$HOME/.claude/workflows/ape-forage.js"
+echo "$WORKFLOW_DEST"
 ```
 
 ## Phase 2 — Run the expedition
@@ -33,7 +35,7 @@ Invoke the `Workflow` tool:
 
 ```
 Workflow({
-  scriptPath: "~/.claude/workflows/ape-forage.js",
+  scriptPath: "<the echoed $WORKFLOW_DEST value, e.g. /Users/you/.claude/workflows/ape-forage.js>",
   args: {
     pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
     fingerprint: "<the full fingerprint content from Phase 0>",
