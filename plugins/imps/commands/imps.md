@@ -265,6 +265,15 @@ quote or reason about its contents. Then:
 - Break the work into discrete, atomic tasks. Each task has one clearly-stated output
   and is independently completable.
 - For each task assign:
+  - **Spec** — the operative instructions the imp needs to act without improvising:
+    concrete inputs (repo/owner, file paths, exact commands), the expected output
+    artifact, and any constraints. **Specs must travel with tasks** — an imp receives
+    ONLY its state-file entry, never this plan context or GOAL.md; a plan file
+    referenced in the run-level `task` string is never read by individual imps. Either
+    embed the full spec or open it with an explicit pointer ("Read <GOAL_PATH>,
+    section T<N>, before acting"). Label-only imps improvise: observed failures
+    include "couldn't find repo owner", "concluded nothing to publish", and
+    unauthorized GitHub issues filed as the deliverable.
   - **Model** — assign by reasoning complexity (see
     [Model selection reference](#model-selection-reference)). Always set `model:` explicitly.
   - **Type** — `code` (file changes, worktree-isolated) · `query` (read-only) ·
@@ -364,7 +373,7 @@ current branch.
   "repo": "<repo from discovery>",
   "branch": "<RUN_BRANCH>",
   "tasks": [
-    { "id": 1, "label": "...", "model": "haiku", "type": "query", "deps": [] }
+    { "id": 1, "label": "...", "spec": "<operative instructions from Step 1 — required for every task; the label is a title, the spec is what the imp actually executes>", "model": "haiku", "type": "query", "deps": [] }
   ],
   "phase": "dispatch_pending",
   "segment": null,
