@@ -201,3 +201,6 @@ jobs:
 
       - name: Run tests/run-python.sh
         run: bash tests/run-python.sh
+
+      - name: Run tests/run-js.sh
+        run: bash tests/run-js.sh
