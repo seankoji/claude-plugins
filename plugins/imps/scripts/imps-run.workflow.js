@@ -37,6 +37,14 @@ export const meta = {
   ],
 }
 
+// Shim: the harness can deliver `args` as a JSON-encoded string; every
+// `args.<field>` read below then resolves to undefined and the run
+// degenerates (observed wf_c9dcca29-573: state file never read, zero imps
+// dispatched, gates ran on an empty diff). Normalize before anything else.
+if (typeof args === 'string') {
+  args = JSON.parse(args)
+}
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -56,6 +64,11 @@ const STATE_SCHEMA = {
         properties: {
           id: { type: 'number' },
           label: { type: 'string' },
+          // The operative instructions this imp needs to act without improvising —
+          // an imp receives ONLY what's in its dispatch prompt, never the plan
+          // context. Optional for pre-existing state files; commands/imps.md
+          // requires it for new runs.
+          spec: { type: 'string' },
           model: { type: 'string' },
           type: { type: 'string', enum: ['code', 'query', 'publish'] },
           deps: { type: 'array', items: { type: 'number' } },
@@ -267,9 +280,17 @@ function stageTasks(tasks, doneIds, failed) {
 
 function dispatchImp(task, state, guidance) {
   const isCode = task.type === 'code'
+  // Specs must travel with tasks: the label is a one-line title, not instructions.
+  // An imp dispatched with only the label improvises — observed failures include
+  // "couldn't find repo owner", "concluded nothing to publish", and unauthorized
+  // GitHub issues filed as the "deliverable". The spec (or a legacy state file's
+  // run-level task string as fallback) is the imp's operative context.
+  const spec = task.spec || `(No per-task spec recorded — legacy state file.) The run's overall goal, for context: ${state.task}`
   return agent(
     `You are one imp in a parallel swarm. Task #${task.id}: ${task.label}
 Type: ${task.type}
+Spec — your operative instructions; follow these, do not improvise beyond them:
+${spec}
 ${guidance ? `\nThis is a retry. Operator guidance: ${guidance}\n` : ''}
 ${isCode ? 'You run in an isolated git worktree, created from the default branch\'s last committed HEAD (not the run\'s working branch — in-progress commits on a side branch are not visible to you). Make the minimal change that satisfies the task. Resolve this repo\'s gate/lint commands yourself and run them (plus any autofix) before committing — fix failures you caused, note pre-existing ones. Stage and commit; do not push. Return the branch name.' : ''}
 ${task.type === 'query' ? 'Read-only. No file changes. Return structured data. Cite sources (file paths, line numbers, URLs) for every claim.' : ''}
