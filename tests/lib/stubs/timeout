@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for GNU coreutils `timeout` (and its macOS/Homebrew
+# alias `gtimeout`, which goldfish-judge.sh falls back to). Being on PATH here
+# means `command -v timeout` always succeeds inside the test harness, so
+# goldfish-judge.sh always takes the same branch regardless of what the CI
+# host actually has installed. Real `timeout DURATION cmd...` bounds cmd's
+# wall-clock time; this stub ignores the duration and execs the command
+# directly since fixture stubs (e.g. tests/lib/stubs/gemini) always return
+# immediately and never need to be killed.
+set -euo pipefail
+shift  # drop the duration argument
+exec "$@"

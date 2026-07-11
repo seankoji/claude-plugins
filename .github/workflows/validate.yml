@@ -6,7 +6,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -36,6 +36,41 @@ jobs:
             echo "Schema-checking $plugin_json..."
             pipx run check-jsonschema --schemafile schemas/plugin.schema.json "$plugin_json"
           done
+
+      - name: Validate command/agent frontmatter against JSON Schema contracts
+        run: |
+          fail=0
+          workdir=$(mktemp -d)
+
+          # Extracts the YAML frontmatter block (between the first pair of '---'
+          # lines) from a command/agent markdown file, parses it with pyyaml, and
+          # re-dumps it to a standalone .yaml file so check-jsonschema can validate
+          # it like any other YAML instance. Single-line python3 -c (no heredoc) so
+          # the script's own indentation can't collide with this block's.
+          check_frontmatter() {
+            md="$1"
+            schema="$2"
+            fm="$workdir/$(echo "$md" | tr '/' '_').yaml"
+            if ! python3 -c "import sys, yaml; text = open(sys.argv[1], encoding='utf-8').read(); assert text.startswith('---\n'), 'no frontmatter start'; end = text.find('\n---', 4); assert end != -1, 'no frontmatter end'; data = yaml.safe_load(text[4:end]); assert isinstance(data, dict), 'frontmatter must be a mapping'; yaml.safe_dump(data, open(sys.argv[2], 'w'))" "$md" "$fm"; then
+              echo "ERROR: $md has no parseable '---' frontmatter block"
+              return 1
+            fi
+            echo "Schema-checking $md frontmatter..."
+            pipx run check-jsonschema --schemafile "$schema" "$fm"
+          }
+
+          for md in plugins/*/commands/*.md; do
+            [ -f "$md" ] || continue
+            check_frontmatter "$md" schemas/command-frontmatter.schema.json || fail=1
+          done
+
+          for md in plugins/*/agents/*.md; do
+            [ -f "$md" ] || continue
+            check_frontmatter "$md" schemas/agent-frontmatter.schema.json || fail=1
+          done
+
+          [ "$fail" = "0" ] || exit 1
+          echo "All command/agent frontmatter valid"
 
       - name: Check every plugin has a README and is listed in the root README
         run: |
@@ -97,15 +132,27 @@ jobs:
           done
           [ "$failed" = "0" ] || exit 1
 
-      - name: Check shell scripts are executable
+      - name: Check shell and python scripts are executable
         run: |
           # git ls-files -s emits: "<mode> <object> <stage>\t<path>" — path is tab-separated.
           while IFS=$'\t' read -r meta path; do
             mode=${meta%% *}
             [ "$mode" = "100755" ] || { echo "ERROR: $path not executable (mode $mode)"; exit 1; }
             echo "OK executable: $path"
-          done < <(git ls-files -s 'plugins/**/*.sh')
-          echo "All .sh scripts are executable"
+          done < <(git ls-files -s 'plugins/**/*.sh' 'plugins/**/*.py')
+          echo "All .sh and .py scripts are executable"
+
+      - name: Shellcheck all shipped shell scripts
+        # info-level notes are advisory; warning+ blocks
+        run: find plugins -name "*.sh" -exec shellcheck --severity=warning {} +
+
+      - name: node --check all shipped Workflow scripts
+        run: |
+          for f in plugins/*/scripts/*.js; do
+            [ -f "$f" ] || continue
+            echo "Checking $f..."
+            node --check "$f"
+          done
 
       - name: Check for bundled-asset path leaks
         run: |
@@ -147,7 +194,10 @@ jobs:
   behavioral-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Run tests/run.sh
         run: bash tests/run.sh
+
+      - name: Run tests/run-python.sh
+        run: bash tests/run-python.sh

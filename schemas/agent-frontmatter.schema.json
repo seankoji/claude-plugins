@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/seankoji/claude-plugins/schemas/agent-frontmatter.schema.json",
+  "title": "Claude Agent Frontmatter",
+  "description": "Schema for the YAML frontmatter block in plugins/*/agents/*.md.",
+  "type": "object",
+  "required": ["name", "description"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Agent identifier (may be an emoji glyph)."
+    },
+    "description": {
+      "type": "string",
+      "description": "What the agent does and when to invoke it."
+    },
+    "color": {
+      "type": "string",
+      "description": "UI color; anything outside this enum silently renders gray.",
+      "enum": ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"]
+    },
+    "model": {
+      "type": "string",
+      "enum": ["haiku", "sonnet", "opus", "inherit"]
+    }
+  }
+}

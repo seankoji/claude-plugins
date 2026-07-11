@@ -125,8 +125,11 @@ for f in plugins/*/.claude-plugin/plugin.json; do pipx run check-jsonschema --sc
 # Confirm every plugin has a README and a row in the root README
 for d in plugins/*/; do [ -f "${d}README.md" ] || echo "missing ${d}README.md"; done
 
-# Confirm no hardcoded machine paths in command files
-grep -rn --include="*.md" '~/.claude/' plugins/*/commands/
+# Confirm bundled assets are referenced via CLAUDE_PLUGIN_ROOT, not hardcoded paths
+# (References to ~/.claude/ in command docs for *runtime state* are fine — the CI gate
+# "Check for bundled-asset path leaks" in .github/workflows/validate.yml is the
+# authoritative rule: it flags only bundled assets like scripts/ or personas/ referenced
+# under literal ~/.claude/ paths. See that step for the structural rule.)
 
 # Check all .sh files are executable
 git ls-files plugins/**/*.sh | xargs ls -la | grep -v '^-rwx'

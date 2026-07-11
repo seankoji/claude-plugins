@@ -17,6 +17,14 @@
 #                        (e.g. `ls -la` timestamps) (optional)
 #       stderr           exact expected stderr (optional)
 #       exit_code        expected exit code, default 0 (optional)
+#       files/           optional dir; its contents are copied into the case's
+#                        fresh $PWD before the script runs — for scripts that
+#                        require an input file on disk (e.g. goldfish-judge.sh's
+#                        DOC argument) that the empty-PWD harness can't otherwise
+#                        supply. Exec fixtures have no mechanism to set env vars,
+#                        so a stub that needs to vary its behavior per fixture
+#                        must derive its mode from argv/PWD content instead (see
+#                        tests/lib/stubs/gemini's header comment).
 #
 #   unit/<plugin>/<script>/<function>/<case>/
 #     Sources the script with __SOURCED__=1 (see the guard comment in
@@ -58,10 +66,17 @@ run_exec_case() {
   test_home="$(mktemp -d)"
   out="$(mktemp)"
   err="$(mktemp)"
+  # Optional per-case input files (see header comment) copied into the fresh
+  # $PWD before the script runs.
+  [ -d "$case_dir/files" ] && cp -R "$case_dir/files/." "$test_home/"
   # HOME is pinned to the disposable test_home so any script that defaults to a
   # $HOME/... path (e.g. audit-log.sh's ~/.claude/audit.jsonl) can't touch the real
-  # user's home directory during a test run.
-  ( cd "$test_home" && HOME="$test_home" PATH="$STUBS:$PATH" bash "$target" "${args[@]+"${args[@]}"}" >"$out" 2>"$err" )
+  # user's home directory during a test run. OLLAMA_MODEL/GEMINI_MODEL are unset so a
+  # maintainer's own shell config (real elephant-goldfish usage often exports these)
+  # can't leak into the fixture and make goldfish-judge.sh call a real ollama/gemini
+  # with a non-stub model name.
+  ( cd "$test_home" && unset OLLAMA_MODEL GEMINI_MODEL
+    HOME="$test_home" PATH="$STUBS:$PATH" bash "$target" "${args[@]+"${args[@]}"}" >"$out" 2>"$err" )
   exit_code=$?
 
   local want_exit=0
@@ -126,18 +141,17 @@ done
 
 # Cross-plugin consistency: audit-log.sh is bundled identically into every plugin that
 # uses it (no shared runtime path exists between independently-installed plugins — see
-# AGENTS.md). Diff the copies so a future edit to one doesn't silently drift from the rest.
-audit_log_plugins=(imps prompt-builder claude-tuneup)
-first_plugin="${audit_log_plugins[0]}"
-first="$ROOT/plugins/$first_plugin/scripts/audit-log.sh"
-if [ -f "$first" ]; then
+# AGENTS.md). Diff the copies so a future edit to one doesn't silently drift from the
+# rest. Discovered dynamically so a new adopter is automatically covered.
+audit_log_copies=("$ROOT"/plugins/*/scripts/audit-log.sh)
+if [ -f "${audit_log_copies[0]:-}" ]; then
+  first="${audit_log_copies[0]}"
   consistent=1 detail=""
-  for p in "${audit_log_plugins[@]:1}"; do
-    other="$ROOT/plugins/$p/scripts/audit-log.sh"
+  for other in "${audit_log_copies[@]:1}"; do
     if ! diff -q "$first" "$other" >/dev/null 2>&1; then
       consistent=0
       detail="$detail
-plugins/$p/scripts/audit-log.sh differs from plugins/$first_plugin/scripts/audit-log.sh"
+${other#"$ROOT"/} differs from ${first#"$ROOT"/}"
     fi
   done
   report "consistency/audit-log.sh" "$consistent" "$detail"

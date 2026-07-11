@@ -59,10 +59,12 @@ import os
 import plistlib
 import re
 import shutil
+import socket
 import sqlite3
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree
@@ -331,6 +333,164 @@ def call_ollama(cfg, system_prompt, user_prompt):
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise OllamaError(f"ollama returned a non-JSON response: {e}")
+
+
+# ---------------------------------------------------------------------------
+# `status` diagnostic — a CLI-only mode (invoked as
+# `python3 ollama_sidecar.py status`, not through the MCP transport) that
+# answers the questions this plugin's operator kept hand-diagnosing:
+# reachability, latency, which models are pulled vs. actually loaded, and a
+# cold-start hint when the endpoint times out. Kept dependency-free (urllib,
+# same as call_ollama) and split into a network-touching gatherer plus a
+# pure formatter so the formatter (and the gatherer's branching logic) are
+# unit-testable by mocking _http_get_json alone.
+# ---------------------------------------------------------------------------
+
+DEFAULT_STATUS_TIMEOUT_SECONDS = 5
+
+COLD_START_HINT = (
+    "No response within the timeout — this is the classic Ollama cold-start "
+    "symptom: a large model can take 30-120s+ to load into VRAM on its first "
+    "request after being idle, after `ollama stop`, or after a host reboot. "
+    "Retry in a few seconds; if it keeps timing out, check `ollama ps` and "
+    "`ollama list` on the Ollama host directly, and confirm the host/port in "
+    "this plugin's ollama_host config are correct."
+)
+
+
+def _http_get_json(url, timeout):
+    """Thin GET+parse wrapper so tests can mock exactly one seam instead of
+    the whole urllib call graph. Honors OLLAMA_TLS_CA for https endpoints,
+    same as the transform path."""
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout, context=_tls_context_for(url)) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def gather_status(host, model, timeout=DEFAULT_STATUS_TIMEOUT_SECONDS):
+    """Diagnose the configured Ollama endpoint: reachability, latency,
+    available models (`/api/tags`), currently-loaded models (`/api/ps`), and
+    a hint tailored to what's actually wrong. Returns a plain dict (JSON-
+    serializable) rather than raising, so callers never need a try/except
+    just to print a report."""
+    status = {
+        "host": host,
+        "configured_model": model,
+        "reachable": False,
+        "latency_ms": None,
+        "available_models": [],
+        "loaded_models": [],
+        "error": None,
+        "hint": None,
+    }
+
+    start = time.monotonic()
+    try:
+        tags = _http_get_json(host.rstrip("/") + "/api/tags", timeout)
+    except OllamaError as e:
+        # e.g. OLLAMA_TLS_CA configured but unreadable — a config problem,
+        # reported like any other unreachability rather than raised.
+        status["error"] = str(e)
+        return status
+    except (socket.timeout, TimeoutError):
+        status["error"] = f"timed out reaching ollama at {host} after {timeout}s"
+        status["hint"] = COLD_START_HINT
+        return status
+    except urllib.error.HTTPError as e:
+        status["error"] = f"ollama at {host} returned HTTP {e.code}"
+        return status
+    except urllib.error.URLError as e:
+        status["error"] = f"could not reach ollama at {host}: {e.reason}"
+        if isinstance(e.reason, (socket.timeout, TimeoutError)) or "timed out" in str(
+            e.reason
+        ).lower():
+            status["hint"] = COLD_START_HINT
+        return status
+    except OSError as e:
+        # Covers connection-refused and other low-level failures not always
+        # wrapped in URLError by every platform/Python version.
+        status["error"] = f"ollama request to {host} failed: {e}"
+        return status
+    except json.JSONDecodeError as e:
+        status["error"] = f"ollama returned a non-JSON response for /api/tags: {e}"
+        return status
+
+    status["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+    status["reachable"] = True
+    status["available_models"] = sorted(
+        m.get("name", "") for m in tags.get("models", []) if isinstance(m, dict)
+    )
+
+    try:
+        ps = _http_get_json(host.rstrip("/") + "/api/ps", timeout)
+        status["loaded_models"] = sorted(
+            m.get("name", "") for m in ps.get("models", []) if isinstance(m, dict)
+        )
+    except (OllamaError, socket.timeout, TimeoutError, urllib.error.URLError, OSError, json.JSONDecodeError):
+        # /api/ps failing shouldn't blank out an otherwise-successful
+        # /api/tags reachability check — loaded_models just stays empty.
+        pass
+
+    if model and model not in status["available_models"]:
+        status["hint"] = (
+            f"configured model '{model}' is not in the available models list — "
+            f"pull it with `ollama pull {model}` on the target host, or fix "
+            "ollama_model in the plugin config."
+        )
+    elif model and status["loaded_models"] and model not in status["loaded_models"]:
+        status["hint"] = (
+            f"model '{model}' is pulled but not currently loaded — the next "
+            "request will pay a cold-start cost while Ollama loads it into "
+            "memory. If this repeats often, consider a periodic keep-warm "
+            "ping (see README limitations)."
+        )
+
+    return status
+
+
+def format_status_report(status):
+    """Pure formatter: status dict -> human-readable multi-line report."""
+    lines = [f"ollama-sidecar status: {status['host']}"]
+    if status["reachable"]:
+        lines.append(f"  reachable:         yes ({status['latency_ms']} ms)")
+    else:
+        lines.append("  reachable:         no")
+    lines.append(f"  configured model:  {status['configured_model'] or '(none)'}")
+    lines.append(
+        f"  available models:  {', '.join(status['available_models']) or '(none)'}"
+    )
+    lines.append(
+        f"  loaded models:     {', '.join(status['loaded_models']) or '(none)'}"
+    )
+    if status["error"]:
+        lines.append(f"  error:             {status['error']}")
+    if status["hint"]:
+        lines.append(f"  hint:              {status['hint']}")
+    return "\n".join(lines)
+
+
+def cmd_status():
+    """CLI entry point for `python3 ollama_sidecar.py status`. Prints a
+    report to stdout and returns a process exit code (0 = every probed tier
+    reachable, 1 = at least one down) — kept separate from gather_status/
+    format_status_report so those two stay pure and unit-testable without
+    touching sys.exit or stdout. Probes each LLM tier; the fast tier is
+    skipped when it resolves to the same host+model as deep (single-endpoint
+    installs get one report, same as pre-tier versions)."""
+    timeout = _env_int("OLLAMA_STATUS_TIMEOUT", DEFAULT_STATUS_TIMEOUT_SECONDS)
+    deep = resolve_tier("deep")
+    fast = resolve_tier("fast")
+    tiers = [deep]
+    if (fast["host"], fast["model"]) != (deep["host"], deep["model"]):
+        tiers.append(fast)
+    reports = []
+    all_ok = True
+    for cfg in tiers:
+        status = gather_status(cfg["host"], cfg["model"], timeout)
+        reports.append(f"[{cfg['tier']} tier]\n" + format_status_report(status))
+        all_ok = all_ok and status["reachable"]
+    print("\n\n".join(reports))
+    return 0 if all_ok else 1
 
 
 # ---------------------------------------------------------------------------
@@ -2162,6 +2322,8 @@ def handle_message(msg):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        sys.exit(cmd_status())
     for line in sys.stdin:
         line = line.strip()
         if not line:

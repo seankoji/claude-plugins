@@ -248,9 +248,10 @@ Using `<REFINED_TASK>` and the discovery answers, invoke native plan mode to pro
 the authoritative decomposition. Under `opusplan`, plan mode routes to opus — so this
 IS the "decompose on opus" requirement, with no duplicate planning pass.
 
-**Step 0:** Load learnings from two sources (both optional):
-- **User-scoped:** `~/.claude/imps/learnings.md` — stack-agnostic rules that apply across all projects
-- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules specific to this project
+**Step 0:** Load learnings from two sources (both optional). `Read` is a tool call, not
+Bash — it does not expand `~`, so resolve `$HOME` yourself and pass the absolute form:
+- **User-scoped:** `$HOME/.claude/imps/learnings.md` — stack-agnostic rules that apply across all projects
+- **Project-scoped:** `.claude/imps/learnings.md` in the repo root — rules specific to this project (already relative to cwd)
 
 Read the `## Active rules` section from each file that exists. Merge both sets of rules and apply them to model assignment, task boundaries, and dependency detection throughout planning. Project-scoped rules take precedence over user-scoped rules on any conflict.
 
@@ -270,15 +271,19 @@ quote or reason about its contents. Then:
     `publish` (GitHub artifacts; use `gh api graphql` for Discussions, not REST)
   - **Depends-on** — prerequisite task IDs, or `—` if independent
 
-**Step 2:** Write **`GOAL.md`** to `~/.claude/imps/runs/${SLUG}.md` — not the repo root,
-so the write never prompts for project-directory access. Derive the slug and ensure the
-directory exists:
+**Step 2:** Write **`GOAL.md`** to an absolute path under `~/.claude/imps/runs/` — not
+the repo root, so the write never prompts for project-directory access. Derive the slug,
+ensure the directory exists, and resolve+echo the absolute path — `Write` is a tool call,
+not Bash, and does not expand `~`:
 ```sh
 mkdir -p ~/.claude/imps/runs
 SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+GOAL_PATH="$HOME/.claude/imps/runs/${SLUG}.md"
+echo "$GOAL_PATH"
 ```
-Step 6 re-derives the same `SLUG` independently (same one-liner) — shell state doesn't
-carry across tool calls. Write with this structure:
+Pass the echoed `$GOAL_PATH` value as `Write`'s `file_path` — never the `~/...` form.
+Step 6 re-derives the same `SLUG` (and its own absolute `STATE_PATH`) independently (same
+one-liner) — shell state doesn't carry across tool calls. Write with this structure:
 
 ```markdown
 # GOAL — <REFINED_TASK (one line)>
@@ -317,7 +322,8 @@ and keeps Status current.
 
 **Step 3 — Head Imp review (mandatory):**
 Before calling `ExitPlanMode`, summon the Head Imp (see the Head Imp section above).
-Pass the **absolute path** of `GOAL.md` (`~/.claude/imps/runs/${SLUG}.md`) as the
+Pass the **absolute path** of `GOAL.md` — the `$GOAL_PATH` value echoed in Step 2, e.g.
+`/Users/you/.claude/imps/runs/${SLUG}.md`, never the `~/...` form — as the
 artifact — the Head Imp Reads it itself. The Head Imp argues AGAINST the plan — wrong
 boundaries, mis-routed models, missing deps, gaps in the DoD. Fix what the critique
 exposes before proceeding.
@@ -337,12 +343,16 @@ default branch, the same way `commands/issue-mode.md` Phase 1 cuts its holding b
 ```sh
 mkdir -p ~/.claude/imps/runs
 SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+STATE_PATH="$HOME/.claude/imps/runs/${SLUG}.json"
 DEFAULT_BRANCH=$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')
 RUN_BRANCH="imps/${SLUG}-$(date -u +%Y%m%d-%H%M%S)"
 git fetch origin "$DEFAULT_BRANCH" && git checkout -b "$RUN_BRANCH" "origin/$DEFAULT_BRANCH"
+echo "$STATE_PATH"
 ```
 
-Write `$RUN_BRANCH` into `branch` below — never the discovery answer, never whatever
+`Write` the JSON below to the echoed `$STATE_PATH` (its `file_path`, not the `~/...`
+form — `Write` doesn't expand `~`). Write `$RUN_BRANCH` into `branch` below — never the
+discovery answer, never whatever
 `git rev-parse --abbrev-ref HEAD` reported before this step ran. If branch creation
 fails for any reason, stop and surface the error rather than falling back to the
 current branch.
@@ -417,11 +427,18 @@ subagent-dispatch protocol inline.
 **Step 1 — sync the canonical script.** Workflow scripts only load from a user's own
 `~/.claude/workflows/*.js` — a plugin cannot ship one that runs directly. Each run,
 re-sync the bundled copy over whatever is there so it always matches the installed
-plugin version (a plain overwrite, not a version/hash check):
+plugin version (a plain overwrite, not a version/hash check). **The `Workflow` tool call
+below is not Bash — it does not expand `~`,** so resolve and echo the absolute paths here
+first, and pass those literal echoed values (never the `~/...` form) into Step 2:
 
 ```bash
 mkdir -p ~/.claude/workflows
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/imps-run.workflow.js" ~/.claude/workflows/imps-run.js
+SLUG=$(basename "${CLAUDE_PROJECT_DIR:-$(pwd)}")
+WORKFLOW_DEST="$HOME/.claude/workflows/imps-run.js"
+STATE_PATH="$HOME/.claude/imps/runs/${SLUG}.json"
+GOAL_PATH="$HOME/.claude/imps/runs/${SLUG}.md"
+echo "$WORKFLOW_DEST"; echo "$STATE_PATH"; echo "$GOAL_PATH"
 ```
 
 **Step 2 — invoke it.** Every invocation is a **fresh** `Workflow` call — never
@@ -432,11 +449,11 @@ side effects the script itself must guard against instead.
 
 ```
 Workflow({
-  scriptPath: "~/.claude/workflows/imps-run.js",
+  scriptPath: "<the echoed $WORKFLOW_DEST value, e.g. /Users/you/.claude/workflows/imps-run.js>",
   args: {
     pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
-    stateFilePath: "~/.claude/imps/runs/<slug>.json",
-    goalFilePath: "~/.claude/imps/runs/<slug>.md",
+    stateFilePath: "<the echoed $STATE_PATH value, e.g. /Users/you/.claude/imps/runs/<slug>.json>",
+    goalFilePath: "<the echoed $GOAL_PATH value, e.g. /Users/you/.claude/imps/runs/<slug>.md>",
     personaPostingProtocolPath: "${CLAUDE_PLUGIN_ROOT}/references/persona-posting.md",
     personaBriefPaths: {
       "solution-architect": "${CLAUDE_PLUGIN_ROOT}/personas/solution-architect.md",
