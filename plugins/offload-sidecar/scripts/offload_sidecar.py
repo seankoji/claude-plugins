@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ollama-sidecar MCP server.
+"""offload-sidecar MCP server (formerly ollama-sidecar).
 
 For transforms jq/Python can express exactly, use those instead — deterministic,
 instant, free, and verifiable. This server's own "deterministic" operations already
@@ -7,14 +7,17 @@ cover the common mechanical cases (dedup, sort, filter, decode, hash, format
 conversions) with no model call. Its "llm" operations exist for the narrower remainder:
 input too irregular for a fixed rule (messy unstructured text, ad-hoc YAML, "does this
 look like a secret") where interpreting it requires judgment, not just a mechanical
-pass — offloaded to a local/LAN Ollama model rather than spending Claude's own context
-on it. Either way, Claude exchanges only file paths and an operation name over MCP (a
-few dozen tokens) — file contents are read and written entirely on this machine and
-never cross into the assistant's context, in either direction.
+pass — offloaded to a local/LAN Ollama model or a cloud agent CLI rather than spending
+Claude's own context on it. Either way, Claude exchanges only file paths and an
+operation name over MCP (a few dozen tokens) — file contents never cross into the
+assistant's context, in either direction. (On the cloud tiers they DO leave the
+machine: they are sent to Google via the agy CLI. That trust boundary is the local
+tiers' whole difference and is documented loudly in the README.)
 
 Design constraints (see plan for the full rationale):
   * Standard library only. No pip install, no build step, no committed
-    bundle — this file IS the runtime artifact.
+    bundle — this file IS the runtime artifact. External binaries (yq, agy)
+    are OPTIONAL and probed at call time, never imported.
   * Hand-rolled MCP stdio transport: newline-delimited JSON-RPC 2.0 on
     stdin/stdout. Only stderr is used for diagnostics.
   * A fixed, VERIFIED allowlist of operations, not a free-text passthrough.
@@ -24,27 +27,40 @@ Design constraints (see plan for the full rationale):
     truncation/record-loss) — they do NOT prove content is semantically
     correct. Documented explicitly in the tool description and README.
   * Two operation "kinds":
-      - "llm": sends input_text to Ollama with a strict system prompt, then
-        validates the response. Used when interpreting the input requires
-        judgment (extracting structure from messy text, summarizing,
-        spotting things that look like secrets).
-      - "deterministic": pure Python, no Ollama call, no network round-trip.
+      - "llm": sends the input to the chosen tier's model with a strict
+        system prompt, then validates the response. Used when interpreting
+        the input requires judgment (extracting structure from messy text,
+        summarizing, triaging logs, describing images).
+      - "deterministic": pure Python, no model call, no network round-trip.
         Used for transforms with one unambiguous correct answer (dedup,
         sort, filter, decode, hash, format conversions backed by the
-        standard library). Faster, free, and needs no Ollama instance.
+        standard library). Faster, free, and needs no model at all.
         The two yaml ops additionally use an OPTIONAL external binary (yq)
         when it's on PATH — still deterministic, still local; json_to_yaml
         fails with a structured "brew install yq" hint without it, and
         yaml_to_json falls back to the llm path instead.
-  * Two LLM tiers, because the right box depends on the job:
-      - "deep": the primary endpoint — typically the biggest model your
-        local machine can hold. Low throughput is fine; judgment-heavy,
-        low-volume operations default here.
-      - "fast": an optional second endpoint — typically a smaller model
-        that fits entirely in a GPU's VRAM on a LAN box, generating tokens
-        several times faster. Bulk, output-heavy operations default here.
-        Every "fast" setting falls back to its "deep" value when unset, so
-        single-endpoint installs behave exactly as before.
+  * Four LLM tiers across two engines, because the right box depends on
+    the job:
+      - "deep"  [ollama]: the primary endpoint — typically the biggest model
+        your local machine can hold. Judgment-heavy, low-volume operations
+        default here. Private: content stays on your machine/LAN.
+      - "fast"  [ollama]: an optional second endpoint — a smaller model
+        fully resident in a LAN GPU's VRAM. Bulk, output-heavy operations
+        default here. Every "fast" setting falls back to its "deep" value
+        when unset, so single-endpoint installs behave exactly as before.
+      - "flash" [agy]: Gemini Flash via the Google Antigravity CLI (`agy`)
+        on the operator's Gemini subscription. The only engine with vision
+        (images, PDFs) and ~1M-token context. The cheapest metered bucket
+        on the subscription, but still metered — see the quota gate below.
+        Media operations default here.
+      - "pro"   [agy]: Gemini Pro via agy. Scarce weekly quota on base
+        subscription tiers; never an operation default — explicit opt-in
+        per call.
+  * Cloud calls are budget-gated UP FRONT: a persistent sliding-window
+    counter (plus any lockout timestamp parsed from agy's own output)
+    rejects a flash/pro call BEFORE spawning agy once the configured budget
+    is exhausted, with a structured error naming the local-tier fallback —
+    rather than routing to Gemini and letting the call fail mid-flight.
 """
 
 import base64
@@ -64,10 +80,12 @@ import sqlite3
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree
+import zipfile
 from xml.parsers.expat import ExpatError
 
 try:
@@ -91,9 +109,36 @@ DEFAULT_TIMEOUT_DEEP = 300
 DEFAULT_TIMEOUT_FAST = 120
 YQ_TIMEOUT_SECONDS = 60
 MCP_PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "ollama-sidecar"
+SERVER_NAME = "offload-sidecar"
 # Kept in lockstep with plugin.json / marketplace.json.
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
+
+# --- agy (Google Antigravity CLI) engine defaults ---------------------------
+# Model names are agy's display names, exactly as `agy models` prints them.
+# Flash at Low effort: transforms are mechanical, thinking effort buys nothing.
+DEFAULT_AGY_BIN = "agy"
+DEFAULT_AGY_FLASH_MODEL = "Gemini 3.5 Flash (Low)"
+DEFAULT_AGY_PRO_MODEL = "Gemini 3.1 Pro (High)"
+# agy's own --print-timeout defaults to 5m; ours matches, and the subprocess
+# gets a small grace on top so agy times out first with its own message.
+DEFAULT_AGY_TIMEOUT = 300
+# Notional context for the cloud budget guard. Gemini models take ~1M tokens;
+# half that keeps the same reserve-for-output logic as the ollama tiers.
+DEFAULT_AGY_NUM_CTX = 524288
+# Above this many input bytes the content is not inlined into agy's argv
+# (macOS ARG_MAX is ~1MB) — agy is told the file path and reads it with its
+# own tools instead.
+AGY_INLINE_LIMIT_BYTES = 200_000
+# Default per-window call budgets. Deliberately conservative: Google
+# publishes no numeric quotas; community-observed limits on the base
+# subscription are a ~250-unit 5h bucket and a weekly hard cap where
+# non-Flash models burn far faster and a blown weekly cap means a multi-DAY
+# lockout. These defaults keep the sidecar comfortably under both. All four
+# are userConfig-tunable.
+DEFAULT_FLASH_PER_5H = 60
+DEFAULT_FLASH_PER_WEEK = 600
+DEFAULT_PRO_PER_5H = 5
+DEFAULT_PRO_PER_WEEK = 25
 
 
 def _env(name, default):
@@ -117,17 +162,46 @@ def _env_int(name, default):
         return default
 
 
-LLM_TIERS = ("deep", "fast")
+LLM_TIERS = ("deep", "fast", "flash", "pro")
+LOCAL_TIERS = ("deep", "fast")
+CLOUD_TIERS = ("flash", "pro")
 
 
 def resolve_tier(tier):
     """Resolve one LLM tier to a concrete endpoint config.
 
-    "deep" is the primary endpoint (the pre-tier OLLAMA_* names, so existing
-    installs are automatically the deep tier). "fast" reads OLLAMA_FAST_*,
-    each field falling back to the deep value when unset — so with no fast
-    config at all, both tiers are the same endpoint and tier choice is a
-    no-op."""
+    Local tiers (engine "ollama"): "deep" is the primary endpoint (the
+    pre-tier OLLAMA_* names, so existing installs are automatically the deep
+    tier); "fast" reads OLLAMA_FAST_*, each field falling back to the deep
+    value when unset — so with no fast config at all, both tiers are the
+    same endpoint and tier choice is a no-op.
+
+    Cloud tiers (engine "agy"): "flash" and "pro" run through the Google
+    Antigravity CLI on the operator's Gemini subscription; instead of a
+    host they carry the binary name, and a per-window call budget enforced
+    by the quota gate before any call is made."""
+    if tier in CLOUD_TIERS:
+        if tier == "flash":
+            model = _env("AGY_FLASH_MODEL", DEFAULT_AGY_FLASH_MODEL)
+            caps = {
+                "5h": _env_int("AGY_FLASH_PER_5H", DEFAULT_FLASH_PER_5H),
+                "week": _env_int("AGY_FLASH_PER_WEEK", DEFAULT_FLASH_PER_WEEK),
+            }
+        else:
+            model = _env("AGY_PRO_MODEL", DEFAULT_AGY_PRO_MODEL)
+            caps = {
+                "5h": _env_int("AGY_PRO_PER_5H", DEFAULT_PRO_PER_5H),
+                "week": _env_int("AGY_PRO_PER_WEEK", DEFAULT_PRO_PER_WEEK),
+            }
+        return {
+            "tier": tier,
+            "engine": "agy",
+            "bin": _env("AGY_BIN", DEFAULT_AGY_BIN),
+            "model": model,
+            "num_ctx": _env_int("AGY_NUM_CTX", DEFAULT_AGY_NUM_CTX),
+            "timeout": _env_int("AGY_TIMEOUT", DEFAULT_AGY_TIMEOUT),
+            "caps": caps,
+        }
     host = _env("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
     model = _env("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     num_ctx = _env_int("OLLAMA_NUM_CTX", DEFAULT_NUM_CTX)
@@ -137,7 +211,14 @@ def resolve_tier(tier):
         model = _env("OLLAMA_FAST_MODEL", model)
         num_ctx = _env_int("OLLAMA_FAST_NUM_CTX", num_ctx)
         timeout = _env_int("OLLAMA_FAST_TIMEOUT", DEFAULT_TIMEOUT_FAST)
-    return {"tier": tier, "host": host, "model": model, "num_ctx": num_ctx, "timeout": timeout}
+    return {
+        "tier": tier,
+        "engine": "ollama",
+        "host": host,
+        "model": model,
+        "num_ctx": num_ctx,
+        "timeout": timeout,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +417,277 @@ def call_ollama(cfg, system_prompt, user_prompt):
 
 
 # ---------------------------------------------------------------------------
+# Cloud quota gate — the whole point is to reject a flash/pro call BEFORE
+# spawning agy once the budget is spent, instead of routing to Gemini and
+# letting it fail (or worse, silently eating into a weekly cap whose
+# exhaustion means a multi-day lockout).
+#
+# State is a small JSON file shared by every offload-sidecar process on the
+# machine (one MCP server per Claude session): per-model call timestamps,
+# pruned to the largest window, plus any lockout deadline parsed from agy's
+# own output. Writes are atomic (tmp + rename); concurrent sessions can
+# lose a race and under-count by a call or two, which is acceptable for a
+# safety margin this wide — a real lock would add failure modes for no
+# practical gain.
+# ---------------------------------------------------------------------------
+
+QUOTA_WINDOWS = {"5h": 5 * 3600, "week": 7 * 24 * 3600}
+
+
+def quota_state_path():
+    override = _env("AGY_QUOTA_STATE", "")
+    if override:
+        return override
+    return os.path.join(
+        os.path.expanduser("~"), ".local", "state", "offload-sidecar", "quota.json"
+    )
+
+
+def load_quota_state():
+    try:
+        with open(quota_state_path(), "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("calls", {})
+    state.setdefault("lockouts", {})
+    return state
+
+
+def save_quota_state(state):
+    """Best-effort atomic write. A quota file we can't persist must not
+    break the transform — the gate just degrades to per-process memory."""
+    path = quota_state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"{SERVER_NAME}: could not persist quota state: {e}", file=sys.stderr)
+
+
+def _prune_calls(timestamps, now):
+    horizon = now - max(QUOTA_WINDOWS.values())
+    return [t for t in timestamps if isinstance(t, (int, float)) and t > horizon]
+
+
+def quota_usage(state, model, now=None):
+    """Calls per window for one model, as {"5h": n, "week": n}."""
+    now = time.time() if now is None else now
+    stamps = _prune_calls(state["calls"].get(model, []), now)
+    return {
+        name: sum(1 for t in stamps if t > now - seconds)
+        for name, seconds in QUOTA_WINDOWS.items()
+    }
+
+
+def check_cloud_budget(cfg, now=None):
+    """Gate a cloud call before it happens. Returns (ok, reason, usage);
+    on ok=False the reason is a complete, actionable rejection message."""
+    now = time.time() if now is None else now
+    state = load_quota_state()
+    model = cfg["model"]
+
+    lockout = state["lockouts"].get(model)
+    if isinstance(lockout, (int, float)) and lockout > now:
+        resume = datetime.datetime.fromtimestamp(lockout).isoformat(timespec="seconds")
+        return False, (
+            f"model '{model}' is quota-locked by Google until {resume} (parsed "
+            "from an earlier agy response). Use a local tier ('deep'/'fast') "
+            "until then."
+        ), quota_usage(state, model, now)
+
+    usage = quota_usage(state, model, now)
+    for window, cap in cfg["caps"].items():
+        if cap > 0 and usage[window] >= cap:
+            return False, (
+                f"cloud budget exhausted for tier '{cfg['tier']}': {usage[window]} "
+                f"calls in the last {window} (cap {cap}). Rejecting up front "
+                "instead of burning subscription quota — use a local tier "
+                "('deep'/'fast'), or raise the cap in the plugin config "
+                f"(agy_{cfg['tier']}_per_{window}) if this budget is too tight."
+            ), usage
+    return True, None, usage
+
+
+def record_cloud_call(model, now=None):
+    """Count a call the moment agy is actually spawned — quota burns on
+    Google's side whether or not our validation later accepts the output."""
+    now = time.time() if now is None else now
+    state = load_quota_state()
+    stamps = _prune_calls(state["calls"].get(model, []), now)
+    stamps.append(now)
+    state["calls"][model] = stamps
+    save_quota_state(state)
+
+
+def record_lockout(model, until_ts):
+    state = load_quota_state()
+    state["lockouts"][model] = until_ts
+    save_quota_state(state)
+
+
+# agy reports quota exhaustion as prose in the response, not as a parseable
+# error code. When we see it, remember the deadline so every later call is
+# rejected up front until then. BEST-EFFORT: this pattern is community-
+# reported wording, not a stable contract — if Google rewords the message,
+# lockouts stop being recorded and the gate degrades to the call-count
+# budgets, which are the real backstop and always active.
+_AGY_LOCKOUT_RE = re.compile(
+    r"resume using this model (?:at|on|after)\s+([^\n.]+)", re.IGNORECASE
+)
+# An expired login makes agy print a sign-in URL instead of an answer.
+_AGY_AUTH_RE = re.compile(r"(sign.?in|log.?in|authenticat\w+).{0,80}https?://", re.IGNORECASE | re.DOTALL)
+
+
+def _parse_lockout_deadline(text, now=None):
+    """Best-effort parse of agy's human-readable resume time. Anything we
+    can't parse becomes a conservative 5-hour cooldown (one sprint-bucket
+    refresh) rather than no cooldown at all."""
+    now = time.time() if now is None else now
+    m = _AGY_LOCKOUT_RE.search(text)
+    if m:
+        raw = m.group(1).strip()
+        for parse in (
+            lambda s: datetime.datetime.fromisoformat(s).timestamp(),
+            lambda s: time.mktime(time.strptime(s, "%b %d, %Y %H:%M")),
+            lambda s: time.mktime(time.strptime(s, "%Y-%m-%d %H:%M")),
+        ):
+            try:
+                ts = parse(raw)
+                if ts > now:
+                    return ts
+            except (ValueError, OverflowError):
+                continue
+    return now + QUOTA_WINDOWS["5h"]
+
+
+# ---------------------------------------------------------------------------
+# agy client (cloud LLM operations) — shells out to the official Antigravity
+# CLI binary; never touches its OAuth token or API directly. Calls are
+# strictly serial per server process (the MCP stdin loop), keeping usage
+# human-plausible.
+# ---------------------------------------------------------------------------
+
+
+class AgyError(Exception):
+    """`unreachable=True` marks failures where agy never gave an answer
+    (binary missing, timeout) as opposed to a real response from the
+    service (auth prompt, quota lockout, refusal)."""
+
+    def __init__(self, message, unreachable=False):
+        super().__init__(message)
+        self.unreachable = unreachable
+
+
+def call_agy(cfg, system_prompt, input_text=None, input_path=None):
+    """One non-interactive agy run. Exactly one of input_text / input_path:
+    text is inlined into the prompt (small inputs); a path makes agy read
+    the file with its own tools via --add-dir (large inputs, and all media —
+    images/PDFs can't be inlined as text at all).
+
+    Flag shape matters: --print takes the prompt as its VALUE. A positional
+    prompt after other flags is silently dropped by agy's parser (verified
+    against v1.1.1 — it answers the next flag name as if it were the
+    question)."""
+    bin_ = cfg["bin"]
+    if shutil.which(bin_) is None:
+        raise AgyError(
+            f"agy binary '{bin_}' not found on PATH — install the Google "
+            "Antigravity CLI or set agy_bin in the plugin config. Local "
+            "tiers ('deep'/'fast') work without it.",
+            unreachable=True,
+        )
+
+    argv = [bin_, "--model", cfg["model"]]
+    staged_dir = None
+    try:
+        if input_path is not None:
+            # agy is an autonomous agent, and --add-dir grants it a whole
+            # directory — pointing that at the input's real parent (often
+            # the repo root) would let a prompt-injected PDF/image/log talk
+            # it into reading sibling files. Stage a copy of just this one
+            # file in a fresh temp dir so the only thing agy can see is the
+            # input itself.
+            staged_dir = tempfile.mkdtemp(prefix="offload-sidecar-")
+            staged_path = os.path.join(staged_dir, os.path.basename(input_path))
+            try:
+                shutil.copy2(input_path, staged_path)
+            except OSError as e:
+                raise AgyError(f"failed to stage input for agy: {e}")
+            prompt = (
+                f"{system_prompt}\n\nThe input is the file at {staged_path} — "
+                "read it with your file tools (it may be an image or PDF; "
+                "look at it). Do not read, write, or execute anything else."
+            )
+            argv += ["--add-dir", staged_dir]
+        else:
+            prompt = f"{system_prompt}\n\nInput data follows:\n\n{input_text}"
+        argv += ["--print", prompt]
+
+        output = ""
+        # agy has a known intermittent bug where the final response is
+        # dropped from stdout under a non-TTY; an empty answer with exit 0
+        # gets exactly one retry before being reported as a failure.
+        for attempt in (1, 2):
+            # Counted per spawn, not per call_agy: the retry burns real
+            # Google quota too.
+            record_cloud_call(cfg["model"])
+            try:
+                proc = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=cfg["timeout"] + 30,
+                )
+            except subprocess.TimeoutExpired:
+                raise AgyError(
+                    f"agy timed out after {cfg['timeout'] + 30}s (model "
+                    f"'{cfg['model']}')",
+                    unreachable=True,
+                )
+            except OSError as e:
+                raise AgyError(f"failed to spawn agy: {e}", unreachable=True)
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            if _AGY_LOCKOUT_RE.search(combined):
+                until = _parse_lockout_deadline(combined)
+                record_lockout(cfg["model"], until)
+                resume = datetime.datetime.fromtimestamp(until).isoformat(timespec="seconds")
+                raise AgyError(
+                    f"agy reports model '{cfg['model']}' is quota-locked "
+                    f"(resume ~{resume}). Recorded — further calls to this tier "
+                    "will be rejected up front until then. Use a local tier."
+                )
+            if _AGY_AUTH_RE.search(combined):
+                raise AgyError(
+                    "agy wants interactive re-authentication — run `agy` in a "
+                    "terminal once to sign in, then retry. Local tiers "
+                    "('deep'/'fast') still work."
+                )
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+                raise AgyError(f"agy exited {proc.returncode}: {tail}")
+            output = (proc.stdout or "").strip()
+            if output:
+                break
+        if not output:
+            raise AgyError(
+                "agy returned empty output twice (known non-TTY stdout-drop bug) "
+                "— retry, or use a local tier"
+            )
+        return output
+    finally:
+        if staged_dir is not None:
+            shutil.rmtree(staged_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # `status` diagnostic — a CLI-only mode (invoked as
-# `python3 ollama_sidecar.py status`, not through the MCP transport) that
+# `python3 offload_sidecar.py status`, not through the MCP transport) that
 # answers the questions this plugin's operator kept hand-diagnosing:
 # reachability, latency, which models are pulled vs. actually loaded, and a
 # cold-start hint when the endpoint times out. Kept dependency-free (urllib,
@@ -450,7 +800,7 @@ def gather_status(host, model, timeout=DEFAULT_STATUS_TIMEOUT_SECONDS):
 
 def format_status_report(status):
     """Pure formatter: status dict -> human-readable multi-line report."""
-    lines = [f"ollama-sidecar status: {status['host']}"]
+    lines = [f"{SERVER_NAME} status: {status['host']}"]
     if status["reachable"]:
         lines.append(f"  reachable:         yes ({status['latency_ms']} ms)")
     else:
@@ -469,14 +819,36 @@ def format_status_report(status):
     return "\n".join(lines)
 
 
+def format_cloud_status(cfg):
+    """Cloud tiers get a no-network report: binary presence plus the quota
+    gate's view. Deliberately never calls agy — a status probe must not
+    spend subscription quota."""
+    state = load_quota_state()
+    usage = quota_usage(state, cfg["model"])
+    found = shutil.which(cfg["bin"]) is not None
+    lines = [f"{SERVER_NAME} status: agy ({cfg['bin']})"]
+    lines.append(f"  binary found:      {'yes' if found else 'no — cloud tier unavailable'}")
+    lines.append(f"  configured model:  {cfg['model']}")
+    for window, cap in cfg["caps"].items():
+        lines.append(f"  budget ({window}):{' ' * (10 - len(window))}{usage[window]}/{cap} calls used")
+    lockout = state["lockouts"].get(cfg["model"])
+    if isinstance(lockout, (int, float)) and lockout > time.time():
+        resume = datetime.datetime.fromtimestamp(lockout).isoformat(timespec="seconds")
+        lines.append(f"  quota lockout:     until {resume} (calls rejected up front)")
+    return "\n".join(lines)
+
+
 def cmd_status():
-    """CLI entry point for `python3 ollama_sidecar.py status`. Prints a
-    report to stdout and returns a process exit code (0 = every probed tier
-    reachable, 1 = at least one down) — kept separate from gather_status/
-    format_status_report so those two stay pure and unit-testable without
-    touching sys.exit or stdout. Probes each LLM tier; the fast tier is
-    skipped when it resolves to the same host+model as deep (single-endpoint
-    installs get one report, same as pre-tier versions)."""
+    """CLI entry point for `python3 offload_sidecar.py status`. Prints a
+    report to stdout and returns a process exit code (0 = every probed local
+    tier reachable, 1 = at least one down) — kept separate from
+    gather_status/format_status_report so those two stay pure and
+    unit-testable without touching sys.exit or stdout. Probes each local
+    tier; the fast tier is skipped when it resolves to the same host+model
+    as deep (single-endpoint installs get one report, same as pre-tier
+    versions). Cloud tiers are reported (binary + quota budget) but never
+    probed with a real call, and don't affect the exit code — an absent agy
+    is a reduced feature set, not a broken install."""
     timeout = _env_int("OLLAMA_STATUS_TIMEOUT", DEFAULT_STATUS_TIMEOUT_SECONDS)
     deep = resolve_tier("deep")
     fast = resolve_tier("fast")
@@ -489,6 +861,9 @@ def cmd_status():
         status = gather_status(cfg["host"], cfg["model"], timeout)
         reports.append(f"[{cfg['tier']} tier]\n" + format_status_report(status))
         all_ok = all_ok and status["reachable"]
+    for tier in CLOUD_TIERS:
+        cfg = resolve_tier(tier)
+        reports.append(f"[{tier} tier]\n" + format_cloud_status(cfg))
     print("\n\n".join(reports))
     return 0 if all_ok else 1
 
@@ -699,6 +1074,265 @@ def _validate_summarize(input_text, output_text, output_path, instruction):
             f"summary ({len(output_text)} chars) is not smaller than the input "
             f"({len(input_text)} chars) — likely runaway generation, not a summary"
         )
+    return True, None
+
+
+# --- digest operations: log/output triage with a fixed JSON envelope --------
+# One prompt/validator factory pair covers the whole family. Every digest op
+# outputs a single JSON object whose required keys are stated in the prompt
+# and enforced by the validator — the strongest format guarantee available
+# without a schema-constrained API (agy print mode has none, and Ollama's
+# format=json is model-dependent), and it makes the output mechanically
+# consumable by the caller without a second interpretation pass.
+
+
+def _make_digest_prompt(task, keys_desc):
+    def _prompt(instruction, output_path):
+        return _with_instruction(
+            BASE_SYSTEM_PROMPT
+            + f" Operation: {task} Output a single JSON object with exactly "
+            f"these keys: {keys_desc}. Every key must be present (use null or "
+            "an empty array when unknown).",
+            instruction,
+        )
+
+    return _prompt
+
+
+def _make_digest_validator(required_keys):
+    def _validate(input_text, output_text, output_path, instruction):
+        try:
+            parsed = json.loads(output_text)
+        except json.JSONDecodeError as e:
+            return False, f"output is not valid JSON: {e}"
+        if not isinstance(parsed, dict):
+            return False, "output must be a JSON object"
+        missing = [k for k in required_keys if k not in parsed]
+        if missing:
+            return False, f"output JSON is missing required keys: {missing}"
+        summary = parsed.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            return False, "output JSON 'summary' must be a non-empty string"
+        return True, None
+
+    return _validate
+
+
+_prompt_triage_ci_log = _make_digest_prompt(
+    "analyze the CI/build log and triage the failure.",
+    "verdict ('pass'|'fail'|'unclear'), error_class ('build'|'test'|'lint'|"
+    "'infra'|'security'|'unknown'), failing_step (string|null), "
+    "error_excerpt (array of up to 5 verbatim log lines showing the root "
+    "error), summary (one paragraph)",
+)
+_validate_triage_ci_log = _make_digest_validator(
+    ["verdict", "error_class", "failing_step", "error_excerpt", "summary"]
+)
+
+_prompt_summarize_test_run = _make_digest_prompt(
+    "analyze the test-runner output and cluster the failures.",
+    "passed (int|null), failed (int|null), skipped (int|null), "
+    "failure_clusters (array of {cause, count, example} objects grouping "
+    "failures by root cause), summary (one paragraph)",
+)
+_validate_summarize_test_run = _make_digest_validator(
+    ["passed", "failed", "skipped", "failure_clusters", "summary"]
+)
+
+_prompt_triage_service_log = _make_digest_prompt(
+    "analyze the service/application log for health and anomalies.",
+    "healthy (bool|null), error_families (array of {pattern, count, example} "
+    "objects, repeated errors deduplicated into one family), anomaly_window "
+    "(string|null — the timestamp range where problems cluster), summary "
+    "(one paragraph)",
+)
+_validate_triage_service_log = _make_digest_validator(
+    ["healthy", "error_families", "anomaly_window", "summary"]
+)
+
+_prompt_digest_task_output = _make_digest_prompt(
+    "analyze this agent/background-task output or journal and report its state.",
+    "state ('running'|'completed'|'failed'|'blocked'|'unknown'), last_action "
+    "(string|null), blockers (array of strings), summary (one paragraph)",
+)
+_validate_digest_task_output = _make_digest_validator(
+    ["state", "last_action", "blockers", "summary"]
+)
+
+_prompt_digest_review_comments = _make_digest_prompt(
+    "cluster these code-review comments into a fix checklist.",
+    "actionable (array of {file, line, ask} objects — concrete requested "
+    "changes), nits (array of strings — style/preference remarks), questions "
+    "(array of strings — reviewer questions needing answers), summary (one "
+    "paragraph)",
+)
+_validate_digest_review_comments = _make_digest_validator(
+    ["actionable", "nits", "questions", "summary"]
+)
+
+_prompt_security_scan_digest = _make_digest_prompt(
+    "analyze this security-scanner report (e.g. trivy, npm/pip audit, "
+    "dependency review) and separate what matters.",
+    "critical (array of {id, package, note} objects), high (array of {id, "
+    "package, note}), lower_count (int|null — count of medium/low findings), "
+    "fixable (array of strings — findings with an available fix/upgrade), "
+    "summary (one paragraph)",
+)
+_validate_security_scan_digest = _make_digest_validator(
+    ["critical", "high", "lower_count", "fixable", "summary"]
+)
+
+
+# --- drafting operations: text out, saving Claude's OUTPUT tokens -----------
+
+
+def _prompt_draft_commit_message(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input is a git diff (optionally with surrounding "
+        "context). Write a conventional git commit message for it: an "
+        "imperative summary line of at most 72 characters, then a blank "
+        "line, then a short body explaining what changed and why. Describe "
+        "only changes actually present in the diff.",
+        instruction,
+    )
+
+
+def _validate_draft_commit_message(input_text, output_text, output_path, instruction):
+    text = output_text.strip()
+    if not text:
+        return False, "output is empty"
+    if "```" in text:
+        return False, "output contains a markdown code fence — expected a bare commit message"
+    first = text.splitlines()[0]
+    if len(first) > 100:
+        return False, (
+            f"summary line is {len(first)} chars — expected a conventional "
+            "<=72-char summary (100 tolerated)"
+        )
+    return True, None
+
+
+def _prompt_draft_pr_body(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input is a git diff and/or commit log for a "
+        "branch. Write a pull-request description in GitHub-flavored "
+        "markdown with a '## Summary' section (what and why) and a "
+        "'## Changes' section (bulleted, grouped by area). Describe only "
+        "changes actually present in the input.",
+        instruction,
+    )
+
+
+def _validate_draft_pr_body(input_text, output_text, output_path, instruction):
+    if not output_text.strip():
+        return False, "output is empty"
+    if "## Summary" not in output_text or "## Changes" not in output_text:
+        return False, "output must contain '## Summary' and '## Changes' sections"
+    return True, None
+
+
+def _prompt_changelog_from_commits(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input is a git commit log (optionally with "
+        "diffs). Write grouped markdown release notes: bulleted entries "
+        "under Added/Changed/Fixed-style headings, merging related commits "
+        "into one entry, dropping pure-noise commits (version bumps, "
+        "formatting). Describe only what the commits actually contain.",
+        instruction,
+    )
+
+
+def _validate_changelog_from_commits(input_text, output_text, output_path, instruction):
+    if not output_text.strip():
+        return False, "output is empty"
+    if not re.search(r"^\s*[-*] ", output_text, re.MULTILINE):
+        return False, "output contains no markdown bullet entries — not release notes"
+    return True, None
+
+
+def _prompt_html_extract(instruction, output_path):
+    # instruction is required for this op (enforced by the handler): it IS
+    # the extraction question.
+    return (
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input is HTML/CSS/XML or similar markup. Answer "
+        "this extraction request using ONLY content actually present in the "
+        f"input, and output just the extracted data: {instruction}"
+    )
+
+
+def _validate_html_extract(input_text, output_text, output_path, instruction):
+    if not output_text.strip():
+        return False, "output is empty"
+    return True, None
+
+
+# --- media operations: vision — agy tiers only ------------------------------
+# The input file is never inlined (it isn't text); call_agy hands the model
+# the file path and it reads the image/PDF with its own tools. The prompt
+# builders here describe only the task.
+
+
+def _prompt_describe_image(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input file is an image. Describe it precisely as "
+        "plain text: overall layout, any visible text transcribed exactly, "
+        "UI elements and their states, and anything anomalous. Nothing "
+        "invented.",
+        instruction,
+    )
+
+
+def _validate_describe_image(input_text, output_text, output_path, instruction):
+    if not output_text.strip():
+        return False, "output is empty"
+    return True, None
+
+
+def _prompt_verify_screenshot(instruction, output_path):
+    # instruction is required: it is the assertion under test.
+    return (
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input file is a screenshot. Check it against "
+        f"this assertion: \"{instruction}\". Output a single JSON object "
+        "with exactly these keys: pass (true|false), observed (string — "
+        "what the screenshot actually shows, relevant to the assertion), "
+        "mismatches (array of strings, empty when pass is true)."
+    )
+
+
+def _validate_verify_screenshot(input_text, output_text, output_path, instruction):
+    try:
+        parsed = json.loads(output_text)
+    except json.JSONDecodeError as e:
+        return False, f"output is not valid JSON: {e}"
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("pass"), bool):
+        return False, "output JSON must contain a boolean 'pass'"
+    if not isinstance(parsed.get("observed"), str) or not parsed["observed"].strip():
+        return False, "output JSON 'observed' must be a non-empty string"
+    return True, None
+
+
+def _prompt_pdf_to_structured(instruction, output_path):
+    return _with_instruction(
+        BASE_SYSTEM_PROMPT
+        + " Operation: the input file is a PDF (possibly scanned). Extract "
+        "its content into well-formed JSON that mirrors the document's own "
+        "structure (tables become arrays of row objects; transcribe values "
+        "exactly, no invention).",
+        instruction,
+    )
+
+
+def _validate_pdf_to_structured(input_text, output_text, output_path, instruction):
+    try:
+        json.loads(output_text)
+    except json.JSONDecodeError as e:
+        return False, f"output is not valid JSON: {e}"
     return True, None
 
 
@@ -1576,6 +2210,195 @@ def _val_json_to_yaml(input_bytes, output_bytes, output_path, params):
     return True, None
 
 
+_JSON_DIGEST_MAX_KEYS = 50
+_JSON_DIGEST_MAX_DEPTH = 5
+_JSON_DIGEST_SAMPLE_CHARS = 80
+
+
+def _json_schema_of(node, depth=0):
+    """Recursive shape summary: types, object keys, array lengths, truncated
+    scalar samples. Arrays are summarized from their first element plus the
+    set of element types — enough to answer 'what's in here' without
+    reproducing the data."""
+    if isinstance(node, dict):
+        if depth >= _JSON_DIGEST_MAX_DEPTH:
+            return {"type": "object", "keys": len(node), "note": "max depth reached"}
+        keys = list(node.keys())
+        out = {"type": "object", "key_count": len(keys)}
+        shown = {k: _json_schema_of(node[k], depth + 1) for k in keys[:_JSON_DIGEST_MAX_KEYS]}
+        out["keys"] = shown
+        if len(keys) > _JSON_DIGEST_MAX_KEYS:
+            out["keys_omitted"] = len(keys) - _JSON_DIGEST_MAX_KEYS
+        return out
+    if isinstance(node, list):
+        if depth >= _JSON_DIGEST_MAX_DEPTH:
+            return {"type": "array", "length": len(node), "note": "max depth reached"}
+        types = sorted({type(el).__name__ for el in node})
+        out = {"type": "array", "length": len(node), "element_types": types}
+        if node:
+            out["items"] = _json_schema_of(node[0], depth + 1)
+        return out
+    if isinstance(node, bool):
+        return {"type": "boolean", "sample": node}
+    if isinstance(node, (int, float)):
+        return {"type": "number", "sample": node}
+    if node is None:
+        return {"type": "null"}
+    s = str(node)
+    sample = s[:_JSON_DIGEST_SAMPLE_CHARS] + ("…" if len(s) > _JSON_DIGEST_SAMPLE_CHARS else "")
+    return {"type": "string", "sample": sample}
+
+
+def _det_json_digest(input_bytes, params, instruction, output_path):
+    try:
+        parsed = json.loads(input_bytes.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as e:
+        raise SidecarError(f"input is not valid JSON: {e}")
+    digest = {
+        "input_bytes": len(input_bytes),
+        "top_level_type": type(parsed).__name__,
+        "schema": _json_schema_of(parsed),
+    }
+    if isinstance(parsed, list):
+        digest["record_count"] = len(parsed)
+    return (json.dumps(digest, indent=2) + "\n").encode("utf-8")
+
+
+def _val_json_digest(input_bytes, output_bytes, output_path, params):
+    try:
+        parsed = json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"digest output is not valid JSON: {e}"
+    if "schema" not in parsed:
+        return False, "digest output is missing the 'schema' key"
+    return True, None
+
+
+_XLSX_NS_MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def _xlsx_cell_column(ref):
+    """'BC12' -> 0-based column index 54. Malformed refs raise."""
+    letters = "".join(ch for ch in ref if ch.isalpha()).upper()
+    if not letters:
+        raise SidecarError(f"malformed cell reference '{ref}' in worksheet")
+    col = 0
+    for ch in letters:
+        col = col * 26 + (ord(ch) - ord("A") + 1)
+    return col - 1
+
+
+def _xlsx_shared_strings(zf):
+    try:
+        data = zf.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = xml.etree.ElementTree.fromstring(data)
+    strings = []
+    for si in root:
+        # A shared string is either one <t> or a series of rich-text <r>
+        # runs each holding a <t>; concatenating every descendant <t> covers
+        # both shapes.
+        strings.append("".join(t.text or "" for t in si.iter(f"{_XLSX_NS_MAIN}t")))
+    return strings
+
+
+def _xlsx_cell_value(cell, shared):
+    ctype = cell.get("t", "n")
+    if ctype == "inlineStr":
+        return "".join(t.text or "" for t in cell.iter(f"{_XLSX_NS_MAIN}t"))
+    v = cell.find(f"{_XLSX_NS_MAIN}v")
+    if v is None or v.text is None:
+        return None
+    raw = v.text
+    if ctype == "s":
+        try:
+            return shared[int(raw)]
+        except (ValueError, IndexError):
+            raise SidecarError(f"worksheet references shared string #{raw} which does not exist")
+    if ctype == "b":
+        return raw == "1"
+    if ctype in ("str", "e"):  # formula-cached string / error literal
+        return raw
+    try:  # default: number
+        return int(raw) if re.fullmatch(r"-?\d+", raw) else float(raw)
+    except ValueError:
+        return raw
+
+
+def _det_xlsx_extract(input_path, params, instruction, output_path):
+    """xlsx -> JSON {sheet name: [[row values]]} via stdlib zipfile +
+    ElementTree — no openpyxl. Values come back as string/number/bool/null.
+    Known limitation, documented in the README: dates stay as Excel serial
+    numbers (the format lives in styles.xml, which this deliberately does
+    not interpret)."""
+    params = params or {}
+    want = params.get("sheet")
+    try:
+        zf = zipfile.ZipFile(input_path)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise SidecarError(f"input is not a valid .xlsx (zip) file: {e}")
+    with zf:
+        try:
+            wb = xml.etree.ElementTree.fromstring(zf.read("xl/workbook.xml"))
+            rels = xml.etree.ElementTree.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        except (KeyError, xml.etree.ElementTree.ParseError) as e:
+            raise SidecarError(f"input is not a valid .xlsx workbook: {e}")
+        rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+        id_attr = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+        targets = {r.get("Id"): r.get("Target") for r in rels.iter(f"{rel_ns}Relationship")}
+        shared = _xlsx_shared_strings(zf)
+        result = {}
+        sheets = list(wb.iter(f"{_XLSX_NS_MAIN}sheet"))
+        for idx, sheet in enumerate(sheets, start=1):
+            name = sheet.get("name") or f"Sheet{idx}"
+            if want is not None and want != name and want != idx:
+                continue
+            target = targets.get(sheet.get(id_attr), "")
+            # Target may be relative ("worksheets/sheet1.xml") or absolute
+            # ("/xl/worksheets/sheet1.xml") — both are valid OOXML.
+            t = target.lstrip("/")
+            member = t if t.startswith("xl/") else "xl/" + t
+            try:
+                ws = xml.etree.ElementTree.fromstring(zf.read(member))
+            except (KeyError, xml.etree.ElementTree.ParseError) as e:
+                raise SidecarError(f"could not read worksheet '{name}': {e}")
+            rows = []
+            for row in ws.iter(f"{_XLSX_NS_MAIN}row"):
+                # Entirely-empty rows have no <row> element at all; pad with
+                # [] so output index i really is spreadsheet row i+1.
+                row_ref = row.get("r")
+                if row_ref and row_ref.isdigit():
+                    while len(rows) < int(row_ref) - 1:
+                        rows.append([])
+                values = []
+                for cell in row.iter(f"{_XLSX_NS_MAIN}c"):
+                    ref = cell.get("r")
+                    if ref:
+                        col = _xlsx_cell_column(ref)
+                        while len(values) < col:
+                            values.append(None)
+                    values.append(_xlsx_cell_value(cell, shared))
+                rows.append(values)
+            result[name] = rows
+    if not result:
+        raise SidecarError(
+            f"no matching sheet — params.sheet was {want!r}, workbook has "
+            f"{[s.get('name') for s in sheets]}"
+        )
+    return (json.dumps(result, indent=2) + "\n").encode("utf-8")
+
+
+def _val_xlsx_extract(input_path, output_bytes, output_path, params):
+    try:
+        parsed = json.loads(output_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return False, f"output is not valid JSON: {e}"
+    if not isinstance(parsed, dict) or not parsed:
+        return False, "output must be a non-empty JSON object of sheets"
+    return True, None
+
+
 OPERATIONS = {
     # LLM-backed — need judgment about the input's meaning; validators catch
     # format failures only, per the trust boundary documented in the README.
@@ -1621,6 +2444,96 @@ OPERATIONS = {
         "default_tier": "deep",
         "system_prompt": _prompt_summarize,
         "validate": _validate_summarize,
+    },
+    # Digest family — log/output triage into a fixed JSON envelope. Bulk
+    # text, so they default to the local fast tier; pass tier="flash" when
+    # the input outgrows local num_ctx (Gemini takes ~1M tokens).
+    "triage_ci_log": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_triage_ci_log,
+        "validate": _validate_triage_ci_log,
+    },
+    "summarize_test_run": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_summarize_test_run,
+        "validate": _validate_summarize_test_run,
+    },
+    "triage_service_log": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_triage_service_log,
+        "validate": _validate_triage_service_log,
+    },
+    "digest_task_output": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_digest_task_output,
+        "validate": _validate_digest_task_output,
+    },
+    "digest_review_comments": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_digest_review_comments,
+        "validate": _validate_digest_review_comments,
+    },
+    "security_scan_digest": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_security_scan_digest,
+        "validate": _validate_security_scan_digest,
+    },
+    # Drafting family — the input is cheap (a diff/log) but the output would
+    # otherwise be Claude's own expensive generated tokens.
+    "draft_commit_message": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_draft_commit_message,
+        "validate": _validate_draft_commit_message,
+    },
+    "draft_pr_body": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_draft_pr_body,
+        "validate": _validate_draft_pr_body,
+    },
+    "changelog_from_commits": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "system_prompt": _prompt_changelog_from_commits,
+        "validate": _validate_changelog_from_commits,
+    },
+    "html_extract": {
+        "kind": "llm",
+        "default_tier": "fast",
+        "requires_instruction": True,
+        "system_prompt": _prompt_html_extract,
+        "validate": _validate_html_extract,
+    },
+    # Media family — vision, so agy tiers only (local text models can't take
+    # these at all); the file goes to the model by path, never inlined.
+    "describe_image": {
+        "kind": "llm",
+        "default_tier": "flash",
+        "media": True,
+        "system_prompt": _prompt_describe_image,
+        "validate": _validate_describe_image,
+    },
+    "verify_screenshot": {
+        "kind": "llm",
+        "default_tier": "flash",
+        "media": True,
+        "requires_instruction": True,
+        "system_prompt": _prompt_verify_screenshot,
+        "validate": _validate_verify_screenshot,
+    },
+    "pdf_to_structured": {
+        "kind": "llm",
+        "default_tier": "flash",
+        "media": True,
+        "system_prompt": _prompt_pdf_to_structured,
+        "validate": _validate_pdf_to_structured,
     },
     # Deterministic — pure Python, no Ollama call, no network round-trip.
     "dedupe_lines": {
@@ -1739,6 +2652,17 @@ OPERATIONS = {
         "transform": _det_sqlite_dump_to_json,
         "validate": _val_sqlite_to_json,
     },
+    "json_digest": {
+        "kind": "deterministic",
+        "transform": _det_json_digest,
+        "validate": _val_json_digest,
+    },
+    "xlsx_extract": {
+        "kind": "deterministic",
+        "reads_own_input": True,
+        "transform": _det_xlsx_extract,
+        "validate": _val_xlsx_extract,
+    },
 }
 
 # Pre-0.3.0 names, kept working so existing transcripts/muscle memory don't
@@ -1759,29 +2683,31 @@ ALL_OPERATION_NAMES = sorted(list(OPERATIONS.keys()) + ["split_file", "merge_fil
 TOOL_DEFINITION = {
     "name": "process_local_file",
     "description": (
-        "Run a text transform on a local file, entirely on this machine, when "
-        "jq/Python can't express it as one deterministic pass. Only file paths "
-        "and an operation name are exchanged — file contents never enter the "
-        "assistant's context, and the response never contains file content, "
-        "only a small status payload. If the transform IS a fixed rule (pick "
-        "columns, dedupe, sort, slice, decode, hash, reformat by a known "
-        "schema, convert between structured formats), prefer this tool's "
-        "deterministic operations or a plain jq/Python one-liner run via Bash "
-        "— both are strictly better than a model call: deterministic, "
-        "instant, free, verifiable. Reach for the 'llm' operations "
-        "(extract_json, convert_format, clean_text, redact_secrets, "
-        "summarize) only when the input is genuinely too irregular for a "
-        "fixed rule and interpreting it needs judgment. LLM operations route "
-        "between two Ollama endpoints: 'deep' (bigger model, slower — "
-        "judgment-heavy, low-volume work) and 'fast' (smaller model, high "
-        "token throughput — bulk transforms); each operation has a sensible "
-        "default and the 'tier' argument overrides it. The built-in "
-        "validators catch FORMAT failures (bad JSON, ragged CSV, gross "
-        "truncation or record-loss) — they do NOT verify content is "
-        "semantically correct, so a wrong-but-well-formed output can still "
-        "report 'success'. For tasks where subtle content fidelity matters, "
-        "spot-check the output file directly instead of trusting a bare "
-        "'success' status."
+        "Offload a file transform/digest so its contents never enter the "
+        "assistant's context — only file paths, an operation name, and a "
+        "small status payload are exchanged. If the transform IS a fixed "
+        "rule (pick columns, dedupe, sort, slice, decode, hash, reformat by "
+        "a known schema, convert between structured formats), prefer this "
+        "tool's deterministic operations or a plain jq/Python one-liner run "
+        "via Bash — deterministic, instant, free, verifiable. Reach for the "
+        "'llm' operations only when the input genuinely needs judgment "
+        "(triaging a log, extracting messy data, describing a screenshot). "
+        "LLM operations route across four tiers: 'deep' and 'fast' are "
+        "local/LAN Ollama endpoints (private — content stays on the "
+        "machine); 'flash' and 'pro' run Gemini through the operator's "
+        "Google subscription via the agy CLI (content IS sent to Google; "
+        "~1M-token context; the only tiers with vision). Each operation has "
+        "a sensible default tier and the 'tier' argument overrides it. "
+        "Cloud tiers are budget-gated: when the configured per-window call "
+        "budget is spent (or Google has quota-locked the model), the call "
+        "is REJECTED up front with a structured error naming the local "
+        "fallback — expect and handle that by retrying on 'deep'/'fast' or "
+        "telling the user. The built-in validators catch FORMAT failures "
+        "(bad JSON, ragged CSV, gross truncation or record-loss) — they do "
+        "NOT verify content is semantically correct, so a "
+        "wrong-but-well-formed output can still report 'success'. For tasks "
+        "where subtle content fidelity matters, spot-check the output file "
+        "directly instead of trusting a bare 'success' status."
     ),
     "inputSchema": {
         "type": "object",
@@ -1827,6 +2753,40 @@ TOOL_DEFINITION = {
                     "tokens [llm, deep]. "
                     "summarize: write a concise factual summary of the input "
                     "[llm, deep]. "
+                    "triage_ci_log: CI/build log -> JSON failure triage "
+                    "(verdict, error_class, failing_step, error_excerpt, "
+                    "summary) [llm, fast]. "
+                    "summarize_test_run: test-runner output -> JSON "
+                    "pass/fail counts + failures clustered by root cause "
+                    "[llm, fast]. "
+                    "triage_service_log: service/app log -> JSON health "
+                    "verdict, deduplicated error families, anomaly window "
+                    "[llm, fast]. "
+                    "digest_task_output: agent/background-task output or "
+                    "journal -> JSON state/last_action/blockers [llm, fast]. "
+                    "digest_review_comments: code-review comments -> JSON "
+                    "actionable-vs-nits fix checklist [llm, fast]. "
+                    "security_scan_digest: scanner report -> JSON "
+                    "critical/high/fixable findings [llm, fast]. "
+                    "draft_commit_message: git diff -> conventional commit "
+                    "message [llm, fast]. "
+                    "draft_pr_body: diff/commit log -> markdown PR "
+                    "description with Summary and Changes sections [llm, "
+                    "fast]. "
+                    "changelog_from_commits: commit log -> grouped markdown "
+                    "release notes [llm, fast]. "
+                    "html_extract: question-guided extraction from "
+                    "HTML/CSS/XML markup; instruction REQUIRED (the "
+                    "question) [llm, fast]. "
+                    "describe_image: image file -> precise text description "
+                    "with exact text transcription [llm, flash — vision, "
+                    "cloud only]. "
+                    "verify_screenshot: screenshot + assertion -> JSON "
+                    "{pass, observed, mismatches}; instruction REQUIRED "
+                    "(the assertion) [llm, flash — vision, cloud only]. "
+                    "pdf_to_structured: PDF (incl. scanned) -> structured "
+                    "JSON mirroring the document [llm, flash — vision, "
+                    "cloud only]. "
                     "yaml_to_json: parse YAML input into JSON [deterministic "
                     "via yq when installed, else llm fast]. "
                     "json_to_yaml: convert JSON to YAML [local; requires yq]. "
@@ -1876,6 +2836,12 @@ TOOL_DEFINITION = {
                     "JSON [local]. "
                     "sqlite_to_json: dump a sqlite database's tables to "
                     "JSON [local; params.tables (optional allowlist)]. "
+                    "json_digest: summarize a big JSON file's shape — "
+                    "schema, key/record counts, truncated samples — without "
+                    "reproducing the data [local]. "
+                    "xlsx_extract: Excel .xlsx -> JSON {sheet: [[rows]]} "
+                    "[local; params.sheet (optional name or 1-based index); "
+                    "dates stay Excel serial numbers]. "
                     "split_file: split input_path into numbered chunk files "
                     "inside the output_path directory [local; params."
                     "lines_per_chunk or params.num_chunks, one required]. "
@@ -1885,17 +2851,24 @@ TOOL_DEFINITION = {
             },
             "tier": {
                 "type": "string",
-                "enum": ["deep", "fast"],
+                "enum": ["deep", "fast", "flash", "pro"],
                 "description": (
-                    "LLM operations only: which Ollama endpoint to use. "
-                    "'deep' = the primary endpoint (largest model, low "
-                    "throughput — judgment-heavy, low-volume work). 'fast' = "
-                    "the secondary endpoint (smaller model, high token "
-                    "throughput — bulk transforms with large outputs). Omit to "
-                    "use the operation's default (shown in the operation "
-                    "descriptions). If the chosen endpoint is unreachable and "
-                    "the other tier points at a different host, the call "
-                    "automatically fails over and reports it. Ignored by "
+                    "LLM operations only: which engine/model to use. "
+                    "'deep' = primary local Ollama endpoint (largest local "
+                    "model — judgment-heavy, low-volume work; private). "
+                    "'fast' = secondary local Ollama endpoint (high token "
+                    "throughput — bulk transforms; private). "
+                    "'flash' = Gemini Flash via the agy CLI (frontier-class, "
+                    "~1M-token context, vision; sends content to Google; "
+                    "budget-gated). "
+                    "'pro' = Gemini Pro via agy (highest quality; SCARCE "
+                    "weekly subscription quota — explicit opt-in only, never "
+                    "an operation default; budget-gated). "
+                    "Omit to use the operation's default (shown in the "
+                    "operation descriptions). If a local endpoint is "
+                    "unreachable and the other local tier is a different "
+                    "host, the call fails over and reports it; failover "
+                    "never crosses the local/cloud boundary. Ignored by "
                     "deterministic operations."
                 ),
             },
@@ -2119,56 +3092,110 @@ def handle_process_local_file(args):
         tier_name = args.get("tier") or op.get("default_tier", "deep")
         if tier_name not in LLM_TIERS:
             return error_payload(f"tier must be one of {list(LLM_TIERS)}, got '{tier_name}'")
+        if op.get("requires_instruction") and not instruction.strip():
+            return error_payload(
+                f"operation '{operation}' requires an instruction — it is the "
+                "question/assertion the model answers"
+            )
         cfg = resolve_tier(tier_name)
+        is_media = bool(op.get("media"))
+        if is_media and cfg["engine"] != "agy":
+            return error_payload(
+                f"operation '{operation}' needs a vision model — use tier "
+                "'flash' (its default) or 'pro'. The local Ollama tiers are "
+                "text-only."
+            )
 
-        try:
-            with open(input_real, "r", encoding="utf-8", errors="replace") as f:
-                input_text = f.read()
-        except OSError as e:
-            return error_payload(f"failed to read input_path: {e}")
-
-        if not input_text.strip():
-            return error_payload("input file is empty")
+        if is_media:
+            # Image/PDF bytes are never decoded or inlined; agy reads the
+            # file itself. Only existence/size are checked here.
+            try:
+                input_byte_count = os.path.getsize(input_real)
+            except OSError as e:
+                return error_payload(f"failed to stat input_path: {e}")
+            if input_byte_count == 0:
+                return error_payload("input file is empty")
+            input_text = ""
+        else:
+            try:
+                with open(input_real, "r", encoding="utf-8", errors="replace") as f:
+                    input_text = f.read()
+            except OSError as e:
+                return error_payload(f"failed to read input_path: {e}")
+            if not input_text.strip():
+                return error_payload("input file is empty")
+            input_byte_count = len(input_text.encode("utf-8"))
 
         system_prompt = op["system_prompt"](instruction, output_real)
-        budget = max_input_tokens_for(system_prompt, cfg["num_ctx"])
         input_tokens = estimate_tokens(input_text)
-        if input_tokens > budget:
-            return error_payload(
-                f"input too large for the current context budget: ~{input_tokens} "
-                f"estimated tokens exceeds the ~{budget}-token ceiling for "
-                f"num_ctx={cfg['num_ctx']} (tier '{tier_name}'). Split the file into "
-                "smaller chunks and process each separately."
-            )
-
         fell_back_from = None
-        try:
-            result = call_ollama(cfg, system_prompt, input_text)
-        except OllamaError as e:
-            other = resolve_tier("fast" if tier_name == "deep" else "deep")
-            if not (e.unreachable and other["host"] != cfg["host"]):
-                return error_payload(str(e))
-            # The chosen endpoint is down but the other tier is a different
-            # host — fail over rather than fail, and say so in the payload.
-            if input_tokens > max_input_tokens_for(system_prompt, other["num_ctx"]):
+
+        if cfg["engine"] == "agy":
+            # THE quota gate: reject before spawning agy, never after.
+            ok, reason, usage = check_cloud_budget(cfg)
+            if not ok:
                 return error_payload(
-                    f"{e} — and the input is too large for the {other['tier']} "
-                    "tier's num_ctx, so no failover was possible"
+                    reason,
+                    extra={"quota_usage": usage, "quota_caps": cfg["caps"]},
+                )
+            if not is_media and input_tokens > max_input_tokens_for(system_prompt, cfg["num_ctx"]):
+                return error_payload(
+                    f"input too large even for the cloud tier's context budget "
+                    f"(~{input_tokens} estimated tokens, num_ctx={cfg['num_ctx']}). "
+                    "Split the file into smaller chunks."
                 )
             try:
-                result = call_ollama(other, system_prompt, input_text)
-            except OllamaError as e2:
-                return error_payload(f"both tiers failed — {tier_name}: {e}; {other['tier']}: {e2}")
-            fell_back_from, cfg = tier_name, other
+                if is_media or input_byte_count > AGY_INLINE_LIMIT_BYTES:
+                    output_text = call_agy(cfg, system_prompt, input_path=input_real)
+                else:
+                    output_text = call_agy(cfg, system_prompt, input_text=input_text)
+            except AgyError as e:
+                # No automatic cloud->local failover: a text op CAN be
+                # retried on 'deep'/'fast' (the error says so), but silently
+                # substituting a much smaller local model for the one
+                # explicitly requested would be a surprise, and media ops
+                # have nowhere local to go.
+                return error_payload(str(e))
+        else:
+            budget = max_input_tokens_for(system_prompt, cfg["num_ctx"])
+            if input_tokens > budget:
+                return error_payload(
+                    f"input too large for the current context budget: ~{input_tokens} "
+                    f"estimated tokens exceeds the ~{budget}-token ceiling for "
+                    f"num_ctx={cfg['num_ctx']} (tier '{tier_name}'). Split the file into "
+                    "smaller chunks and process each separately, or use tier "
+                    "'flash' (~1M-token context; sends content to Google)."
+                )
 
-        done_reason = result.get("done_reason")
-        if done_reason not in (None, "stop"):
-            return error_payload(
-                f"ollama generation did not complete cleanly (done_reason={done_reason}) "
-                "— output is likely truncated. Try a smaller input or a larger num_ctx."
-            )
+            try:
+                result = call_ollama(cfg, system_prompt, input_text)
+            except OllamaError as e:
+                other = resolve_tier("fast" if tier_name == "deep" else "deep")
+                if not (e.unreachable and other["host"] != cfg["host"]):
+                    return error_payload(str(e))
+                # The chosen endpoint is down but the other local tier is a
+                # different host — fail over rather than fail, and say so in
+                # the payload. Failover never crosses the local/cloud
+                # boundary in either direction.
+                if input_tokens > max_input_tokens_for(system_prompt, other["num_ctx"]):
+                    return error_payload(
+                        f"{e} — and the input is too large for the {other['tier']} "
+                        "tier's num_ctx, so no failover was possible"
+                    )
+                try:
+                    result = call_ollama(other, system_prompt, input_text)
+                except OllamaError as e2:
+                    return error_payload(f"both tiers failed — {tier_name}: {e}; {other['tier']}: {e2}")
+                fell_back_from, cfg = tier_name, other
 
-        output_text = result.get("response", "")
+            done_reason = result.get("done_reason")
+            if done_reason not in (None, "stop"):
+                return error_payload(
+                    f"ollama generation did not complete cleanly (done_reason={done_reason}) "
+                    "— output is likely truncated. Try a smaller input or a larger num_ctx."
+                )
+            output_text = result.get("response", "")
+
         ok, reason = op["validate"](input_text, output_text, output_real, instruction)
         if not ok:
             reject_path = output_real + ".rejected"
@@ -2195,12 +3222,17 @@ def handle_process_local_file(args):
             "message": f"processed '{operation}' -> {write_path}",
             "operation": operation,
             "tier": cfg["tier"],
+            "engine": cfg["engine"],
             "model": cfg["model"],
-            "host": cfg["host"],
-            "input_bytes": len(input_text.encode("utf-8")),
+            "input_bytes": input_byte_count,
             "output_bytes": len(output_text.encode("utf-8")),
             "output_path": write_path,
         }
+        if cfg["engine"] == "agy":
+            payload["quota_usage"] = quota_usage(load_quota_state(), cfg["model"])
+            payload["quota_caps"] = cfg["caps"]
+        else:
+            payload["host"] = cfg["host"]
         if fell_back_from:
             payload["fell_back_from"] = fell_back_from
         return payload

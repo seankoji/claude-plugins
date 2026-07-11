@@ -36,10 +36,10 @@
       "description": "Apes open-source repos for techniques transferable to your codebase — discovery, ranking, cloning, per-repo analysis, and synthesis run as a real Workflow script, so the orchestrator only sees the fingerprint and final recommendations."
     },
     {
-      "name": "ollama-sidecar",
-      "version": "0.2.0",
-      "source": "./plugins/ollama-sidecar",
-      "description": "MCP tool for file transforms too irregular for jq/Python — routed between two Ollama endpoints (a deep large-model tier and a fast high-throughput tier), or run deterministically in-process where possible, so Claude passes file paths, not content."
+      "name": "offload-sidecar",
+      "version": "0.3.0",
+      "source": "./plugins/offload-sidecar",
+      "description": "MCP tool that offloads file transforms, log triage, and vision tasks so Claude passes file paths, not content — deterministic in-process where possible, else routed across local Ollama tiers (deep/fast, private) or Gemini via the agy CLI (flash/pro, budget-gated so quota exhaustion rejects up front instead of failing mid-call). Formerly ollama-sidecar."
     }
   ]
 }

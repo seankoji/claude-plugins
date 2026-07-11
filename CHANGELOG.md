@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-11
+
+### Changed
+
+- `plugins/offload-sidecar` — Renamed from `ollama-sidecar` (0.3.0): one sidecar for
+  all offloadable work, local or cloud. Added an `agy` (Google Antigravity CLI)
+  engine as two new LLM tiers — `flash` (Gemini Flash: vision, ~1M-token context,
+  bulk cloud work) and `pro` (Gemini Pro: scarce quota, explicit opt-in) — behind a
+  persistent quota gate that rejects cloud calls up front (sliding-window budgets +
+  lockout deadlines parsed from agy output) instead of failing them mid-flight.
+  New operations mined from real session history: `triage_ci_log`,
+  `summarize_test_run`, `triage_service_log`, `digest_task_output`,
+  `digest_review_comments`, `security_scan_digest`, `draft_commit_message`,
+  `draft_pr_body`, `changelog_from_commits`, `html_extract` (LLM);
+  `describe_image`, `verify_screenshot`, `pdf_to_structured` (vision, cloud tiers
+  only); `json_digest`, `xlsx_extract` (deterministic). Existing installs of
+  `ollama-sidecar` keep working but stop receiving updates — reinstall as
+  `offload-sidecar`.
+
 ## [Unreleased] - 2026-07-09
 
 ### Changed
