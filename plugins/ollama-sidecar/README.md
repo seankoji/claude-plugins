@@ -1,45 +1,66 @@
 # ollama-sidecar
 
 **Use this when `jq`/Python can't do the transform in one deterministic pass** — the
-input is too irregular for a fixed rule (messy unstructured text, ad-hoc YAML, "does
-this look like a secret") but still too big or too tedious to worth Claude's own
+input is too irregular for a fixed rule (messy unstructured text, "does this look like
+a secret", "summarize this") but still too big or too tedious to be worth Claude's own
 context budget. For anything a `jq` filter or a short Python script *can* express
 exactly, that's strictly better — deterministic, instant, free, and you can verify it
 yourself — and this plugin's own `deterministic` operations (below) cover the common
-cases of that (dedup, sort, filter, decode, hash, format conversions) with no model
-call at all. Reach for the LLM-backed operations only for the remainder: input that
-genuinely needs judgment about its meaning, not just a mechanical pass.
+cases of that (dedup, sort, filter, slice, decode, hash, and a dozen structured-format
+conversions) with no model call at all. Reach for the LLM-backed operations only for
+the remainder: input that genuinely needs judgment about its meaning.
 
 Either way, Claude exchanges only a file path and an operation name (a few dozen
 tokens) with this plugin's MCP tool, never the file contents. The transform runs
-entirely on your machine; only a small status payload comes back.
+entirely on your machine (or your LAN); only a small status payload comes back.
+
+---
+
+## Two LLM tiers
+
+LLM operations route between two Ollama endpoints, because the right box depends on
+the job:
+
+| Tier | Meant for | Typical hardware | Default operations |
+|---|---|---|---|
+| `deep` | Judgment-heavy, low-volume work where quality matters and slow is fine | The biggest model your local machine can hold (e.g. a 30B on a 36GB MacBook) | `extract_json`, `redact_secrets`, `summarize` |
+| `fast` | Bulk transforms with large outputs, where token throughput matters | A smaller model that fits entirely in a LAN GPU's VRAM (e.g. a MoE 30B-A3B or 20B on a 16GB card) | `clean_text`, `convert_format`, `yaml_to_json` (llm fallback only) |
+
+- Every `fast` setting **falls back to its `deep` value when unset** — with no fast
+  config, both tiers are the same endpoint and this is exactly the old single-endpoint
+  plugin.
+- A per-call `tier` argument overrides any operation's default.
+- **Automatic failover:** if the chosen endpoint is unreachable (host down, laptop off
+  the LAN) and the other tier points at a different host, the call retries there once
+  and reports `fell_back_from` in the payload. HTTP errors (e.g. model not pulled) do
+  *not* fail over — those are real answers from a live server.
+- Timeouts: `deep` 300s, `fast` 120s — a big model on unified memory is slow by
+  design; a fast tier that's slow is misconfigured. (Advanced: `OLLAMA_TIMEOUT` /
+  `OLLAMA_FAST_TIMEOUT` override these, but they're plain env vars on the environment
+  Claude Code launches from, not plugin config settings.)
+- Success payloads name the `tier`, `model`, and `host` that actually served the call.
 
 ---
 
 ## Why
 
-Some tasks (reformatting a log file, extracting messy data into JSON, converting
-between formats) don't need Claude's judgment — they need a mechanical pass, and
-passing 10,000 lines through Claude's context costs real input *and* output tokens for
-no benefit. But "mechanical" is doing a lot of work in that sentence: if the pass is
-truly rule-based, `jq`/Python already solves it strictly better than a model call —
-deterministic, instant, free, and verifiable — and Claude can write and run that
-one-liner via Bash without the file's contents ever entering context either. This
-plugin's own local Python `deterministic` operations exist for exactly that reason: no
-model in the loop, so `"success"` means the documented algorithm ran on the whole
-input.
+Some tasks (reformatting a log file, extracting messy data into JSON, summarizing)
+don't need Claude's judgment — they need a mechanical pass, and passing 10,000 lines
+through Claude's context costs real input *and* output tokens for no benefit. But
+"mechanical" is doing a lot of work in that sentence: if the pass is truly rule-based,
+`jq`/Python already solves it strictly better than a model call, and Claude can write
+and run that one-liner via Bash without the file's contents ever entering context
+either. This plugin's local Python `deterministic` operations exist for exactly that
+reason: no model in the loop, so `"success"` means the documented algorithm ran on the
+whole input.
 
 The narrower, real niche is input irregular enough that no fixed rule covers it — but
 still too large, too repetitive, or too low-stakes to spend Claude's own judgment on
-one file at a time. For that slice, this plugin gives Claude a `process_local_file`
-tool that:
+one file at a time. For that slice, the `process_local_file` tool:
 
 1. Reads the input file directly from disk.
-2. Runs the requested operation — either as pure local Python (deterministic
-   operations: dedup, sort, filter, decode, hash, and a handful of stdlib-backed format
-   conversions) or by sending it to your local/LAN Ollama model with a strict,
-   operation-specific prompt (LLM operations: anything that needs judgment about the
-   input's meaning).
+2. Runs the requested operation — pure local Python, `yq` for the YAML pair, or the
+   configured Ollama model on the tier the operation defaults to.
 3. **Validates the output before writing it** — a botched transform (malformed JSON,
    ragged CSV, gross truncation, a record count that doesn't add up) surfaces as
    `status: "error"`, not a false "success".
@@ -50,22 +71,24 @@ LLM-backed operations especially, they catch a model that returns broken JSON or
 most of the records; they do **not** verify that field values are semantically correct.
 For tasks where subtle content fidelity matters, spot-check the output file yourself
 rather than trusting a bare `"success"`. Deterministic operations have a stronger
-guarantee — there's no model in the loop, so "success" means the documented algorithm
-ran on the whole input — but they're still only as correct as the fixed rules they
-implement (see each operation's limitations below).
+guarantee — there's no model in the loop — but they're still only as correct as the
+fixed rules they implement (see each operation's limitations below).
 
 ---
 
 ## Prerequisites
 
-- `python3` on PATH (standard library only — nothing to `pip install`).
-- A reachable Ollama instance with the configured model already pulled
-  (`ollama pull qwen2.5-coder:14b` or whatever model you configure).
+- `python3` on PATH (standard library only — nothing to `pip install`; `toml_to_json`
+  needs Python 3.11+).
+- A reachable Ollama instance with the configured model(s) already pulled — only for
+  the LLM operations; everything deterministic runs without one.
+- Optional: [`yq`](https://github.com/mikefarah/yq) (`brew install yq`). With it,
+  `yaml_to_json` runs deterministically (no model at all) and `json_to_yaml` becomes
+  available; without it, `yaml_to_json` falls back to the llm path and `json_to_yaml`
+  errors with an install hint.
 
 No build step, no Node, no dependencies. The server is one file:
-`scripts/ollama_sidecar.py`, invoked as `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ollama_sidecar.py`
-via this plugin's `.mcp.json`. That file *is* the runtime artifact — there's nothing to
-compile or bundle.
+`scripts/ollama_sidecar.py`, invoked via this plugin's `.mcp.json`.
 
 ---
 
@@ -80,43 +103,43 @@ You'll be prompted for the plugin's config (or accept the defaults):
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `ollama_host` | `http://localhost:11434` | Base URL of the Ollama server. Point this at your LAN PC (e.g. `http://your-pc.local:11434`) to offload to a more powerful machine — no code change needed. |
-| `ollama_model` | `qwen2.5-coder:14b` | Model tag. Must already be pulled on the target instance. |
-| `num_ctx` | `16384` | Context window passed to Ollama. Raise it if you have the VRAM and need to process larger files. |
+| `ollama_host` | `http://localhost:11434` | **Deep tier** — primary Ollama server. Run the biggest model this box can hold. |
+| `ollama_model` | `qwen3:14b` | Deep tier model tag. Must already be pulled there. |
+| `num_ctx` | `16384` | Deep tier context window. |
+| `fast_ollama_host` | *(unset → deep)* | **Fast tier** — optional second server for high-throughput bulk work, e.g. `http://your-pc.local:11434`. |
+| `fast_ollama_model` | *(unset → deep)* | Fast tier model tag — smaller/faster, fully GPU-resident. |
+| `fast_num_ctx` | *(unset → deep)* | Fast tier context window. |
+
+Example split — a MacBook with lots of unified memory plus a gaming PC with a 16GB
+GPU:
+
+```
+ollama_host      = http://localhost:11434       ollama_model      = qwen3-coder:30b
+fast_ollama_host = http://your-pc.local:11434   fast_ollama_model = qwen3-coder:30b-a3b-q4_K_M
+```
 
 Reconfigure any of these later without reinstalling — see `claude plugin` config
 commands for your Claude Code version.
 
+**Upgrade note (0.2.0):** the default `ollama_model` changed from `qwen2.5-coder:14b`
+to `qwen3:14b`. If you relied on the default, either `ollama pull qwen3:14b` or set
+`ollama_model` explicitly — otherwise LLM operations fail with an Ollama HTTP error
+until the model exists.
+
 ---
 
-## Sizing `num_ctx` (LLM operations only — deterministic operations never touch Ollama)
+## Sizing `num_ctx` (LLM operations only)
 
-`num_ctx` is the total token window Ollama allocates for one request — the system
-prompt, your input file, *and* the model's generated output all have to fit inside it.
-This plugin's context-budget guard (see below) reserves roughly half of `num_ctx` for
-output, so as a rule of thumb: **set `num_ctx` to roughly 2× the token size of the
-largest file you expect to process.** ~4 characters per token is a reasonable estimate
-for logs/prose; dense code or JSON runs a bit richer per token.
-
-The trade-off is VRAM: `num_ctx` sizes the KV cache Ollama holds in memory *on top of*
-the model's own weights, and that cost scales with the window size regardless of how
-much of it a given request actually uses — doubling `num_ctx` roughly doubles the
-context window's memory footprint. Set it too high for your GPU and Ollama will fail to
-load the model (or silently fall back to slow CPU/partial offload); set it too low and
-this plugin's budget guard will refuse files that would otherwise process fine.
-
-Starting points — adjust the `num_ctx` userConfig value (a numeric string; default `16384`):
-
-| Situation | Suggested `num_ctx` |
-|---|---|
-| Small files (a few hundred lines), tight VRAM (≤8GB) | `4096`–`8192` |
-| Default — moderate files, mid-range GPU (12–16GB) | `16384` *(default)* |
-| Larger files, GPU with headroom (16GB+, e.g. an RTX 4070 Ti Super) | `32768` |
-| Very large files on a high-VRAM box | `65536`+, if the model and quantization leave room |
-
-If a call fails with `"input too large for the current context budget"`, either raise
-`num_ctx` (if you have the VRAM) or split the input into smaller chunks and process each
-separately — the server refuses up front on purpose rather than silently truncating.
+`num_ctx` is the total token window Ollama allocates for one request — system prompt,
+input file, *and* generated output all have to fit. The context-budget guard reserves
+roughly half of `num_ctx` for output, so as a rule of thumb: **set `num_ctx` to
+roughly 2× the token size of the largest file you expect to process** (~4 chars per
+token for logs/prose). The trade-off is memory: `num_ctx` sizes the KV cache on top of
+the model weights, per tier. Set it too high and Ollama fails to load the model or
+silently spills to CPU; too low and the budget guard refuses files that would process
+fine. If a call fails with `"input too large for the current context budget"`, raise
+that tier's `num_ctx` or `split_file` the input — the server refuses up front on
+purpose rather than silently truncating.
 
 ---
 
@@ -127,100 +150,99 @@ separately — the server refuses up front on purpose rather than silently trunc
   "input_path": "logs/raw.txt",
   "output_path": "logs/clean.json",
   "operation": "extract_json",
+  "tier": "deep",
   "instruction": "optional extra guidance for LLM operations",
-  "params": {"...": "optional operation-specific parameters for deterministic operations"},
+  "params": {"...": "operation-specific parameters for deterministic operations"},
   "overwrite": false
 }
 ```
 
 - `input_path` / `output_path` — absolute or relative to the project root; must resolve
   **inside** the project directory (the server refuses anything that escapes it, and
-  refuses to write through a symlinked `output_path` — dangling or not — so a link can't
-  be used to redirect a write outside the project). `merge_files` uses `input_paths`
-  (a list) instead; `split_file` treats `output_path` as an existing directory.
-- `instruction` — free-text extra guidance, used only by the 5 LLM-backed operations.
-- `params` — an object of operation-specific parameters, used only by deterministic
-  operations and by `split_file`/`merge_files`. See each operation below.
-- `overwrite` — if the target already exists and this isn't `true`, the result is
-  written to `<output_path>.new` instead of clobbering it (and a second run without
-  `overwrite` errors rather than clobbering that `.new` file too).
-- On validation failure, the rejected output is written to `<output_path>.rejected` for
-  inspection, and the file you asked for is left untouched.
+  refuses to write through a symlinked `output_path` — dangling or not). `merge_files`
+  uses `input_paths` (a list) instead; `split_file` treats `output_path` as an existing
+  directory.
+- `tier` — LLM operations only: `"deep"` or `"fast"`, overriding the operation's
+  default (see the tiers table above).
+- `instruction` — free-text extra guidance, LLM operations only.
+- `params` — operation-specific parameters, deterministic operations only.
+- `overwrite` — if the target exists and this isn't `true`, the result is written to
+  `<output_path>.new` instead of clobbering (and a second run errors rather than
+  clobbering that `.new` too).
+- On validation failure, the rejected output is written to `<output_path>.rejected`
+  for inspection, and the file you asked for is left untouched.
 
-### LLM-backed operations (call your configured Ollama model)
+### LLM-backed operations
 
-| Operation | What it does | What the validator checks |
-|---|---|---|
-| `extract_json` | Pulls messy/unstructured input into JSON. | Output parses as JSON; a record-count heuristic flags gross record-dropping (checks count, not per-record correctness). **Limitation:** the heuristic counts non-blank input *lines*, so it only bounds record loss for line-oriented input (logs, JSONL). A single-line input holding many records (minified JSON/CSV) isn't protected by it. |
-| `convert_format` | Converts to the format implied by `output_path`'s extension. | `.json` → must parse as JSON. `.csv` → parses via the stdlib `csv` module with consistent column counts across all rows. Only `.json`/`.csv` are supported (stdlib-only, no bundled YAML parser) — checked up front from the extension, before the model is even called. |
-| `clean_text` | Cleanup/reformatting (strip markup, normalize whitespace) per `instruction`. | Non-empty, and an output/input size-ratio bound (0.15–4.0×) to catch gross truncation or runaway generation. **Weak guarantee** — a ratio check can't catch subtle content changes. |
-| `yaml_to_json` | Parses YAML input into JSON. There's no stdlib YAML parser to convert with or double-check against, so — unlike `convert_format` — this always goes through the model, in both directions. | Output parses as JSON. Same weak-content-fidelity caveat as `extract_json`: a structurally-valid-but-wrong translation would still pass. |
-| `redact_secrets` | Finds values that look like credentials/API keys/tokens/private keys and replaces each with `[REDACTED]`. | Non-empty; a size-ratio bound (0.1–2.0×, wider than `clean_text`'s because a correct redaction can shrink a small, mostly-secret file a lot); and a scan for several well-known secret shapes (`sk-...`, `gh?_...`, `AKIA...`, `AIza...`, `xox?-...`, PEM private key headers) that must NOT survive in the output. **This is a safety net, not a guarantee** — it only catches known shapes and only bounds gross failure, not whether every real secret was actually found. Spot-check before sharing anything redacted this way. |
+| Operation | Tier | What it does | What the validator checks |
+|---|---|---|---|
+| `extract_json` | deep | Pulls messy/unstructured input into JSON. | Parses as JSON; a record-count heuristic flags gross record-dropping. **Limitation:** counts non-blank input *lines*, so single-line inputs holding many records aren't protected. |
+| `convert_format` | fast | Converts to the format implied by `output_path`'s extension. | `.json` parses; `.csv` parses with consistent column counts. Only `.json`/`.csv`, checked before the model is called. |
+| `clean_text` | fast | Cleanup/reformatting (strip markup, normalize whitespace) per `instruction`. | Non-empty; output/input size ratio in [0.15, 4.0]. **Weak guarantee** — can't catch subtle content changes. |
+| `redact_secrets` | deep | Replaces credential/API-key/token-looking values with `[REDACTED]`. | Non-empty; size ratio in [0.1, 2.0]; known secret shapes (`sk-…`, `gh?_…`, `AKIA…`, `AIza…`, `xox?-…`, PEM headers) must NOT survive. **A safety net, not a guarantee** — spot-check before sharing. |
+| `summarize` | deep | Concise factual summary of the input. | Non-empty; for inputs >4000 chars the summary must be smaller than the input. Content fidelity is on the model. |
+| `yaml_to_json` | fast *(llm fallback only)* | With `yq` installed this never touches a model — see the deterministic table. | Output parses as JSON. |
 
-Every LLM operation also has a hard context-budget guard: if the estimated input size
-would leave no room for the model's system prompt *and* output within `num_ctx`, the
-call is refused up front with a message telling you to split the file, rather than
-silently truncating.
+Every LLM operation has a hard context-budget guard: if the estimated input wouldn't
+leave room for the system prompt *and* output within the tier's `num_ctx`, the call is
+refused up front with a message telling you to split the file.
 
-### Deterministic operations (pure local Python — no Ollama call, no network)
-
-These run instantly, need no Ollama instance, and give a stronger guarantee: there's no
-model in the loop, so a `"success"` means the documented algorithm ran correctly on the
-whole input — not just that the output happened to look right.
+### Deterministic operations (no model in the loop)
 
 | Operation | What it does | `params` | Validator / limitation |
 |---|---|---|---|
-| `dedupe_lines` | Removes duplicate lines, keeping the first occurrence, preserving order. | `case_insensitive` (bool) | Fails if the output somehow has *more* lines than the input. |
-| `sort_lines` | Sorts lines. | `numeric`, `reverse`, `unique`, `case_insensitive` (all bool) | Line count must match input exactly, unless `unique` is set (then it must not exceed it). |
-| `filter_lines` | Keeps or drops lines matching a pattern, with optional lines of context around each match (like `grep`). | `pattern` (required), `mode`: `"include"` \| `"exclude"` (default `include`), `regex` (bool), `case_insensitive` (bool), `context_before`/`context_after` (int) | Fails if filtering somehow added lines. |
-| `base64_decode` | Decodes base64 text to raw bytes. | `url_safe` (bool) | Fails on malformed base64, or if a non-empty input decoded to nothing. |
-| `hash_file` | Computes a checksum of the input file, written as `{"algorithm", "hexdigest", "input_bytes"}` JSON. | `algorithm`: `sha256` (default) \| `sha1` \| `md5` \| `sha512` | Output must be JSON with a `hexdigest` key. |
-| `strip_ansi_codes` | Removes ANSI terminal escape sequences (colors, cursor movement). | — | Only strips CSI sequences (the common case) — not every obscure escape family (OSC, DCS, ...). Fails if any CSI sequence survives. |
-| `normalize_log_timestamps` | Rewrites recognized timestamp formats (Apache/NCSA combined log, US-style `MM/DD/YYYY HH:MM:SS`, syslog `Mon DD HH:MM:SS`) to ISO 8601. | — | **Known-formats only** — a fixed pattern library, not a general date parser; anything it doesn't recognize passes through unchanged rather than erroring. Validator requires line count to stay exactly the same (it's a substitution, never adds/drops lines). |
-| `extract_field_list` | Projects a subset of fields from already-structured JSON (array of objects) or CSV input into JSON or CSV output — a mechanical "pick these columns." | `fields` (required list of field name strings) | Requires `output_path` to end in `.json` or `.csv`. Input must already be structured — and since `csv.DictReader` will happily "parse" arbitrary text as a degenerate single-column CSV, the operation additionally requires at least one requested field to actually appear as a key somewhere in the parsed input, or it errors rather than silently emitting an all-null projection. |
-| `plist_to_json` | Converts an XML or binary macOS plist to JSON (via the stdlib `plistlib`). | — | Plist `data` values become base64 strings, `date` values become ISO 8601 strings, in the JSON output. Fails if the input isn't a valid plist. |
-| `sqlite_dump_to_json` | Dumps a sqlite database's tables to JSON (`{table_name: [rows...]}`), opened read-only. | `tables` (optional list — allowlist of table names to include; default is all user tables) | Fails if the input isn't a valid sqlite database. |
-| `split_file` | Splits `input_path` into numbered chunk files (`<stem>.partNNN<ext>`) written into the `output_path` directory, which must already exist. | `lines_per_chunk` **or** `num_chunks` (int, exactly one required) | Returns `chunk_paths` (a list) instead of a single `output_path` result. |
-| `merge_files` | Concatenates `input_paths` (a list, ≥2 entries, used instead of `input_path`) into `output_path`. | `separator` (string, default `"\n"`) | Fails if the merged output ends up smaller than the sum of the inputs (a sign something went wrong writing it). |
+| `dedupe_lines` | Removes duplicate lines, keeping first occurrence, order preserved. | `case_insensitive` | Output can't have more lines than input. |
+| `sort_lines` | Sorts lines. | `numeric`, `reverse`, `unique`, `case_insensitive` | Line count must match input (unless `unique`). |
+| `filter_lines` | grep-like keep/drop with optional context lines. | `pattern` (required), `mode` `include`\|`exclude`, `regex`, `case_insensitive`, `context_before`/`context_after` | Filtering can't add lines. |
+| `slice_lines` | head / tail / line-range, like `sed -n`. | exactly one of `head`, `tail`, or `start`/`end` (1-based, inclusive) | Slice can't add lines; errors if it selects nothing. |
+| `regex_replace` | sed-like regex substitution (Python `re` syntax). | `pattern` (required), `replacement` (default `""`), `count` (0 = all), `case_insensitive`, `multiline`, `dotall` | Nothing structural to verify — the replacement may legitimately change anything. |
+| `base64_decode` / `base64_encode` | Base64 ↔ raw bytes. | `url_safe` | Decode: fails on malformed input. Encode: output must decode back to the exact input bytes. |
+| `hash_file` | Checksum as `{"algorithm","hexdigest","input_bytes"}` JSON. | `algorithm`: `sha256` (default) \| `sha1` \| `md5` \| `sha512` | Output JSON has `hexdigest`. |
+| `text_stats` | `wc`-style counts as JSON: bytes, chars, lines, non-blank lines, words, max line length. | — | Output JSON has the stats fields. |
+| `strip_ansi_codes` | Removes ANSI CSI escape sequences. | — | CSI only (not OSC/DCS); none may survive. |
+| `normalize_log_timestamps` | Rewrites known timestamp formats (Apache/NCSA, US-style, syslog) to ISO 8601. | — | Fixed pattern library — unrecognized formats pass through unchanged. Line count preserved. |
+| `extract_fields` | Projects fields from structured JSON/CSV into JSON or CSV (was `extract_field_list`; old name still accepted). | `fields` (required) | Errors if no requested field appears anywhere (guards against unstructured input "parsing" as CSV). |
+| `json_format` | Pretty-print or minify JSON. | `indent` (default 2), `minify`, `sort_keys` | **Round-trip equality** with the input — the strongest validator here. |
+| `jsonl_to_json` / `json_to_jsonl` | JSON Lines ↔ JSON array. | — | One array element per non-blank line (and vice versa), every line parses. |
+| `csv_to_json` | Header-row CSV → JSON array of row objects. All values stay strings. | `delimiter` (default `,`) | Errors on ragged rows (more fields than headers). BOM-safe. |
+| `json_to_csv` | JSON array of objects → CSV. Nested values become embedded JSON strings. | `fields` (optional column order; default = first-seen order) | Consistent column count across all rows. |
+| `toml_to_json` | TOML → JSON (stdlib `tomllib`, Python 3.11+). Datetimes become strings. | — | Output parses as JSON. |
+| `xml_to_json` | Well-formed XML → JSON: attributes under `@attributes`, text under `#text`, repeated tags become lists. | — | **Lossy for mixed content** (text interleaved with elements keeps only the leading run). |
+| `html_to_text` | Strips HTML to readable plain text; drops `script`/`style`/`head`. | — | Whitespace is normalized (loses `<pre>` formatting). No script/style markup may survive. |
+| `yaml_to_json` | **With `yq` installed:** deterministic yq conversion, payload reports `"engine": "yq"`. Single-document YAML only. | — | Output parses as JSON. |
+| `json_to_yaml` | JSON → YAML via `yq` (required — structured error with install hint without it). | — | **Round-trips back to JSON equal to the input** via yq. |
+| `plist_to_json` | XML or binary macOS plist → JSON (`data`→base64, `date`→ISO 8601). | — | Fails if input isn't a valid plist. |
+| `sqlite_to_json` | Dumps a sqlite DB's tables to JSON, opened read-only (was `sqlite_dump_to_json`; old name still accepted). | `tables` (optional allowlist) | Fails if input isn't a valid sqlite DB. |
+| `split_file` | Splits into numbered chunks (`<stem>.partNNN<ext>`) in the `output_path` directory. | `lines_per_chunk` **or** `num_chunks` | Returns `chunk_paths` (a list). |
+| `merge_files` | Concatenates `input_paths` (≥2) into `output_path`. | `separator` (default `"\n"`) | Merged output can't be smaller than the sum of inputs. |
 
 ### Adding an operation
 
 **LLM-backed:** add an entry to `OPERATIONS` in `scripts/ollama_sidecar.py` with
-`"kind": "llm"`, a prompt-builder function, and a
-`validate(input_text, output_text, output_path, instruction) -> (bool, reason)` function.
+`"kind": "llm"`, a `"default_tier"`, a prompt-builder, and a
+`validate(input_text, output_text, output_path, instruction) -> (bool, reason)`.
 
-**Deterministic:** add an entry with `"kind": "deterministic"`, a
-`transform(input_bytes, params, instruction, output_path) -> output_bytes` function
-(raise `SidecarError` on malformed input), and a
-`validate(input_bytes, output_bytes, output_path, params) -> (bool, reason)` function.
-If the operation needs the real file path rather than pre-read bytes (as
-`sqlite_dump_to_json` does), set `"reads_own_input": True` and accept `input_path` as
-the first argument instead.
+**Deterministic:** `"kind": "deterministic"`, a
+`transform(input_bytes, params, instruction, output_path) -> output_bytes` (raise
+`SidecarError` on malformed input), and a matching `validate` over bytes. Set
+`"reads_own_input": True` to receive the file path instead of bytes (as
+`sqlite_to_json` does). Multi-file shapes (like `split_file`/`merge_files`) get their
+own `handle_<name>` function instead.
 
-**Multi-file shapes** (multiple outputs, like `split_file`, or multiple inputs, like
-`merge_files`) don't fit that single-input/single-output pattern — give them their own
-`handle_<name>` function and branch to it at the top of `handle_process_local_file`,
-same as the existing two.
-
-No build step in any case — just edit `scripts/ollama_sidecar.py` and it's live on the
-next server restart.
+No build step — edit the file and it's live on the next server restart.
 
 ---
 
 ## Failure modes (all return a structured `status: "error"`, never a hang or silent bad write)
 
-- `input_path` missing, empty, or outside the project root (`input_paths` entries, for
-  `merge_files`, are each checked the same way).
-- `output_path`'s parent directory doesn't exist, or resolves outside the project root
-  (for `split_file`, `output_path` itself must be an existing in-root directory).
-- Required or malformed `params` for the operation (e.g. `filter_lines` without
-  `pattern`, `split_file` without `lines_per_chunk`/`num_chunks`).
-- A deterministic operation's input doesn't match what it expects (invalid base64, a
-  non-plist file, a non-sqlite-database file, unstructured input to
-  `extract_field_list`).
-- LLM operations only: Ollama unreachable or times out (120s default); input too large
-  for the configured `num_ctx`; Ollama's generation was cut off (`done_reason` other
-  than `stop`).
+- Paths missing, empty, or escaping the project root; output parent directory missing.
+- Required or malformed `params` (e.g. `filter_lines` without `pattern`).
+- A deterministic operation's input isn't what it expects (invalid base64/CSV/TOML/
+  XML/plist/sqlite, multi-document YAML, unstructured input to `extract_fields`).
+- `json_to_yaml` without `yq` on PATH (the error says `brew install yq`).
+- LLM operations: chosen tier unreachable **and** no different-host tier to fail over
+  to (or both unreachable); input too large for the tier's `num_ctx`; generation cut
+  off (`done_reason` ≠ `stop`); Ollama HTTP errors such as a model that isn't pulled.
 - Output fails its operation's validator (written to `<output_path>.rejected` instead).
 
 ---
