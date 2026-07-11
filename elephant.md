@@ -20,7 +20,7 @@ machines with one command and kept in sync, instead of being copy-pasted into ea
 **What it solves:** Claude Code reads plugins from a *marketplace* — a git repo with a top-level
 `marketplace.json` index pointing at self-contained plugin packages. This repo IS that marketplace. It
 currently ships **6 plugins**: `elephant-goldfish`, `claude-tuneup`, `prompt-builder`, `imps`, `ape`,
-`ollama-sidecar` (`.claude-plugin/marketplace.json:7-45`).
+`offload-sidecar` (`.claude-plugin/marketplace.json:7-45`).
 
 ## The Technical Plan
 
@@ -86,7 +86,7 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 | prompt-builder | Iterative prompt-engineering assistant | `plugins/prompt-builder/` |
 | imps | Swarm orchestrator (parallel model-routed agents) | `plugins/imps/` |
 | ape | OSS-repo foraging for transferable techniques, run as a Workflow script | `plugins/ape/` |
-| ollama-sidecar | MCP file-transform offload to a local/LAN Ollama model | `plugins/ollama-sidecar/` |
+| offload-sidecar | MCP file-transform/vision offload to local Ollama tiers or budget-gated Gemini via agy | `plugins/offload-sidecar/` |
 
 ## Alternatives
 
@@ -205,27 +205,30 @@ Mnemonic: **read from `${CLAUDE_PLUGIN_ROOT}`, write to `~/.claude/`.**
 - Prerequisite: `gh` CLI (discovery + cloning), the Workflow tool; `/ape:forage` dispatches a background
   run, so the command's turn ends before the expedition finishes (`README.md:81-85`).
 
-**ollama-sidecar** — `plugins/ollama-sidecar/`
-- No `commands/` — this plugin ships only an MCP server (`scripts/ollama_sidecar.py`, run via
-  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ollama_sidecar.py` through the plugin's `.mcp.json`) exposing one
-  tool, `process_local_file`, for file transforms too irregular for a fixed `jq`/Python rule
-  (`README.md:1-16,65-68,123-134`).
+**offload-sidecar** — `plugins/offload-sidecar/` (formerly ollama-sidecar)
+- No `commands/` — this plugin ships only an MCP server (`scripts/offload_sidecar.py`, run via
+  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/offload_sidecar.py` through the plugin's `.mcp.json`) exposing one
+  tool, `process_local_file`, for file transforms/digests too irregular for a fixed `jq`/Python rule.
 - Reads `input_path` from disk and writes `output_path` back to disk directly — Claude exchanges only a
-  path and an operation name, never file contents (`README.md:13-15`).
-- Two operation kinds: **deterministic** (pure local Python, no model call — `dedupe_lines`, `sort_lines`,
-  `filter_lines`, `base64_decode`, `hash_file`, `strip_ansi_codes`, `normalize_log_timestamps`,
-  `extract_field_list`, `plist_to_json`, `sqlite_dump_to_json`, `split_file`, `merge_files`) and **LLM**
-  (routed to the configured Ollama model — `extract_json`, `convert_format`, `clean_text`,
-  `yaml_to_json`, `redact_secrets`) (`README.md:150-184`).
+  path and an operation name, never file contents.
+- Two operation kinds: **deterministic** (pure local Python, no model call — line/format ops plus
+  `json_digest`, `xlsx_extract`) and **LLM**, routed across four tiers on two engines: `deep`/`fast`
+  are local/LAN Ollama endpoints (private); `flash`/`pro` are Gemini via the Google Antigravity CLI
+  (`agy`) on the operator's subscription — the only tiers with vision (`describe_image`,
+  `verify_screenshot`, `pdf_to_structured`) and ~1M-token context.
+- Cloud calls are budget-gated up front: sliding-window per-model call budgets plus lockout deadlines
+  parsed from agy's own output live in `~/.local/state/offload-sidecar/quota.json`; an exhausted budget
+  REJECTS the call before agy is spawned, with a structured error naming the local fallback.
 - Every output is validated before it's written (format checks, size-ratio bounds, record-count heuristics,
-  known-secret-shape scans depending on operation); a failed validation writes to
-  `<output_path>.rejected` and leaves the requested file untouched — never a false `"success"`
-  (`README.md:43-55,210-224`).
-- `userConfig` (prompted at install, reconfigurable later): `ollama_host` (default
-  `http://localhost:11434`), `ollama_model` (default `qwen2.5-coder:14b`), `num_ctx` (default `16384`)
-  (`plugin.json` `userConfig`, `README.md:79-119`).
-- Prerequisite: `python3` on PATH (stdlib only); a reachable Ollama instance with the configured model
-  already pulled, needed only for the 5 LLM-backed operations (`README.md:59-68`).
+  required-JSON-key checks for the digest family, known-secret-shape scans depending on operation); a
+  failed validation writes to `<output_path>.rejected` and leaves the requested file untouched — never a
+  false `"success"`.
+- `userConfig` (prompted at install, reconfigurable later): Ollama host/model/num_ctx per local tier,
+  TLS CA bundle, agy binary + flash/pro model names, and the four cloud call-budget caps
+  (`plugin.json` `userConfig`).
+- Prerequisite: `python3` on PATH (stdlib only). A reachable Ollama instance is needed only for
+  local-tier LLM operations; the `agy` CLI (authenticated) only for the flash/pro tiers — each engine
+  degrades independently with a structured error.
 
 ### Add-a-plugin checklist (cite `AGENTS.md:24-32`)
 

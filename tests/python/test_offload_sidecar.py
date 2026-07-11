@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Unit tests for plugins/ollama-sidecar/scripts/ollama_sidecar.py.
+"""Unit tests for plugins/offload-sidecar/scripts/offload_sidecar.py.
 
 Stdlib unittest only — no pytest, no new dependencies. Every test that would
 otherwise touch the network mocks the HTTP layer (`_http_get_json` for the
-status diagnostic, `urllib.request.urlopen` for `call_ollama`) so the suite
-never requires a live Ollama instance.
+status diagnostic, `urllib.request.urlopen` for `call_ollama`) or the
+subprocess layer (`subprocess.run` for `call_agy`) so the suite never
+requires a live Ollama instance or an installed agy binary. Quota tests
+point AGY_QUOTA_STATE at a tempdir so they never touch the real state file.
 
-The module under test is loaded by file path (its directory, "ollama-
+The module under test is loaded by file path (its directory, "offload-
 sidecar", has a hyphen and isn't an importable package name).
 """
 
@@ -22,12 +24,12 @@ from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT_PATH = os.path.join(
-    _HERE, "..", "..", "plugins", "ollama-sidecar", "scripts", "ollama_sidecar.py"
+    _HERE, "..", "..", "plugins", "offload-sidecar", "scripts", "offload_sidecar.py"
 )
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("ollama_sidecar", _SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("offload_sidecar", _SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -871,3 +873,566 @@ class RpcTransportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CloudTierResolutionTest(unittest.TestCase):
+    def test_flash_defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for var in ("AGY_BIN", "AGY_FLASH_MODEL", "AGY_FLASH_PER_5H", "AGY_FLASH_PER_WEEK"):
+                os.environ.pop(var, None)
+            cfg = sidecar.resolve_tier("flash")
+        self.assertEqual(cfg["engine"], "agy")
+        self.assertEqual(cfg["bin"], sidecar.DEFAULT_AGY_BIN)
+        self.assertEqual(cfg["model"], sidecar.DEFAULT_AGY_FLASH_MODEL)
+        self.assertEqual(cfg["caps"]["5h"], sidecar.DEFAULT_FLASH_PER_5H)
+        self.assertEqual(cfg["caps"]["week"], sidecar.DEFAULT_FLASH_PER_WEEK)
+
+    def test_pro_env_overrides(self):
+        env = {
+            "AGY_BIN": "/opt/agy",
+            "AGY_PRO_MODEL": "Gemini 9 Pro",
+            "AGY_PRO_PER_5H": "2",
+            "AGY_PRO_PER_WEEK": "9",
+        }
+        with mock.patch.dict(os.environ, env):
+            cfg = sidecar.resolve_tier("pro")
+        self.assertEqual(cfg["bin"], "/opt/agy")
+        self.assertEqual(cfg["model"], "Gemini 9 Pro")
+        self.assertEqual(cfg["caps"], {"5h": 2, "week": 9})
+
+    def test_local_tiers_report_ollama_engine(self):
+        self.assertEqual(sidecar.resolve_tier("deep")["engine"], "ollama")
+        self.assertEqual(sidecar.resolve_tier("fast")["engine"], "ollama")
+
+
+class QuotaGateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state_path = os.path.join(self.tmp.name, "quota.json")
+        self.env_patch = mock.patch.dict(os.environ, {"AGY_QUOTA_STATE": self.state_path})
+        self.env_patch.start()
+        self.cfg = {
+            "tier": "flash",
+            "engine": "agy",
+            "bin": "agy",
+            "model": "TestFlash",
+            "num_ctx": 1000,
+            "timeout": 5,
+            "caps": {"5h": 3, "week": 5},
+        }
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.tmp.cleanup()
+
+    def _seed(self, timestamps, lockouts=None):
+        with open(self.state_path, "w") as f:
+            json.dump({"calls": {"TestFlash": timestamps}, "lockouts": lockouts or {}}, f)
+
+    def test_allows_under_cap(self):
+        import time as _time
+
+        self._seed([_time.time() - 60])
+        ok, reason, usage = sidecar.check_cloud_budget(self.cfg)
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(usage["5h"], 1)
+
+    def test_rejects_at_5h_cap(self):
+        import time as _time
+
+        now = _time.time()
+        self._seed([now - 10, now - 20, now - 30])
+        ok, reason, usage = sidecar.check_cloud_budget(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("budget exhausted", reason)
+        self.assertIn("5h", reason)
+        self.assertEqual(usage["5h"], 3)
+
+    def test_rejects_at_week_cap_even_when_5h_ok(self):
+        import time as _time
+
+        now = _time.time()
+        # 5 calls spread over days: none in the last 5h, all within the week.
+        self._seed([now - (d * 86400) for d in range(1, 6)])
+        ok, reason, _ = sidecar.check_cloud_budget(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("week", reason)
+
+    def test_zero_cap_disables_window(self):
+        import time as _time
+
+        now = _time.time()
+        cfg = dict(self.cfg, caps={"5h": 0, "week": 0})
+        self._seed([now - i for i in range(50)])
+        ok, _, _ = sidecar.check_cloud_budget(cfg)
+        self.assertTrue(ok)
+
+    def test_lockout_rejects_until_deadline(self):
+        import time as _time
+
+        self._seed([], lockouts={"TestFlash": _time.time() + 3600})
+        ok, reason, _ = sidecar.check_cloud_budget(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("quota-locked", reason)
+
+    def test_expired_lockout_is_ignored(self):
+        import time as _time
+
+        self._seed([], lockouts={"TestFlash": _time.time() - 3600})
+        ok, _, _ = sidecar.check_cloud_budget(self.cfg)
+        self.assertTrue(ok)
+
+    def test_record_cloud_call_prunes_stale_timestamps(self):
+        import time as _time
+
+        now = _time.time()
+        self._seed([now - 8 * 86400, now - 9 * 86400])  # both older than a week
+        sidecar.record_cloud_call("TestFlash")
+        state = sidecar.load_quota_state()
+        self.assertEqual(len(state["calls"]["TestFlash"]), 1)
+
+    def test_corrupt_state_file_resets_cleanly(self):
+        with open(self.state_path, "w") as f:
+            f.write("{not json")
+        state = sidecar.load_quota_state()
+        self.assertEqual(state["calls"], {})
+        ok, _, _ = sidecar.check_cloud_budget(self.cfg)
+        self.assertTrue(ok)
+
+    def test_parse_lockout_deadline_iso(self):
+        import time as _time
+
+        now = _time.time()
+        text = "You can resume using this model at 2999-01-02T03:04:05"
+        ts = sidecar._parse_lockout_deadline(text, now=now)
+        self.assertGreater(ts, now + 86400)
+
+    def test_parse_lockout_deadline_unparseable_falls_back_5h(self):
+        import time as _time
+
+        now = _time.time()
+        text = "You can resume using this model at half past teatime"
+        ts = sidecar._parse_lockout_deadline(text, now=now)
+        self.assertAlmostEqual(ts, now + 5 * 3600, delta=5)
+
+
+class CallAgyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env_patch = mock.patch.dict(
+            os.environ, {"AGY_QUOTA_STATE": os.path.join(self.tmp.name, "q.json")}
+        )
+        self.env_patch.start()
+        self.cfg = {
+            "tier": "flash",
+            "engine": "agy",
+            "bin": "agy",
+            "model": "TestFlash",
+            "num_ctx": 1000,
+            "timeout": 5,
+            "caps": {"5h": 10, "week": 100},
+        }
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.tmp.cleanup()
+
+    def _proc(self, stdout="", stderr="", returncode=0):
+        return mock.Mock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    def test_missing_binary_is_unreachable(self):
+        with mock.patch.object(sidecar.shutil, "which", return_value=None):
+            with self.assertRaises(sidecar.AgyError) as ctx:
+                sidecar.call_agy(self.cfg, "sys", input_text="data")
+        self.assertTrue(ctx.exception.unreachable)
+
+    def test_inline_success_and_argv_shape(self):
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=self._proc("OUT")) as run:
+                out = sidecar.call_agy(self.cfg, "sys prompt", input_text="the data")
+        self.assertEqual(out, "OUT")
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[0], "agy")
+        self.assertEqual(argv[argv.index("--model") + 1], "TestFlash")
+        prompt = argv[argv.index("--print") + 1]
+        self.assertIn("sys prompt", prompt)
+        self.assertIn("the data", prompt)
+        self.assertNotIn("--add-dir", argv)
+        # exactly one call recorded against the budget
+        state = sidecar.load_quota_state()
+        self.assertEqual(len(state["calls"]["TestFlash"]), 1)
+
+    def test_path_mode_stages_single_file_never_real_parent(self):
+        # --add-dir must point at a fresh one-file staging dir, NOT the
+        # input's real parent (which would hand the cloud agent the whole
+        # directory — often the repo — on a prompt-injectable input).
+        src = os.path.join(self.tmp.name, "big.log")
+        with open(src, "w") as f:
+            f.write("data")
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=self._proc("OUT")) as run:
+                sidecar.call_agy(self.cfg, "sys", input_path=src)
+        argv = run.call_args[0][0]
+        add_dir = argv[argv.index("--add-dir") + 1]
+        self.assertNotEqual(os.path.realpath(add_dir), os.path.realpath(os.path.dirname(src)))
+        prompt = argv[argv.index("--print") + 1]
+        self.assertIn(os.path.join(add_dir, "big.log"), prompt)
+        self.assertNotIn(src, prompt)
+        # staging dir is removed after the call
+        self.assertFalse(os.path.exists(add_dir))
+
+    def test_empty_output_retries_once_then_errors_and_counts_both_spawns(self):
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=self._proc("")) as run:
+                with self.assertRaises(sidecar.AgyError) as ctx:
+                    sidecar.call_agy(self.cfg, "sys", input_text="d")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("empty output", str(ctx.exception))
+        # each spawn burned real quota, so each must be counted
+        state = sidecar.load_quota_state()
+        self.assertEqual(len(state["calls"]["TestFlash"]), 2)
+
+    def test_lockout_in_output_is_recorded_and_raised(self):
+        msg = "Quota exceeded. You can resume using this model at 2999-01-02T03:04:05."
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=self._proc(msg)):
+                with self.assertRaises(sidecar.AgyError) as ctx:
+                    sidecar.call_agy(self.cfg, "sys", input_text="d")
+        self.assertIn("quota-locked", str(ctx.exception))
+        state = sidecar.load_quota_state()
+        self.assertIn("TestFlash", state["lockouts"])
+
+    def test_nonzero_exit_raises(self):
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(
+                sidecar.subprocess, "run", return_value=self._proc("", "boom", returncode=2)
+            ):
+                with self.assertRaises(sidecar.AgyError) as ctx:
+                    sidecar.call_agy(self.cfg, "sys", input_text="d")
+        self.assertIn("exited 2", str(ctx.exception))
+
+
+class CloudHandlerTest(unittest.TestCase):
+    """handle_process_local_file paths specific to cloud tiers and media ops."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self.tmp.name)
+        self.env_patch = mock.patch.dict(
+            os.environ,
+            {
+                "SIDECAR_ROOT": self.root,
+                "AGY_QUOTA_STATE": os.path.join(self.root, "quota.json"),
+                "AGY_FLASH_MODEL": "TestFlash",
+            },
+        )
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.tmp.cleanup()
+
+    def _write(self, name, content):
+        path = os.path.join(self.root, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_media_op_rejected_on_local_tier(self):
+        self._write("shot.png", "fake")
+        result = sidecar.handle_process_local_file(
+            {
+                "operation": "describe_image",
+                "input_path": "shot.png",
+                "output_path": "out.txt",
+                "tier": "deep",
+            }
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("vision", result["reason"])
+
+    def test_requires_instruction_enforced(self):
+        self._write("page.html", "<p>hi</p>")
+        result = sidecar.handle_process_local_file(
+            {"operation": "html_extract", "input_path": "page.html", "output_path": "out.txt"}
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("requires an instruction", result["reason"])
+
+    def test_budget_exhaustion_rejects_before_spawning_agy(self):
+        import time as _time
+
+        now = _time.time()
+        with open(os.path.join(self.root, "quota.json"), "w") as f:
+            json.dump(
+                {"calls": {"TestFlash": [now - i for i in range(200)]}, "lockouts": {}}, f
+            )
+        self._write("ci.log", "build failed")
+
+        def _explode(*a, **k):
+            raise AssertionError("agy must not be spawned when the budget is spent")
+
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", side_effect=_explode):
+                result = sidecar.handle_process_local_file(
+                    {
+                        "operation": "triage_ci_log",
+                        "input_path": "ci.log",
+                        "output_path": "out.json",
+                        "tier": "flash",
+                    }
+                )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("budget exhausted", result["reason"])
+        self.assertIn("quota_usage", result)
+
+    def test_flash_success_payload_reports_engine_and_quota(self):
+        self._write("ci.log", "Step build: error TS2304 blah\nexit 1")
+        digest = json.dumps(
+            {
+                "verdict": "fail",
+                "error_class": "build",
+                "failing_step": "build",
+                "error_excerpt": ["error TS2304 blah"],
+                "summary": "TypeScript compile error.",
+            }
+        )
+        proc = mock.Mock(stdout=digest, stderr="", returncode=0)
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=proc):
+                result = sidecar.handle_process_local_file(
+                    {
+                        "operation": "triage_ci_log",
+                        "input_path": "ci.log",
+                        "output_path": "out.json",
+                        "tier": "flash",
+                    }
+                )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["engine"], "agy")
+        self.assertEqual(result["model"], "TestFlash")
+        self.assertNotIn("host", result)
+        self.assertEqual(result["quota_usage"]["5h"], 1)
+
+    def test_digest_output_missing_keys_is_rejected(self):
+        self._write("ci.log", "some log")
+        proc = mock.Mock(stdout='{"summary": "x"}', stderr="", returncode=0)
+        with mock.patch.object(sidecar.shutil, "which", return_value="/usr/bin/agy"):
+            with mock.patch.object(sidecar.subprocess, "run", return_value=proc):
+                result = sidecar.handle_process_local_file(
+                    {
+                        "operation": "triage_ci_log",
+                        "input_path": "ci.log",
+                        "output_path": "out.json",
+                        "tier": "flash",
+                    }
+                )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("missing required keys", result["reason"])
+
+    def test_digest_op_on_local_tier_uses_ollama(self):
+        self._write("t.log", "3 passing\n1 failing\nAssertionError: nope")
+        digest = json.dumps(
+            {
+                "passed": 3,
+                "failed": 1,
+                "skipped": None,
+                "failure_clusters": [{"cause": "AssertionError", "count": 1, "example": "nope"}],
+                "summary": "One assertion failure.",
+            }
+        )
+        with mock.patch.object(sidecar, "call_ollama", return_value={"response": digest}) as co:
+            result = sidecar.handle_process_local_file(
+                {
+                    "operation": "summarize_test_run",
+                    "input_path": "t.log",
+                    "output_path": "out.json",
+                }
+            )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["engine"], "ollama")
+        self.assertEqual(co.call_args[0][0]["tier"], "fast")
+
+
+class NewValidatorsTest(unittest.TestCase):
+    def test_draft_commit_message_rejects_code_fence(self):
+        ok, reason = sidecar._validate_draft_commit_message("diff", "```\nfix: x\n```", "o", "")
+        self.assertFalse(ok)
+        self.assertIn("code fence", reason)
+
+    def test_draft_commit_message_rejects_marathon_summary_line(self):
+        ok, _ = sidecar._validate_draft_commit_message("diff", "x" * 150, "o", "")
+        self.assertFalse(ok)
+
+    def test_draft_commit_message_accepts_conventional_shape(self):
+        msg = "fix(parser): handle empty input\n\nGuard against zero-length reads."
+        ok, reason = sidecar._validate_draft_commit_message("diff", msg, "o", "")
+        self.assertTrue(ok, reason)
+
+    def test_draft_pr_body_requires_sections(self):
+        ok, _ = sidecar._validate_draft_pr_body("d", "just words", "o", "")
+        self.assertFalse(ok)
+        ok, _ = sidecar._validate_draft_pr_body(
+            "d", "## Summary\nx\n\n## Changes\n- y", "o", ""
+        )
+        self.assertTrue(ok)
+
+    def test_changelog_requires_bullets(self):
+        ok, _ = sidecar._validate_changelog_from_commits("log", "prose only", "o", "")
+        self.assertFalse(ok)
+        ok, _ = sidecar._validate_changelog_from_commits("log", "## Added\n- thing", "o", "")
+        self.assertTrue(ok)
+
+    def test_verify_screenshot_requires_boolean_pass(self):
+        ok, _ = sidecar._validate_verify_screenshot("", '{"pass": "yes", "observed": "x"}', "o", "a")
+        self.assertFalse(ok)
+        ok, _ = sidecar._validate_verify_screenshot(
+            "", '{"pass": true, "observed": "login page", "mismatches": []}', "o", "a"
+        )
+        self.assertTrue(ok)
+
+    def test_digest_validator_requires_nonempty_summary(self):
+        validate = sidecar._make_digest_validator(["summary"])
+        ok, _ = validate("in", '{"summary": ""}', "o", "")
+        self.assertFalse(ok)
+        ok, _ = validate("in", '{"summary": "fine"}', "o", "")
+        self.assertTrue(ok)
+
+
+class NewDeterministicOpsTest(unittest.TestCase):
+    def test_json_digest_array_of_objects(self):
+        data = json.dumps([{"a": 1, "b": "long text " * 30}] * 7).encode()
+        out = sidecar._det_json_digest(data, {}, "", "out.json")
+        digest = json.loads(out)
+        self.assertEqual(digest["record_count"], 7)
+        self.assertEqual(digest["schema"]["type"], "array")
+        self.assertEqual(digest["schema"]["items"]["keys"]["a"]["type"], "number")
+        # samples are truncated, never the whole value
+        sample = digest["schema"]["items"]["keys"]["b"]["sample"]
+        self.assertLessEqual(len(sample), sidecar._JSON_DIGEST_SAMPLE_CHARS + 1)
+
+    def test_json_digest_invalid_input_raises(self):
+        with self.assertRaises(sidecar.SidecarError):
+            sidecar._det_json_digest(b"nope", {}, "", "out.json")
+
+    def _make_xlsx(self, path):
+        import zipfile as _zipfile
+
+        ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        rns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        pns = "http://schemas.openxmlformats.org/package/2006/relationships"
+        with _zipfile.ZipFile(path, "w") as z:
+            z.writestr(
+                "xl/workbook.xml",
+                f'<workbook xmlns="{ns}" xmlns:r="{rns}"><sheets>'
+                '<sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            )
+            z.writestr(
+                "xl/_rels/workbook.xml.rels",
+                f'<Relationships xmlns="{pns}">'
+                '<Relationship Id="rId1" Type="t" Target="worksheets/sheet1.xml"/>'
+                "</Relationships>",
+            )
+            z.writestr(
+                "xl/sharedStrings.xml",
+                f'<sst xmlns="{ns}"><si><t>hello</t></si></sst>',
+            )
+            z.writestr(
+                "xl/worksheets/sheet1.xml",
+                f'<worksheet xmlns="{ns}"><sheetData>'
+                '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1"><v>42</v></c></row>'
+                '<row r="2"><c r="A2" t="b"><v>1</v></c>'
+                '<c r="B2" t="inlineStr"><is><t>inline</t></is></c></row>'
+                "</sheetData></worksheet>",
+            )
+
+    def test_xlsx_extract_values_and_gaps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "book.xlsx")
+            self._make_xlsx(path)
+            out = sidecar._det_xlsx_extract(path, {}, "", "out.json")
+        parsed = json.loads(out)
+        self.assertEqual(
+            parsed, {"Data": [["hello", None, 42], [True, "inline"]]}
+        )
+
+    def test_xlsx_extract_absolute_relationship_target(self):
+        import zipfile as _zipfile
+
+        ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        rns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        pns = "http://schemas.openxmlformats.org/package/2006/relationships"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "abs.xlsx")
+            with _zipfile.ZipFile(path, "w") as z:
+                z.writestr(
+                    "xl/workbook.xml",
+                    f'<workbook xmlns="{ns}" xmlns:r="{rns}"><sheets>'
+                    '<sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>',
+                )
+                z.writestr(
+                    "xl/_rels/workbook.xml.rels",
+                    f'<Relationships xmlns="{pns}">'
+                    '<Relationship Id="rId1" Type="t" Target="/xl/worksheets/sheet1.xml"/>'
+                    "</Relationships>",
+                )
+                z.writestr(
+                    "xl/worksheets/sheet1.xml",
+                    f'<worksheet xmlns="{ns}"><sheetData>'
+                    '<row r="1"><c r="A1"><v>7</v></c></row>'
+                    "</sheetData></worksheet>",
+                )
+            out = sidecar._det_xlsx_extract(path, {}, "", "out.json")
+        self.assertEqual(json.loads(out), {"S": [[7]]})
+
+    def test_xlsx_extract_pads_skipped_blank_rows(self):
+        import zipfile as _zipfile
+
+        ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        rns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        pns = "http://schemas.openxmlformats.org/package/2006/relationships"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "gaps.xlsx")
+            with _zipfile.ZipFile(path, "w") as z:
+                z.writestr(
+                    "xl/workbook.xml",
+                    f'<workbook xmlns="{ns}" xmlns:r="{rns}"><sheets>'
+                    '<sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>',
+                )
+                z.writestr(
+                    "xl/_rels/workbook.xml.rels",
+                    f'<Relationships xmlns="{pns}">'
+                    '<Relationship Id="rId1" Type="t" Target="worksheets/sheet1.xml"/>'
+                    "</Relationships>",
+                )
+                z.writestr(
+                    "xl/worksheets/sheet1.xml",
+                    f'<worksheet xmlns="{ns}"><sheetData>'
+                    '<row r="1"><c r="A1"><v>1</v></c></row>'
+                    '<row r="4"><c r="A4"><v>4</v></c></row>'
+                    "</sheetData></worksheet>",
+                )
+            out = sidecar._det_xlsx_extract(path, {}, "", "out.json")
+        # rows 2 and 3 are blank in the sheet -> padded, so index == row-1
+        self.assertEqual(json.loads(out), {"S": [[1], [], [], [4]]})
+
+    def test_xlsx_extract_sheet_filter_no_match_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "book.xlsx")
+            self._make_xlsx(path)
+            with self.assertRaises(sidecar.SidecarError):
+                sidecar._det_xlsx_extract(path, {"sheet": "Nope"}, "", "out.json")
+
+    def test_xlsx_extract_invalid_zip_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "not.xlsx")
+            with open(path, "w") as f:
+                f.write("plain text")
+            with self.assertRaises(sidecar.SidecarError):
+                sidecar._det_xlsx_extract(path, {}, "", "out.json")
+
+    def test_xlsx_cell_column_letters(self):
+        self.assertEqual(sidecar._xlsx_cell_column("A1"), 0)
+        self.assertEqual(sidecar._xlsx_cell_column("Z9"), 25)
+        self.assertEqual(sidecar._xlsx_cell_column("AA3"), 26)

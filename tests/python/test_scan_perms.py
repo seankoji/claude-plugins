@@ -7,7 +7,7 @@ module's PROJECTS_DIR is monkeypatched to a tempdir for every scan test).
 
 The module under test is loaded by file path (its directory, "claude-
 tuneup", has a hyphen and isn't an importable package name) — same pattern
-as test_ollama_sidecar.py.
+as test_offload_sidecar.py.
 """
 
 import contextlib
