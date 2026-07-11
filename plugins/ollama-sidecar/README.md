@@ -109,6 +109,7 @@ You'll be prompted for the plugin's config (or accept the defaults):
 | `fast_ollama_host` | *(unset → deep)* | **Fast tier** — optional second server for high-throughput bulk work, e.g. `http://your-pc.local:11434`. |
 | `fast_ollama_model` | *(unset → deep)* | Fast tier model tag — smaller/faster, fully GPU-resident. |
 | `fast_num_ctx` | *(unset → deep)* | Fast tier context window. |
+| `tls_ca_file` | *(unset)* | Path to a PEM CA bundle for verifying **https** endpoints — needed when a LAN reverse proxy fronts Ollama with an mkcert/self-signed cert (export the CA, point this at it). Plain-http hosts ignore it. |
 
 Example split — a MacBook with lots of unified memory plus a gaming PC with a 16GB
 GPU:

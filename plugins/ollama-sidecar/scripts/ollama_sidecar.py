@@ -60,6 +60,7 @@ import plistlib
 import re
 import shutil
 import sqlite3
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -283,9 +284,24 @@ class OllamaError(Exception):
         self.unreachable = unreachable
 
 
+def _tls_context_for(url):
+    """Optional custom CA bundle for https Ollama endpoints (OLLAMA_TLS_CA =
+    path to a PEM file). Lets a LAN reverse proxy with an mkcert/self-signed
+    CA verify properly instead of forcing plain http or an insecure skip.
+    Returns None for http URLs or when unconfigured (default verification)."""
+    ca_file = _env("OLLAMA_TLS_CA", "")
+    if not ca_file or not url.lower().startswith("https://"):
+        return None
+    try:
+        return ssl.create_default_context(cafile=ca_file)
+    except (OSError, ssl.SSLError) as e:
+        raise OllamaError(f"could not load OLLAMA_TLS_CA bundle '{ca_file}': {e}")
+
+
 def call_ollama(cfg, system_prompt, user_prompt):
     host, model = cfg["host"], cfg["model"]
     url = host.rstrip("/") + "/api/generate"
+    tls_context = _tls_context_for(url)
     body = json.dumps(
         {
             "model": model,
@@ -299,7 +315,7 @@ def call_ollama(cfg, system_prompt, user_prompt):
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
+        with urllib.request.urlopen(req, timeout=cfg["timeout"], context=tls_context) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace") if e.fp else ""

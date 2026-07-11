@@ -53,6 +53,12 @@
       "title": "Fast tier — context window (tokens, optional)",
       "description": "num_ctx for the fast tier, as a numeric string. Leave unset to reuse the deep tier value.",
       "default": ""
+    },
+    "tls_ca_file": {
+      "type": "string",
+      "title": "TLS CA bundle (optional)",
+      "description": "Path to a PEM CA bundle used to verify https Ollama endpoints — for LAN reverse proxies with an mkcert/self-signed CA. Leave unset for standard system verification.",
+      "default": ""
     }
   }
 }
