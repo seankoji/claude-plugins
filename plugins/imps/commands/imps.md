@@ -532,6 +532,12 @@ design note for what the script must implement to preserve this.
 
 **`blocked` results** — surface the problem, agree the next step with the user, persist
 the decision, re-invoke:
+- `state_read_mismatch` — readState()'s task count/phase disagree with a raw `jq` check
+  of the state file (the readState() mismapping failure mode, #87) — everything else in
+  `state`, including `operator_decision` itself, is untrustworthy this invocation, so the
+  script refuses to route on it. Inspect the raw file (`jq . <state file>`); if it looks
+  fine, this was likely a one-off read blip — persist `resolved, continue` to retry. If
+  the file itself is actually garbled, fix it by hand or persist `abort`.
 - `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
   the tree (or decides); persist `resolved, continue` or `abort`.
 - `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
