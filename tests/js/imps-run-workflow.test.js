@@ -25,7 +25,7 @@ function loadWorkflowFunctions({ agent, parallel, phase, args, log }) {
     'phase',
     'args',
     'log',
-    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision }`
+    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead }`
   )
   return factory(agent, parallel, phase || (() => {}), args || {}, log || (() => {}))
 }
@@ -95,4 +95,46 @@ test('an explicit status:"failed" result is still recorded the same way as befor
 
   assert.deepEqual(outcome.failed.map((f) => f.id), [1])
   assert.equal(outcome.failed[0].notes, 'lint errors')
+})
+
+test('validateStateRead passes when readState() agrees with the raw file (#87)', async () => {
+  const { validateStateRead } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  const state = { tasks: [task(1), task(2)], phase: 'dispatch_pending' }
+  const rawCheck = { raw_task_count: 2, raw_phase: 'dispatch_pending', raw_error: null }
+
+  assert.deepEqual(validateStateRead(state, rawCheck), { ok: true, error: null })
+})
+
+test('validateStateRead blocks when readState() mismaps tasks to [] (#87 reproduction)', async () => {
+  const { validateStateRead } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  // Mirrors the observed failure: haiku nested real content under last_result and
+  // defaulted top-level tasks to [] / phase to "complete" while the raw file still has
+  // 8 tasks and phase "dispatch_pending".
+  const state = { tasks: [], phase: 'complete', task: 'Read JSON from state file' }
+  const rawCheck = { raw_task_count: 8, raw_phase: 'dispatch_pending', raw_error: null }
+
+  const result = validateStateRead(state, rawCheck)
+  assert.equal(result.ok, false)
+  assert.match(result.error, /returned 0 task\(s\) but the raw file has 8/)
+  assert.match(result.error, /#87/)
+})
+
+test('validateStateRead blocks on a phase mismatch even when task counts agree', async () => {
+  const { validateStateRead } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  const state = { tasks: [task(1)], phase: 'complete' }
+  const rawCheck = { raw_task_count: 1, raw_phase: 'dispatch_pending', raw_error: null }
+
+  const result = validateStateRead(state, rawCheck)
+  assert.equal(result.ok, false)
+  assert.match(result.error, /phase/)
+})
+
+test('validateStateRead surfaces a fatal readState() error field instead of proceeding', async () => {
+  const { validateStateRead } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  const state = { tasks: [], phase: null, error: 'file is not valid JSON' }
+  const rawCheck = { raw_task_count: -1, raw_phase: '', raw_error: 'jq: parse error' }
+
+  const result = validateStateRead(state, rawCheck)
+  assert.equal(result.ok, false)
+  assert.match(result.error, /fatal error/)
 })
