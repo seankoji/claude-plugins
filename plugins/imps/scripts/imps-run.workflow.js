@@ -206,15 +206,67 @@ const LEARNINGS_APPEND_SCHEMA = {
   required: ['saved'],
 }
 
+const RAW_STATE_CHECK_SCHEMA = {
+  type: 'object',
+  properties: {
+    raw_task_count: { type: 'number' },
+    raw_phase: { type: 'string' },
+    raw_error: { type: ['string', 'null'] },
+  },
+  required: ['raw_task_count', 'raw_phase'],
+}
+
 // ---------------------------------------------------------------------------
 // State-file helpers — every touch is an agent() call; the script body has no FS access.
 // ---------------------------------------------------------------------------
 
+// model: 'sonnet', not 'haiku' — see #87: on a state file with several long, escaped-regex
+// task specs, haiku mismapped this verbatim-copy-through-a-schema read (nested the real
+// content under last_result, defaulted tasks to []), and every downstream call trusted the
+// empty result silently. readState() runs once per invocation and everything else in this
+// script trusts its output — worth the extra cost of a stronger model.
 function readState() {
   return agent(
     `Read the JSON file at ${args.stateFilePath} and return its exact contents, every field preserved (including any you don't recognize — this schema grows over time). If the file doesn't parse as JSON, that's a fatal setup error — return the error in an "error" field instead of guessing at a shape.`,
-    { label: 'read-state', phase: 'Preflight', model: 'haiku', schema: STATE_SCHEMA }
+    { label: 'read-state', phase: 'Preflight', model: 'sonnet', schema: STATE_SCHEMA }
   )
+}
+
+// Independent cross-check for readState(): a single deterministic jq query per field,
+// not an LLM-interpreted read of the whole file, so it can't fail the same way
+// readState() itself can (#87). Used only to sanity-check readState()'s task count and
+// phase before anything downstream trusts them.
+function countStateTasks() {
+  return agent(
+    `Run \`jq '.tasks | length' ${args.stateFilePath}\` and report the integer result as "raw_task_count". Run \`jq -r '.phase' ${args.stateFilePath}\` and report the string result as "raw_phase". If either jq command fails (e.g. the file isn't valid JSON), report the error text as "raw_error" and use -1 and "" for the other two fields. Do not interpret or summarize the file's contents beyond these two command outputs.`,
+    { label: 'count-state-tasks', phase: 'Preflight', model: 'haiku', schema: RAW_STATE_CHECK_SCHEMA }
+  )
+}
+
+// Pure invariant check, kept separate from readState()/countStateTasks() so it's
+// testable without stubbing agent() (#87's fix direction #2: fail loudly instead of
+// silently proceeding when readState()'s task count doesn't match the raw file).
+function validateStateRead(state, rawCheck) {
+  if (state.error) {
+    return { ok: false, error: `readState() reported a fatal error: ${state.error}` }
+  }
+  if (rawCheck.raw_error) {
+    return { ok: false, error: `raw state-file cross-check failed: ${rawCheck.raw_error}` }
+  }
+  const tasksLen = (state.tasks || []).length
+  if (tasksLen !== rawCheck.raw_task_count) {
+    return {
+      ok: false,
+      error: `readState() returned ${tasksLen} task(s) but the raw file has ${rawCheck.raw_task_count} — this is the readState() mismapping failure mode (#87); refusing to proceed on an untrustworthy read.`,
+    }
+  }
+  if (state.phase !== rawCheck.raw_phase) {
+    return {
+      ok: false,
+      error: `readState() returned phase "${state.phase}" but the raw file has phase "${rawCheck.raw_phase}" — refusing to proceed on an untrustworthy read.`,
+    }
+  }
+  return { ok: true, error: null }
 }
 
 function patchState(patch, label) {
@@ -566,6 +618,18 @@ function deleteStateFile() {
 
 phase('Preflight')
 let state = await readState()
+
+// Cross-check readState()'s output against the raw file before trusting anything in
+// `state` — including operator_decision/last_result below, which come from the same
+// possibly-mismapped read (#87). A mismatch here means readState() itself is
+// untrustworthy, so fail loudly instead of silently routing on garbled fields.
+const rawStateCheck = await countStateTasks()
+const stateValidation = validateStateRead(state, rawStateCheck)
+if (!stateValidation.ok) {
+  const result = { status: 'blocked', reason: 'state_read_mismatch', detail: { error: stateValidation.error } }
+  await saveResult(result)
+  return result
+}
 
 // ---- Route on operator_decision + last_result.status for a resumed/blocked run ----
 const decision = state.operator_decision
