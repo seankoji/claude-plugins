@@ -179,6 +179,11 @@ Scout contract:
   label `swarm:skipped`, drop from the batch.
 - `blocked-internal` (blocker is in this batch) → stays in the batch, scheduled
   after its blocker merges (Phase 2). Do NOT kill these.
+- Don't force every scouted issue into a code task — some resolve to mixed-mode work
+  (needs an operator decision, or depends on stalled external verification). Let the
+  scout wave finish before committing to the batch composition, and route anything
+  that doesn't cleanly reduce to a code task through `AskUserQuestion` rather than
+  silently dropping or force-fitting it.
 - Feed `root_cause` + `approach` into implementation prompts — "root cause
   confirmed at file:line" prevents over-implementation.
 
@@ -211,7 +216,9 @@ Each agent runs in an isolated worktree (`isolation: 'worktree'`) and:
 1. Fetches its issue via `gh`; receives its scout JSON + Project profile in the prompt.
 2. Implements the smallest correct change; no refactors beyond scope.
 3. Runs the relevant `GATE_CMDS` for the area it touched; fixes failures it caused;
-   leaves pre-existing failures (note them). Runs `LINT_FIX` before committing.
+   leaves pre-existing failures (note them). Runs `LINT_FIX` before committing. If the
+   task ran a package install in its fresh worktree, diffs the lockfile before
+   committing and reverts any unrelated version-pin churn.
 4. Commits `fix: <issue title> (closes #N)`; opens a PR to the holding branch
    with a minimal body: `Closes #N` + ≤80-word summary + test results.
 5. Final message contract:
@@ -275,6 +282,11 @@ browser transport can reach using `PREVIEW_CMD` (bind to a host — `--host` / `
 if the rig is on another machine; `localhost` is fine for a local CDP/Chrome MCP). The
 panel reviews THIS URL — never prod.
 
+Personas run concurrently and post independently — wait for each one's actual return
+before recording its verdict; never write an inferred or expected result into the
+tracking-issue comment while a persona is still in flight. Treat silence as unknown,
+not license to fill in a plausible result.
+
 Then, in parallel:
 
 - **Code personas (opus):** each reads the integration PR diff — excluding
@@ -331,12 +343,16 @@ before treating "all APPROVE" as fully independent sign-off.
 Final PR comment (list the actual gate names you ran). Lead the body with the
 `[imps-status]` marker — `/imps:prs`'s comment filter (see `commands/prs.md`) skips any
 body starting with `[Persona:` or `[imps-status]` so its own status comments never get
-treated as unhandled review feedback needing a fix:
+treated as unhandled review feedback needing a fix. Note each persona's delivery mode
+next to its verdict — `(posted)` for a real GitHub review under its own App identity,
+`(inline — <reason>)` when it fell back (no App identity installed for this org, or the
+post was denied) — so this comment never reads as a fully independent panel when some
+verdicts only exist here:
 
 ```
 [imps-status]
 ## /imps complete
-Personas approved: [...]    Unresolved after N rounds: [... | none]
+Personas: <name> (posted|inline — reason), ...    Unresolved after N rounds: [... | none]
 Gates: <gate-cmd-1> ✓  <gate-cmd-2> ✓  contracts ✓  CI ✓  security ✓
 Changes: N issues across M PRs.
 Deployed-site verification is yours (a deployed URL may be auth-gated and shows

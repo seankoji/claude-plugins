@@ -119,13 +119,14 @@ response (Step 4c).
 ## Step 4 — Dispatch fixing agents
 
 Dispatch all needed fixes concurrently using the `Agent` tool (not Workflow).
-Each agent uses the `imp` agent type. Fixing agents work on the PR branch — they must
+Each agent uses the `imps:🦇` agent type — the bare `imp` name is unregistered and the
+spawn will fail. Fixing agents work on the PR branch — they must
 fetch it fresh in their worktree and push via `git push origin HEAD:<branch>` (never
 `git checkout <branch>` directly, as that branch may already be checked out elsewhere).
 
 ### 4a — Resolve merge conflict
 
-Spawn one `imp` agent, model `sonnet`, with this prompt:
+Spawn one `imps:🦇` agent, model `sonnet`, with this prompt:
 
 ```
 PR #<pr_number> (<pr_url>) has a merge conflict between branch "<branch>" and base "<base_branch>".
@@ -160,7 +161,7 @@ RUN_ID=$(gh run list --repo <repo> --branch <branch> --json databaseId --jq '.[0
 If logs are empty or unavailable, increment `ci_fix_attempts[name]` and print:
 `⚠ CI fix skipped — could not fetch logs for "<name>" on PR #<N>`.
 
-Otherwise spawn one `imp` agent per failing check, model `sonnet`, with this prompt:
+Otherwise spawn one `imps:🦇` agent per failing check, model `sonnet`, with this prompt:
 
 ```
 PR #<pr_number> (<pr_url>) has a failing CI check: "<check_name>".
@@ -188,7 +189,7 @@ After each agent returns:
 
 ### 4c — Address review comment
 
-For each unhandled comment, spawn one `imp` agent, model `sonnet`, with this prompt:
+For each unhandled comment, spawn one `imps:🦇` agent, model `sonnet`, with this prompt:
 
 ```
 PR #<pr_number> (<pr_url>) has a review comment to address.

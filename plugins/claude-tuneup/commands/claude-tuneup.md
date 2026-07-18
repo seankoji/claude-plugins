@@ -92,12 +92,15 @@ See `README.md` for a filled-in example config.
 
 Quote-style variants (`'foo *` vs `"foo *`) are SEPARATE permission rules — Claude's matcher is exact-prefix. NEVER dedupe across quote styles.
 
+Bare and wildcard forms are also separate rules, not one subsuming the other: `Bash(jq *)` requires a trailing argument and does NOT cover the bare, argless `Bash(jq)`. When proposing or deduping, check for both forms rather than assuming the wildcard covers the bare command.
+
 ## Safety rules (applied in BOTH phases)
 
 NEVER allowlist a pattern that grants arbitrary code execution. A wildcard on any of these is equivalent to "allow anything":
 
 - Interpreters: `python`/`python3`, `node`, `bun`, `deno`, `ruby`, `perl`, `php`, `lua`
 - Shells: `bash`, `sh`, `zsh`, `fish`, `eval`, `exec`, `ssh` (the bare form — narrow rules like `ssh nas 'ls *` are fine)
+- Same-class-as-interpreter commands: `awk` (has `system()`/`getline | "cmd"` — arbitrary exec), `find * -exec *`, `sed -e 's/.../e'` (the `e` substitution flag executes its match), `xargs` without a safe-flag check (can invoke anything downstream)
 - Package runners: `npx`, `bunx`, `uvx`, `uv run`
 - Package installers (run build/lifecycle scripts at install time): `pip install *` / `pip3 install *`, `npm install *` / `npm ci *`, `yarn add *`, `pnpm add *`, `gem install *`, `cargo install *` — the bare argless `npm install` / `npm ci` (install from a committed lockfile) are fine
 - Task-runner wildcards: `npm run *`, `yarn run *`, `pnpm run *`, `bun run *`, `make *`, `just *`, `cargo run *`, `go run *` — exact forms (e.g. `Bash(bun run typecheck)`) are fine
@@ -144,8 +147,11 @@ For each candidate:
 2. Classify (global vs project) per **Scope rules** above.
 3. SKIP per **Safety rules** above (interpreters, shell wildcards, mutations) AND if it's already auto-allowed.
 4. SKIP if the candidate is already **prefix-covered** by any existing allow rule across global, project, AND `settings.local.json` — not just exact match. A broad grant like `Bash(ssh nas *)` subsumes every `ssh nas …` drill row; bare `mcp__portainer` subsumes every `mcp__portainer__*` tool. The scanner counts raw invocations and won't have subtracted these, so the user would never actually be prompted for them. (Recurring de-dupe miss — see `claude-tuneup.notes.md`.)
+5. SKIP an MCP candidate whose tool name isn't in the currently-connected / deferred tools list (same lookup as **3f**) — a scanned name can be stale or renamed since the transcript that surfaced it.
 
-Present candidates grouped by scope via `AskUserQuestion` (multi-select). Apply accepted additions.
+If scan output is dominated by `python3 -c` / heredoc / for-loop invocations, don't try to allowlist them individually — they vary too much to form a stable rule. Recommend a structural fix instead: swap to `jq` (already auto-allowed) or an available MCP tool where one exists, or adopt `sandbox.autoAllowBashIfSandboxed` plus a purpose-built triage hook (e.g. an `ssh-triage`-style script) for a whole class of read-only remote calls.
+
+Present candidates grouped by scope via `AskUserQuestion` (multi-select) — guarantee any risk-class candidate (per **Safety rules**) a dedicated question slot rather than letting it get silently crowded out when higher-priority items fill all four. Apply accepted additions.
 
 ### 3. Phase 2 — Scope audit (skip if `--scan-only`)
 
@@ -206,6 +212,8 @@ Print a one-line note per flagged item with `file:line`. Manual follow-up.
 
 Iterate `global.allow` + `project.allow` for `mcp__<server>__*` rules. For each, check whether `<server>` appears in the currently-connected / deferred tools list (the `mcp__<server>__*` names surfaced in `<system-reminder>` blocks). Flag any rule whose `<server>` prefix is absent — the server is no longer connected, so the rule is dead weight. Watch for **case drift** too: a server can reconnect under a different case (e.g. `mcp__Claude_in_Chrome__*` → live lowercase `mcp__claude-in-chrome__*`), leaving the old-case rules stale while the live-case tools go unallowed.
 
+Exception: if `<server>` is named in `~/.claude/CLAUDE.md` (or this repo's `CLAUDE.md`) as a server the user relies on, absence is more likely a session-connect gap than a truly dead server — flag it as "not connected this session" rather than proposing removal.
+
 Flag for removal — NEVER auto-remove; ask via `AskUserQuestion`. Case-drift stragglers are a recurring pattern across runs (an MCP server renaming/relaunching under different casing, or getting disconnected outright, leaves the old rule behind) — check `claude-tuneup.notes.md` for ones specific to your own setup.
 
 ### 4. Confirm & apply
@@ -222,6 +230,7 @@ If `--dry-run`, print the full proposal and stop. Otherwise apply accepted chang
 - Edit `~/.claude/settings.json` (resolve symlink first; the write tool refuses symlink writes)
 - Edit `.claude/settings.json`
 - Edit `.claude/settings.local.json` if relevant
+- Keep each settings-edit small and traceable to one named `AskUserQuestion` approval — a combined/broad rewrite can get denied as self-modification even when the equivalent scoped edit wouldn't. Try the direct `Edit` first; fall back to a `jq` command (surfaced for the user to run) only if it actually gets blocked.
 
 Sort `permissions.allow` alphabetically after edits.
 
@@ -314,4 +323,5 @@ entries into a proposed, operator-gated command-body edit.
 - Don't dedupe across quote styles — `'foo *` and `"foo *` are distinct in Claude's matcher.
 - If `~/.claude/settings.json` is a symlink, follow it to the real file before writing.
 - In a worktree, `.claude/settings.json` edits go through git like any tracked file; `.claude/settings.local.json` is per-checkout, so update both worktree and main copy if both exist.
+- If `.claude/` is excluded via sparse-checkout, a normal worktree can't see it to edit it — work branch-only in a transient worktree with `git sparse-checkout disable` applied, then remove the worktree after pushing.
 - The transcript scanner is read-only — `--audit-only` is safe to re-run.
