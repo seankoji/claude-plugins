@@ -13,13 +13,13 @@
     },
     {
       "name": "claude-tuneup",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "source": "./plugins/claude-tuneup",
       "description": "Permission audit and settings tuneup — scans transcripts, classifies by scope, deduplicates global vs project settings."
     },
     {
       "name": "prompt-builder",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "source": "./plugins/prompt-builder",
       "description": "Iterative prompt engineering assistant — structures with Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers a finished artefact with test cases."
     },
