@@ -6,6 +6,10 @@ Contributions welcome — new plugins, improvements to existing ones, docs fixes
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - `jq` (for local validation and CI parity)
+- `shellcheck` (shell script linter)
+- `node` (for `node --check` validation of Workflow scripts)
+- `pipx` (for `check-jsonschema` and other Python tools)
+- Python 3 with `PyYAML` (for frontmatter schema validation)
 - Plugin-specific prerequisites vary — see the relevant `plugins/<name>/README.md`
 
 ## Repo layout
@@ -34,7 +38,7 @@ Plugins install into a local cache. To test changes without publishing:
 
 ```bash
 ls ~/.claude/plugins/cache/seankoji/
-# elephant-goldfish/  claude-tuneup/  prompt-builder/  imps/
+# ape/  claude-tuneup/  elephant-goldfish/  imps/  offload-sidecar/  prompt-builder/
 ```
 
 Each plugin lives at `~/.claude/plugins/cache/seankoji/<plugin>/<version>/`.
@@ -122,6 +126,19 @@ for f in plugins/*/.claude-plugin/plugin.json; do jq -e '.name' "$f"; done
 pipx run check-jsonschema --schemafile schemas/marketplace.schema.json .claude-plugin/marketplace.json
 for f in plugins/*/.claude-plugin/plugin.json; do pipx run check-jsonschema --schemafile schemas/plugin.schema.json "$f"; done
 
+# Validate command/agent frontmatter against JSON Schema contracts
+for f in plugins/*/commands/*.md; do [ -f "$f" ] && pipx run check-jsonschema --schemafile schemas/command-frontmatter.schema.json "$f"; done
+for f in plugins/*/agents/*.md; do [ -f "$f" ] && pipx run check-jsonschema --schemafile schemas/agent-frontmatter.schema.json "$f"; done
+
+# Validate marketplace versions match plugin.json
+jq -r '.plugins[] | "\(.name) \(.source) \(.version // "")"' .claude-plugin/marketplace.json | \
+  while IFS=" " read -r name source market_version; do
+    [ -n "$market_version" ] || { echo "ERROR: marketplace entry for '$name' is missing version"; exit 1; }
+    manifest="${source}/.claude-plugin/plugin.json"
+    plugin_version=$(jq -r '.version' "$manifest")
+    [ "$market_version" = "$plugin_version" ] || echo "ERROR: version mismatch for $name: marketplace=$market_version plugin.json=$plugin_version"
+  done
+
 # Confirm every plugin has a README and a row in the root README
 for d in plugins/*/; do [ -f "${d}README.md" ] || echo "missing ${d}README.md"; done
 
@@ -131,11 +148,19 @@ for d in plugins/*/; do [ -f "${d}README.md" ] || echo "missing ${d}README.md"; 
 # authoritative rule: it flags only bundled assets like scripts/ or personas/ referenced
 # under literal ~/.claude/ paths. See that step for the structural rule.)
 
-# Check all .sh files are executable
-git ls-files plugins/**/*.sh | xargs ls -la | grep -v '^-rwx'
+# Check all .sh and .py files are executable
+git ls-files plugins/**/*.sh plugins/**/*.py | xargs ls -la | grep -v '^-rwx'
 
-# Run behavioral tests for plugins/*/scripts/*.sh
+# Lint shell scripts
+find plugins -name "*.sh" -exec shellcheck --severity=warning {} +
+
+# Check node scripts (Workflow scripts)
+for f in plugins/*/scripts/*.js; do [ -f "$f" ] && node --check "$f"; done
+
+# Run behavioral tests for plugins/*/scripts/*.sh, Python, and JavaScript
 bash tests/run.sh
+bash tests/run-python.sh
+bash tests/run-js.sh
 ```
 
 CI runs all of these automatically on push. See `.github/workflows/validate.yml` for the full suite.
