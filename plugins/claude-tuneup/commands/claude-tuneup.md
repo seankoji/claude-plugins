@@ -302,7 +302,8 @@ The structured `audit.jsonl` append already happened in step 7 (Report) above â€
 run reaches it, not just runs where Phase 3 executes. This command does not propose or
 apply edits to its own body based on the notes log â€” `claude-tuneup.notes.md` and
 `audit.jsonl` are for you to read back if you want to spot a recurring papercut and fix
-the command yourself.
+the command yourself, or run `/learn` from a claude-plugins checkout to turn recurring
+entries into a proposed, operator-gated command-body edit.
 
 ## Notes
 
