@@ -514,14 +514,16 @@ async function runPersonaPanel(state, prNumber, defaultBranch, postingMode, pers
   )
   // parallel() resolves a thunk that threw (e.g. transient agent-call error) to null —
   // entry order still lines up with `slugs`, so recover the slug from its position rather
-  // than silently dropping the persona via filter(Boolean) (mirrors runDispatch's
-  // dropped-by-parallel() recovery above).
+  // than silently dropping the persona via filter(Boolean). Unlike runDispatch's recovery,
+  // this one must carry a real CHANGES_REQUESTED verdict (not just a cosmetic label) or
+  // the fix-loop's `dissenting` filter below never sees it — a persona that never reviewed
+  // would otherwise count as a silent APPROVE, which is fail-open on a review gate.
   return verdicts.map((v, i) =>
     v || {
       slug: slugs[i],
-      verdict: 'posting: failed — dispatch error (dropped by parallel())',
+      verdict: 'CHANGES_REQUESTED',
       posted: false,
-      findings: [],
+      findings: ['persona review dispatch errored (dropped by parallel()) — not reviewed'],
     }
   )
 }

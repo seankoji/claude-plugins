@@ -136,7 +136,7 @@ jq -r '.plugins[] | "\(.name) \(.source) \(.version // "")"' .claude-plugin/mark
     [ -n "$market_version" ] || { echo "ERROR: marketplace entry for '$name' is missing version"; exit 1; }
     manifest="${source}/.claude-plugin/plugin.json"
     plugin_version=$(jq -r '.version' "$manifest")
-    [ "$market_version" = "$plugin_version" ] || echo "ERROR: version mismatch for $name: marketplace=$market_version plugin.json=$plugin_version"
+    [ "$market_version" = "$plugin_version" ] || { echo "ERROR: version mismatch for $name: marketplace=$market_version plugin.json=$plugin_version"; exit 1; }
   done
 
 # Confirm every plugin has a README and a row in the root README

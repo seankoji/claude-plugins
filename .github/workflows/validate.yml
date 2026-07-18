@@ -155,7 +155,7 @@ jobs:
           done
 
       - name: python3 --check all shipped Python scripts
-        # Covers plugins/imps/scripts/: final-banner.py, imps-intro.py, dispatch-banner.py
+        # Syntax-checks every plugins/*/scripts/*.py file (all plugins, not just imps)
         run: |
           for f in plugins/*/scripts/*.py; do
             [ -f "$f" ] || continue
