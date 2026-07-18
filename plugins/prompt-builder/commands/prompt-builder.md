@@ -121,6 +121,13 @@ Wrap each of these sections in its own descriptive, consistent XML tag (`<instru
 `<context>`, `<document>`, `<examples>`) — Claude parses tag-delimited sections more
 reliably than prose that blends them, and it scales as the prompt grows.
 
+Two narrow exceptions to the no-acronym rule, because the shape recurs enough to name:
+**RISEN** for multi-step agentic/dispatch commands and for evidence-grounded audit prompts
+(pair it with a per-finding citation requirement and a banned-vague-phrases list); **RTF**
+for doc-synthesis commands that read source files at invocation time and need to stay
+fresh. Even then, treat the acronym as a checklist, not a template to fill in — the
+load-bearing pieces above still do the real work.
+
 ### Reasoning (Chain-of-Thought)
 
 For tasks where reasoning quality matters (maths, debugging, multi-hop logic), prefer a
@@ -161,6 +168,7 @@ hard to describe in prose. See detailed guidance below.
 - **Explicit beats implicit.** State the format, the response length, the starting token if useful — don't assume the model will infer it.
 - **Don't pad.** Hedging phrases ("please try to", "if possible", "feel free to") dilute the signal. Cut them.
 - **One job per prompt.** If the prompt is trying to do two unrelated things, split it. Compound tasks lead to trade-off outputs.
+- **Don't prescribe unverified mechanics.** If a step assumes an API, tool call, or polling method that hasn't been confirmed to exist, verify it first or default to a simpler validated mechanism (e.g., a time-based heartbeat) — don't let the prompt hallucinate a capability.
 
 ---
 
@@ -183,6 +191,10 @@ Default to **Sonnet 5** (`claude-sonnet-5`) for most prompts. Recommend Haiku fo
 with deterministic output (extraction, classification, enumeration). Recommend Opus when the
 decision space is large and quality is the primary constraint (open-ended research, architectural
 reasoning). When in doubt, recommend Sonnet and note conditions that would push up or down.
+
+For multi-agent dispatch/fan-out prompts, say explicitly that implementation agents inherit
+the session model and haiku is reserved for recon/mechanical sub-tasks only — left unstated,
+swarm-style habits default everything to haiku and silently downgrade quality-sensitive work.
 
 ---
 
@@ -214,6 +226,8 @@ If the prompt is for an agentic flow that will use MCP tools, name the tools exp
 Ask the operator which MCP servers will be active when this prompt runs. A prompt that references `mcp__grafana__query_loki_logs` is useless if the Grafana MCP isn't loaded.
 
 For Claude Code commands, MCP availability depends on the project's `settings.json` / session config. If the prompt requires MCPs, note this in the deliverable metadata.
+
+If the prompt targets a different agent or runtime than the one building it (e.g. drafting for Gemini from a Claude Code session), never assume the building session's tool namespace carries over — confirm the target runtime's actual available tools before naming any.
 
 ---
 

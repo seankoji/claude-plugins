@@ -150,6 +150,12 @@ If the file exists, read it and check `phase`. Also check whether the run descri
 looks unrelated to what the user is asking for now — a stale run from a past, finished
 task is the common case this guard exists for.
 
+A second concern this file alone can't catch: two `/imps` runs against the *same* repo
+collide beyond this state file — they can overwrite each other's synced Workflow
+script, race the shared `.git` object store, or push duplicate PRs. If you suspect
+another `/imps` session may already be active against this repo, confirm with the user
+before proceeding rather than assuming this state file is the only one in flight.
+
 Print a one-block summary either way:
 ```
   <"Plan ready — not yet dispatched" | "Run in progress — Workflow script was running">
@@ -278,7 +284,11 @@ quote or reason about its contents. Then:
     [Model selection reference](#model-selection-reference)). Always set `model:` explicitly.
   - **Type** — `code` (file changes, worktree-isolated) · `query` (read-only) ·
     `publish` (GitHub artifacts; use `gh api graphql` for Discussions, not REST)
-  - **Depends-on** — prerequisite task IDs, or `—` if independent
+  - **Depends-on** — prerequisite task IDs, or `—` if independent. A worktree-isolated
+    task's checkout is cut from the remote default branch HEAD at spawn time, not from
+    a not-yet-merged dependency's branch — if a task's spec needs its dependency's
+    changes, say so explicitly in the spec (e.g. "assume task #N is already merged" or
+    instruct a `git merge origin/<default>` first).
 
 **Step 2:** Write **`GOAL.md`** to an absolute path under `~/.claude/imps/runs/` — not
 the repo root, so the write never prompts for project-directory access. Derive the slug,
@@ -475,6 +485,11 @@ Workflow({
 })
 ```
 
+`personaBriefPaths` always lists all five briefs — the script decides at review time
+whether the diff has a browser-renderable surface and skips the `ux-designer` (browser)
+persona entirely when it doesn't, rather than forcing a browser review or attempting an
+unattended Chrome-MCP session, and notes the skip in the run's findings.
+
 **Step 3 — print the dispatch banner and stop; you'll be notified.** `Workflow` runs in
 the background — this turn ends here, not after the run finishes.
 
@@ -532,6 +547,12 @@ design note for what the script must implement to preserve this.
 
 **`blocked` results** — surface the problem, agree the next step with the user, persist
 the decision, re-invoke:
+- `state_read_mismatch` — readState()'s task count/phase disagree with a raw `jq` check
+  of the state file (the readState() mismapping failure mode, #87) — everything else in
+  `state`, including `operator_decision` itself, is untrustworthy this invocation, so the
+  script refuses to route on it. Inspect the raw file (`jq . <state file>`); if it looks
+  fine, this was likely a one-off read blip — persist `resolved, continue` to retry. If
+  the file itself is actually garbled, fix it by hand or persist `abort`.
 - `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
   the tree (or decides); persist `resolved, continue` or `abort`.
 - `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
@@ -542,7 +563,11 @@ the decision, re-invoke:
   `resolved, continue`.
 - `gate_red` — surface the gate name + log tail; agree retry guidance, skip, or abort.
 - `branch_mismatch` — reconcile branch state with the user, then persist
-  `reconciled, continue`.
+  `reconciled, continue`. Don't take an agent's self-reported `id` or `branch` at face
+  value here — agents can collide on the same self-reported id or report the base
+  branch instead of their real one. Cross-check against the state file's own task
+  table (the authoritative source for task identity) and `git branch --list` / `git
+  worktree list` for the actual branch names.
 
 If the user chooses abort at any gate, persist `abort` and re-invoke. The script posts
 any Discussion abort notice itself before returning, leaves the tree as-is, and returns
@@ -607,9 +632,14 @@ order:
    ```
      merged:    #6 <label>    (3 files)
      published: #3 Discussion → https://github.com/...
-     verdicts:  solution-architect APPROVE · grumpy-engineer APPROVE · ...
+     verdicts:  solution-architect APPROVE (posted) · grumpy-engineer APPROVE (inline) · ...
      PR:        <url, "ready for review"> | "no PR — branch is local"
    ```
+   Tag each verdict with how it was delivered — `(posted)` for a real GitHub review
+   under that persona's own App identity, `(inline — <reason>)` when it fell back (no
+   App identity installed for this org, or the post was denied) — a partial panel
+   should never read as full independent sign-off.
+
    Render `run_stats` as a short stats block (Achieved / Decision points / Timing /
    Imps — omit empty sections; `tokens_spent` is typically `null`, per the note above,
    so omit a Tokens line rather than print an empty one). If `findings_inline` is
@@ -715,3 +745,11 @@ in the prompts above stand for those current IDs.
 - The Workflow script owns the run state file and `.prs.json` from handover onward; this
   session's last direct state-file write is Phase 2 Step 6 (later writes are the
   `operator_decision` patches in Phase 4, applied via `jq` as documented there).
+- Worktree isolation is not airtight — after each merge step, don't just trust the
+  recorded worktree path; if anything about a merge looks off, check `git status
+  --short` and `git log --oneline -3` in the actual main checkout before assuming the
+  tree is clean.
+- Never bypass commit signing (`--no-gpg-sign` or similar) because the 1Password
+  SSH-signing agent looks locked or contended — that's usually transient under
+  concurrent swarm agents. Retry the commit a few times with a short pause between
+  attempts before surfacing it as blocked.
