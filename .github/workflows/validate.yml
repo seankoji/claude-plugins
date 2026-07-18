@@ -154,6 +154,15 @@ jobs:
             node --check "$f"
           done
 
+      - name: python3 --check all shipped Python scripts
+        # Syntax-checks every plugins/*/scripts/*.py file (all plugins, not just imps)
+        run: |
+          for f in plugins/*/scripts/*.py; do
+            [ -f "$f" ] || continue
+            echo "Checking $f..."
+            python3 -m py_compile "$f"
+          done
+
       - name: Check for bundled-asset path leaks
         run: |
           # Structural rule (not a hardcoded allowlist): any file shipped inside a

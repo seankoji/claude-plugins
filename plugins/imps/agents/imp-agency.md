@@ -51,10 +51,10 @@ only hears from you again if you `block`.
   into a sub-imp's prompt "so it can write directly" — that moves the write out of your
   control and breaks the single-writer / validated-path guarantee.
 - **The Workflow tool is not available to you.** Dispatch every batch of finders/refuters
-  as **synchronous parallel `imp` agents** — every member of a batch issued as its own
-  `Agent` tool call within ONE message so they run concurrently, `run_in_background` left
-  unset, each result returning directly as that call's tool result once the batch
-  completes. **Never background-dispatch and wait on `Monitor`** — a nested background
+  as **parallel `imp` agents, each with `run_in_background: false` passed explicitly on
+  every dispatch** — every member of a batch issued as its own `Agent` tool call within
+  ONE message so they run concurrently, each result returning directly as that call's
+  tool result once the batch completes. **Never background-dispatch and wait on `Monitor`** — a nested background
   agent's completion notification routes to the top-level session, not back to you, so
   you never receive it and the run stalls until the orchestrator manually forwards the
   JSON (an observed failure, not a hypothetical one). Never drip a batch's members out
@@ -87,8 +87,8 @@ only hears from you again if you `block`.
 ### 1 — Finder fan-out
 
 One finder per applicable dimension (honor `--focus` if given), ALL dispatched in ONE
-message as synchronous parallel `imp` agents (foreground — no `run_in_background`). Set
-`model:` explicitly on every dispatch per this table; thread the full profile into each
+message as parallel `imp` agents, each with `run_in_background: false` passed explicitly.
+Set `model:` explicitly on every dispatch per this table; thread the full profile into each
 prompt. **Model routing follows reasoning shape,
 not dimension count:** the deep-judgment lenses — `purpose` (existential), `stack`
 (architecture), `security` (adversarial threat), `performance` (systemic), `tests`
@@ -150,8 +150,8 @@ Synchronous dispatch means every finder in the batch completes together, not on 
 trickle — there is no "as each arrives" to pipeline against. Once the whole finder batch
 has returned, collect every dimension's **P0/P1** findings — plus every `delete`-verdict
 finding regardless of severity — and dispatch their refuters together in ONE message of
-synchronous parallel `imp` agents (remaining `fix`-verdict P2/P3 pass through unverified,
-labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
+parallel `imp` agents, each with `run_in_background: false` passed explicitly (remaining
+`fix`-verdict P2/P3 pass through unverified, labeled `PLAUSIBLE`). One refuter `imp` (**opus**) per finding — refutation
 is adversarial analysis, not a checkbox, and a wrongly-refuted P0 is the audit's
 costliest failure, so it gets the strong model. **Security P0s and every `delete`-verdict
 finding (any severity) get a 2-of-3 opus refuter panel** — refuted unless ≥2 of 3
@@ -175,8 +175,9 @@ One `imp` on **fable** — this is the widest-decision-space call in the audit, 
 open-ended "what did the whole fan-out miss?" that spans every dimension at once, so it
 gets the strongest reasoning tier. Fable access is not universal, so make the fallback a
 **concrete retry, not a pre-flight guess**: dispatch the critic on `fable` as a single
-synchronous `Agent` call; **if that call errors or returns an empty result, immediately
-re-dispatch the identical prompt on `opus`** and wait on that before proceeding. Never let
+`Agent` call with `run_in_background: false` passed explicitly; **if that call errors or
+returns an empty result, immediately re-dispatch the identical prompt on `opus`** (also
+with `run_in_background: false` passed explicitly) and wait on that before proceeding. Never let
 a failed fable dispatch silently skip the critic — it is on the critical path. The critic reads the
 surviving finding set + the profile and answers: which dimension is suspiciously clean,
 what surface got no coverage (a directory no finder read, a documented feature no one
