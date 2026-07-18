@@ -649,6 +649,10 @@ Learnings saved: "<rule 1>" [project] · "<rule 2>" [user]
 ```
 (or `No learnings saved this run.`). The run is over.
 
+This command does not edit its own body based on the learnings log — `/learn`, run from a
+claude-plugins checkout, is what periodically turns recurring `learnings.md` entries into
+a proposed, operator-gated edit to this command's body.
+
 ---
 
 ## Design note — why every Workflow invocation above is fresh, never `resumeFromRunId`

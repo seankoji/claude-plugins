@@ -339,6 +339,7 @@ The structured `audit.jsonl` append already happened in Saving guidance above �
 delivered session reaches it, not just ones with a learnings entry worth recording.
 
 If a recorded pattern seems worth promoting into this command file permanently, say so
-and let the operator decide whether to edit it themselves (or ask explicitly, on a given
-occasion, to draft that edit) — this skill does not propose or apply edits to its own body
-unprompted.
+and let the operator decide whether to edit it themselves — this skill does not propose or
+apply edits to its own body unprompted. `/learn`, run from a claude-plugins checkout, is
+the dedicated maintainer command that periodically turns recurring learnings-log entries
+into a proposed, operator-gated edit to this command's body.
