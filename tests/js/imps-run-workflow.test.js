@@ -96,3 +96,94 @@ test('an explicit status:"failed" result is still recorded the same way as befor
   assert.deepEqual(outcome.failed.map((f) => f.id), [1])
   assert.equal(outcome.failed[0].notes, 'lint errors')
 })
+
+// parseTaskDecision/parseGateDecision are pure string parsers — no agent() calls inside
+// them, so the stub agent below is never invoked; it only satisfies loadWorkflowFunctions'
+// factory signature.
+const noopAgent = async () => ({})
+
+test('parseTaskDecision parses valid retry and skip decisions', () => {
+  const { parseTaskDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseTaskDecision('retry tasks #1,#2: fix the flaky test'), {
+    kind: 'retry',
+    ids: [1, 2],
+    guidance: 'fix the flaky test',
+  })
+  assert.deepEqual(parseTaskDecision('skip tasks #4,#5'), { kind: 'skip', ids: [4, 5] })
+})
+
+test('parseTaskDecision is case-insensitive on the retry/skip keyword', () => {
+  const { parseTaskDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseTaskDecision('RETRY TASKS #1: bump the timeout'), {
+    kind: 'retry',
+    ids: [1],
+    guidance: 'bump the timeout',
+  })
+  assert.deepEqual(parseTaskDecision('SKIP TASKS #3'), { kind: 'skip', ids: [3] })
+})
+
+test('parseTaskDecision tolerates whitespace around ids and guidance', () => {
+  const { parseTaskDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseTaskDecision('retry tasks #1, #2 :   extra spaces guidance  '), {
+    kind: 'retry',
+    ids: [1, 2],
+    guidance: 'extra spaces guidance',
+  })
+})
+
+test('parseTaskDecision returns null (not NaN, not a throw) for malformed input', () => {
+  const { parseTaskDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.equal(parseTaskDecision('retry tasks #abc: fix it'), null, 'non-numeric ids never match the id character class')
+  assert.equal(parseTaskDecision('skip tasks #xyz'), null)
+  assert.equal(parseTaskDecision('gibberish decision'), null)
+  assert.equal(parseTaskDecision(''), null)
+  assert.equal(parseTaskDecision(null), null)
+  assert.equal(parseTaskDecision(undefined), null)
+})
+
+test('parseGateDecision parses valid retry and skip decisions', () => {
+  const { parseGateDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseGateDecision('retry lint: fix the eslint config'), {
+    kind: 'retry',
+    gate: 'lint',
+    guidance: 'fix the eslint config',
+  })
+  assert.deepEqual(parseGateDecision('skip lint'), { kind: 'skip', gate: 'lint' })
+})
+
+test('parseGateDecision is case-insensitive on the retry/skip keyword', () => {
+  const { parseGateDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseGateDecision('RETRY TEST: bump the timeout'), {
+    kind: 'retry',
+    gate: 'TEST',
+    guidance: 'bump the timeout',
+  })
+  assert.deepEqual(parseGateDecision('SKIP BUILD'), { kind: 'skip', gate: 'BUILD' })
+})
+
+test('parseGateDecision tolerates whitespace around the guidance text', () => {
+  const { parseGateDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.deepEqual(parseGateDecision('retry lint:    extra spaces guidance   '), {
+    kind: 'retry',
+    gate: 'lint',
+    guidance: 'extra spaces guidance',
+  })
+})
+
+test('parseGateDecision returns null (not NaN, not a throw) for malformed input', () => {
+  const { parseGateDecision } = loadWorkflowFunctions({ agent: noopAgent, parallel })
+
+  assert.equal(parseGateDecision('retry lint'), null, 'missing colon must not match')
+  assert.equal(parseGateDecision('retry test-fail: guidance'), null, 'hyphenated gate name is not \\w+')
+  assert.equal(parseGateDecision('gibberish decision'), null)
+  assert.equal(parseGateDecision(''), null)
+  assert.equal(parseGateDecision(null), null)
+  assert.equal(parseGateDecision(undefined), null)
+})
