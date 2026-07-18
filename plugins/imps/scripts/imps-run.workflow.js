@@ -512,7 +512,18 @@ async function runPersonaPanel(state, prNumber, defaultBranch, postingMode, pers
   const verdicts = await parallel(
     slugs.map((slug) => () => personaReview(slug, briefs[slug], prNumber, state.repo, defaultBranch, postingMode))
   )
-  return verdicts.filter(Boolean)
+  // parallel() resolves a thunk that threw (e.g. transient agent-call error) to null —
+  // entry order still lines up with `slugs`, so recover the slug from its position rather
+  // than silently dropping the persona via filter(Boolean) (mirrors runDispatch's
+  // dropped-by-parallel() recovery above).
+  return verdicts.map((v, i) =>
+    v || {
+      slug: slugs[i],
+      verdict: 'posting: failed — dispatch error (dropped by parallel())',
+      posted: false,
+      findings: [],
+    }
+  )
 }
 
 function fixLoopRound(findings) {
