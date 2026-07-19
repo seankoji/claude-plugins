@@ -13,12 +13,14 @@ Arguments: `$ARGUMENTS`
 
 **Before executing any steps**, output the following intro block so the user knows what's happening:
 
-> 🦇 **imps** — parallel AI swarm for your codebase
+> 🦇 **imps** — decompose-and-dispatch for your codebase
 >
-> Imps decomposes your task into small, dependency-mapped work units and dispatches them to
-> parallel AI agents running in isolated git worktrees. Each agent works independently, then
-> the results are gated, reviewed by a persona panel, and merged back to a holding branch.
-> Think of it as a focused team of specialists rather than one generalist doing everything in sequence.
+> Imps breaks your task into small, dependency-mapped work units and dispatches each to an
+> isolated-worktree agent — in parallel when the work splits cleanly, solo when it's genuinely
+> one unit. Either way the process is the same: the work happens off in its own agent, out of
+> this session's context, then gets gated, reviewed by a persona panel, and merged back to a
+> holding branch. Think of it as a focused team of specialists sized to the task, not padded
+> to look bigger than it is.
 
 ---
 
@@ -268,8 +270,19 @@ file/symbol enumeration, "where is X" lookups) and an `Explore` subagent for bro
 sweeps, all in one parallel batch. Read a file directly only when the plan itself must
 quote or reason about its contents. Then:
 
-- Break the work into discrete, atomic tasks. Each task has one clearly-stated output
-  and is independently completable.
+- **Solo-task check, before decomposing:** if the work is genuinely one atomic unit — a
+  single file/command/config change, or a task whose plan is already fully specified with
+  nothing left to split — do not invent a multi-task table just to populate rows. Write a
+  **single-row task table** and skip straight to Step 2. This is not a lighter path around
+  the process, it's the same process with a smaller DAG: Head Imp still reviews the plan
+  (Step 3) and, later, the diff; the one task still dispatches through the Workflow script
+  exactly like any other stage, which is what offloads the actual work into an isolated
+  worktree agent, out of this session's context; gates, the persona panel, and the endstate
+  PR all still run unchanged. The only thing skipped is manufacturing parallel work units
+  where none exist — never hedge on whether to run the swarm at all over this; a one-task
+  run is a first-class, expected outcome of planning, not a fallback to ask permission for.
+- Otherwise, break the work into discrete, atomic tasks. Each task has one clearly-stated
+  output and is independently completable.
 - For each task assign:
   - **Spec** — the operative instructions the imp needs to act without improvising:
     concrete inputs (repo/owner, file paths, exact commands), the expected output
@@ -318,6 +331,8 @@ one-liner) — shell state doesn't carry across tool calls. Write with this stru
  #  Task                                      Model   Type     Depends On
  1  <label>                                   haiku   query    —
  2  ...
+(a solo run legitimately stops at row 1 — see Phase 2 Step 1's solo-task check; don't pad
+with synthetic tasks to make the table look bigger)
 
 ## Status
 Planned — handing to the Workflow script.
