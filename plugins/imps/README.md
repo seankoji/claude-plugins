@@ -2,9 +2,10 @@
 
 ## What it does
 
-`/imps:imps` decomposes a task (or a batch of GitHub issues) into parallel, model-routed
-agents ("imps"), dispatches them as staged background subagents, and integrates results
-through deterministic gates and an adversarial persona-review panel.
+`/imps:imps` decomposes a task (or a batch of GitHub issues) into model-routed agents
+("imps") — parallel when the work splits into independent units, solo when it's genuinely
+one — dispatches them as staged background subagents, and integrates results through
+deterministic gates and an adversarial persona-review panel.
 
 The orchestrating session is deliberately minimal: it holds only the operator-facing
 work (plan approval, the push/PR gate, conflict decisions, learnings) while everything
