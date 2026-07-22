@@ -40,6 +40,12 @@
       "version": "0.3.0",
       "source": "./plugins/offload-sidecar",
       "description": "MCP tool that offloads file transforms, log triage, and vision tasks so Claude passes file paths, not content — deterministic in-process where possible, else routed across local Ollama tiers (deep/fast, private) or Gemini via the agy CLI (flash/pro, budget-gated so quota exhaustion rejects up front instead of failing mid-call). Formerly ollama-sidecar."
+    },
+    {
+      "name": "recon",
+      "version": "0.3.0",
+      "source": "./plugins/recon",
+      "description": "Discovery -> spec -> verify -> execution workflow for research, decisions, and reports, for Claude Cowork and Claude Code. Context isolation between phases is enforced by detection-and-refusal plus independent verification, not by asking a model to forget."
     }
   ]
 }
