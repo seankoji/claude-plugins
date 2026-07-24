@@ -216,6 +216,39 @@ const RAW_STATE_CHECK_SCHEMA = {
   required: ['raw_task_count', 'raw_phase'],
 }
 
+// Per-criterion requirement-coverage of the GOAL.md `## Definition of Done` against the
+// merged diff (gsd-core's Verify "requirement coverage" pass). Functional criteria only —
+// the fixed process-status lines are owned by the mechanical tickers elsewhere.
+const DOD_COVERAGE_SCHEMA = {
+  type: 'object',
+  properties: {
+    criteria: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          status: { type: 'string', enum: ['satisfied', 'unsatisfied', 'unverifiable'] },
+          evidence: { type: 'string' },
+        },
+        required: ['text', 'status', 'evidence'],
+      },
+    },
+  },
+  required: ['criteria'],
+}
+
+// Cheap classification of whether the merged diff touches any browser-renderable surface,
+// gating whether the ux-designer (browser) persona reviews. Fails toward MORE review.
+const SURFACE_DETECTION_SCHEMA = {
+  type: 'object',
+  properties: {
+    has_surface: { type: 'boolean' },
+    reason: { type: 'string' },
+  },
+  required: ['has_surface', 'reason'],
+}
+
 // ---------------------------------------------------------------------------
 // State-file helpers — every touch is an agent() call; the script body has no FS access.
 // ---------------------------------------------------------------------------
@@ -587,6 +620,41 @@ function fixLoopRound(findings) {
   )
 }
 
+// Requirement-coverage pass: verify each FUNCTIONAL DoD criterion against the merged diff
+// and reconcile its GOAL.md checkbox to match. Read-only w.r.t. everything except the
+// functional-criterion checkbox characters, and idempotent on resume (re-ticks satisfied,
+// unticks regressed). Dispatched once per successful Integrate, never in the PR: branch.
+function dodCoverage(defaultBranch) {
+  return agent(
+    `You are verifying requirement coverage for this run. Two jobs — do BOTH, in order.
+
+1. Read the "## Definition of Done" section of ${args.goalFilePath}. Identify the FUNCTIONAL acceptance criteria only — the checkbox lines describing what the work must actually deliver. EXCLUDE these fixed process-status lines, which are owned by other mechanisms and must NEVER be touched, reconciled, or reported here: any line reading roughly "Gates green ...", "Persona panel reviewed ...", "No merge conflicts ...", "CI green on the PR", "Outcome comment posted to the source Discussion".
+
+2. Run \`git diff origin/${defaultBranch}..HEAD\` yourself (never accept a diff pasted to you). For each functional criterion, judge it against the ACTUAL diff and assign a status:
+   - "satisfied" — the diff clearly implements it (evidence: the file paths / concrete changes that do so),
+   - "unsatisfied" — the diff does not implement it, or contradicts it,
+   - "unverifiable" — cannot be determined from the diff alone (e.g. needs a runtime or manual check).
+   For each, capture {text (the criterion's wording, without the checkbox), status, evidence (a one-line justification)}.
+
+3. RECONCILE each functional criterion's checkbox in ${args.goalFilePath} to match the status you just assigned — idempotently AND correctly on regression:
+   - "satisfied" -> the box MUST end up "[x]" (tick it if currently "[ ]"; leave it if already "[x]").
+   - "unsatisfied" OR "unverifiable" -> the box MUST end up "[ ]" (UNTICK it — change "[x]" to "[ ]" — if currently ticked; leave it if already "[ ]"). A criterion an earlier resume ticked but that is no longer satisfied MUST end up unticked, not left stale.
+   Edit ONLY the box characters of functional-criterion lines. Do NOT touch the excluded process-status lines, their boxes, prose, or any other text.
+
+Return via the required schema: "criteria": [{text, status, evidence}] for every functional criterion (empty array if the DoD has no functional criteria).`,
+    { label: 'dod-coverage', phase: 'Integrate', model: 'opus', schema: DOD_COVERAGE_SCHEMA }
+  )
+}
+
+// Cheap surface-detection: does the merged diff touch any browser-renderable file? Gates
+// whether the ux-designer persona reviews (change B). Read-only. Fails toward MORE review.
+function detectBrowserSurface(defaultBranch) {
+  return agent(
+    `Run \`git diff --name-only origin/${defaultBranch}..HEAD\` yourself and classify whether ANY changed path is a browser-renderable surface: a component, template, style, markup, or asset file that is served to and rendered by a browser (e.g. .tsx, .jsx, .vue, .svelte, .css, .scss, .less, .html, .svg and similar front-end/UI files). Do NOT count .js/.ts workflow or backend scripts, .md docs, config, tests, or backend-only code as a browser-renderable surface. Return via the required schema: "has_surface" (true if at least one changed path is such a surface, else false) and "reason" (one line naming the deciding file(s), or stating none were found).`,
+    { label: 'detect-surface', phase: 'Publish', model: 'haiku', schema: SURFACE_DETECTION_SCHEMA }
+  )
+}
+
 function finalizeRun(state, prInfo, verdicts, dispatchStats) {
   return agent(
     `Finalize this /imps run. State file: ${args.stateFilePath}. GOAL.md: ${args.goalFilePath}.
@@ -694,8 +762,29 @@ if (lastStatus === 'awaiting_authorization' && decision && decision.startsWith('
   // show the operator (a bare verdict word is not "the review record").
   let verdicts = state.verdicts
   if (!verdicts && prInfo) {
-    const results = await runPersonaPanel(state, prInfo.number, state.last_result.default_branch, postingMode)
+    // Surface-detection skip (change B): only the ux-designer (browser) persona depends on
+    // a browser-renderable surface being in the diff. Cheaply classify the changed paths and,
+    // if none is a browser surface, drop ux-designer from the INITIAL panel only (the dissenter
+    // re-review below is an orthogonal filter and is left untouched). Fail toward MORE review:
+    // has_surface true, or ANY error in classification, runs all five personas.
+    let personaFilter
+    let uxSkipFinding = null
+    try {
+      const surface = await detectBrowserSurface(state.last_result.default_branch)
+      if (surface && surface.has_surface === false) {
+        personaFilter = ['solution-architect', 'grumpy-engineer', 'sre', 'business-analyst']
+        uxSkipFinding = `ux-designer skipped — no browser-renderable surface: ${surface.reason}`
+      }
+    } catch (e) {
+      personaFilter = undefined // fail-open on the skip = fail-closed on review: run all five
+    }
+    const results = await runPersonaPanel(state, prInfo.number, state.last_result.default_branch, postingMode, personaFilter)
     let current = Object.fromEntries(results.map((v) => [v.slug, { verdict: v.verdict, findings: v.findings }]))
+    // Record the skip as a ux-designer finding so it surfaces in findings_inline / the final
+    // report. "SKIPPED" is not "CHANGES_REQUESTED", so the dissenter fix-loop never re-reviews it.
+    if (uxSkipFinding) {
+      current['ux-designer'] = { verdict: 'SKIPPED', findings: [uxSkipFinding] }
+    }
 
     // Fix loop, max 3 rounds. Deliberately does NOT persist `verdicts` to the state file
     // until the whole loop (or a resume of it) is done — persisting early made a crash
@@ -864,6 +953,13 @@ if (!anyGateSkipped) {
   await agent(`Mark the gates Definition-of-Done checkbox "[x]" in ${args.goalFilePath} (the line reading roughly "Gates green (build · lint · test · type ...)").`, { label: 'tick-gates-box', phase: 'Integrate', model: 'haiku' })
 }
 
+// Requirement-coverage pass: verify each functional DoD criterion against the merged diff
+// and reconcile its GOAL.md checkbox. Idempotent on resume (this segment only re-runs after
+// a gate/merge block, by which point dispatch+merge are no-ops); it re-ticks satisfied boxes
+// and unticks regressed ones. Never runs in the PR:-decision branch, so it fires at most once
+// per successful Integrate.
+const coverage = await dodCoverage(defaultBranch)
+
 // model_counts is derivable from the task table itself (plain JS, no agent call needed).
 // tokens_spent is NOT available here: unlike the old design (which read the Agent tool's
 // own `subagent_tokens` usage metadata directly off each imp's completion), a Workflow
@@ -881,6 +977,7 @@ const result = {
   gates: gateOutcome.results,
   diff_stat: diffStatInfo.diff_stat,
   default_branch: defaultBranch,
+  dod_coverage: coverage.criteria,
   dispatch: { model_counts: modelCounts, tokens_spent: null, artifacts: dispatchOutcome.artifacts },
 }
 await patchState({ segment: 'publish_finalize' }, 'enter-publish')
