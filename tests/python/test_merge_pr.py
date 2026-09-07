@@ -59,7 +59,7 @@ else:
     if a[-1].endswith("/update-branch"):
         state_file.write_text("updated")
     if mode == "transport": sys.exit(7)
-    code = {"race":"409", "unexpected":"500", "method":"405"}.get(mode, "200")
+    code = {"race":"409", "unexpected":"500", "method":"405", "forbidden":"403", "invalid":"422"}.get(mode, "200")
     if mode == "method" and body.get("merge_method") == "merge": code = "200"
     payload = {"merged": code == "200" and mode != "false-success"}
 Path(a[a.index("-o")+1]).write_text(json.dumps(payload))
@@ -137,6 +137,15 @@ print(code, end="")
                 result, calls = self.run_helper(mode)
                 self.assertEqual(result.returncode, 3, result.stderr)
                 self.assertNotIn("MERGED", result.stdout)
+                self.assertEqual(len(calls), 2)
+
+    def test_permanent_rejections_are_classified_without_retry_or_automerge(self):
+        for mode, reason in (("forbidden", "permission_denied"), ("invalid", "validation_failed")):
+            with self.subTest(mode=mode):
+                result, calls = self.run_helper(mode)
+                self.assertEqual(result.returncode, 4, result.stderr)
+                self.assertIn("reason=" + reason, result.stdout)
+                self.assertIn("automerge=unavailable", result.stdout)
                 self.assertEqual(len(calls), 2)
 
     def test_method_fallback_preserves_checked_head(self):

@@ -297,7 +297,7 @@ blocked() {
   local reason="$1" detail="$2" automerge="unavailable"
   if [ "$AUTO_MERGE" = 1 ]; then
     case "$reason" in
-    head_changed | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr) ;;
+    head_changed | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr | permission_denied | validation_failed) ;;
     *) enable_automerge && automerge="armed" ;;
     esac
   fi
@@ -402,6 +402,12 @@ for m in "${methods[@]}"; do
   fi
   if [ "$out" = "409" ]; then
     blocked "head_changed" "PR head changed after verification; inspect the new commit and rerun"
+  fi
+  if [ "$out" = "403" ]; then
+    blocked "permission_denied" "GitHub rejected the merge (HTTP 403); inspect the API error and repository permissions or rules before retrying"
+  fi
+  if [ "$out" = "422" ]; then
+    blocked "validation_failed" "GitHub rejected the merge input (HTTP 422); inspect the API error and correct the request before retrying"
   fi
   if [ "$out" != "405" ]; then
     die "merge request returned HTTP ${out}; refresh PR state before retrying" 3

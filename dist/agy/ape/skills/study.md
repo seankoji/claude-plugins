@@ -27,7 +27,7 @@ same bounded preparation inline:
    For a tree URL, fetch path prefixes longest-first; the first successful prefix is the
    ref and the remainder is the subdirectory. Use `--` before the remote and ref, check
    out `FETCH_HEAD` detached, and stop if the canonical target escapes the clone.
-3. Reuse the host project's fingerprint when it is under 30 days old. Otherwise write it
+3. Inspect the current project and refresh its fingerprint for this focus; write it
    in at most 150 words: stack, domain, architecture, notable patterns, relevant weaknesses,
    and an explicit already-in-use list. Show it before analysis.
 4. Record `full_name`, the checked-out `revision`, the requested `target_path`, and
@@ -53,7 +53,9 @@ and `report_path`. Its instructions are:
 - Write one report to `report_path`, at most 900 words, with these sections: `Overlap`,
   `Adopt`, `Adapt`, `Reject`, and `Command case`. Each adopt/adapt item names the local
   files or modules it would change, effort S/M/L, the main tradeoff, and the strongest
-  evidence against adoption. `Reject` includes impressive ideas that do not transfer.
+  evidence against adoption. Name the simpler local alternative and a bounded experiment
+  with a baseline, pass condition, and abandon condition. Empty `Adopt` and `Adapt`
+  sections are valid outcomes. `Reject` includes impressive ideas that do not transfer.
 - `Command case` answers whether the comparison reveals a repeated workflow that deserves
   a new command, an existing-command mode, or neither. It must name the boundary.
 - Return the complete report text after writing it. Do not edit the current project.

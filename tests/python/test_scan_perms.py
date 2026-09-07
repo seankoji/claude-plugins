@@ -238,6 +238,21 @@ class MainEndToEndTest(unittest.TestCase):
             self.assertIn("git status", output)
             self.assertIn("    3  git status", output)
 
+    def test_ssh_drill_and_json_evidence_together_recover_the_exact_command(self):
+        command = "ssh nas 'ls *'"
+        with tempfile.TemporaryDirectory() as d:
+            transcript = _write_transcript(d, "ssh.jsonl", [_tool_use_line("Bash", {"command": command})])
+            with mock.patch.object(scan_perms, "PROJECTS_DIR", scan_perms.Path(d)):
+                text_output = self._run_main_capturing_stdout()
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    scan_perms.main(["--json"])
+            self.assertIn("ssh nas 'ls", text_output)
+            evidence = json.loads(buf.getvalue())
+            self.assertIn("ssh nas", json.dumps(evidence))
+            self.assertIn(transcript, json.dumps(evidence))
+            self.assertEqual(json.loads(scan_perms.Path(transcript).read_text())['message']['content'][0]['input']['command'], command)
+
     def test_write_capable_pattern_is_reported_as_its_own_distinct_row(self):
         # scan_perms.py itself does not classify safe-vs-unsafe (that
         # judgment happens downstream, in the command that consumes this

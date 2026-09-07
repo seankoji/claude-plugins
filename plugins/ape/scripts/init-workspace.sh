@@ -38,9 +38,11 @@ fi
 # -- end migration --
 
 mkdir -p "$workspace/repos" "$workspace/reports"
+reports_dir="$(mktemp -d "$workspace/reports/run.XXXXXXXX")"
 
 echo "slug=$slug"
 echo "workspace=$workspace"
+echo "reports=$reports_dir"
 ls -la "$workspace"
 
 fingerprint="$workspace/fingerprint.md"

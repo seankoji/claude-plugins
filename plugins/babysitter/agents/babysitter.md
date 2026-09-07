@@ -260,6 +260,9 @@ Then handle the reason:
   separately only after every finding is settled. Thread resolution has no atomic
   GitHub head precondition; the helper checks ownership/head immediately before it.
 - `reason=head_changed` — inspect the new head, rerun relevant gates, and retry.
+- `reason=permission_denied` or `reason=validation_failed` — preserve the API error.
+  Correct the permission, repository rule, or invalid request before retrying; do not
+  treat these as transient transport failures. These outcomes never arm auto-merge.
 - `reason=verified_head_changed` or `reason=thread_not_on_pr` — refresh the PR/thread
   identity and re-verify the finding; do not resolve a different thread by guesswork.
 - `reason=closed` — stop; the PR was closed without merging. Report it as closed.

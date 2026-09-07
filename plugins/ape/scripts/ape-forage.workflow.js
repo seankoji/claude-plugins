@@ -21,7 +21,7 @@
 // (dedupe, rank-cap, retry-once, barrier-before-synthesis) is actual code, not prose
 // trusted to be followed correctly every run.
 //
-// args shape (all required): { pluginRoot, fingerprint, focusArea, workspaceDir }
+// args shape (all required): { pluginRoot, fingerprint, focusArea, workspaceDir, reportsDir }
 //
 // workspaceDir is expected to be a disambiguated path from init-workspace.sh
 // (remote-origin + basename) — repo subdirectories under repos/ are further
@@ -259,6 +259,12 @@ Write ${workspaceDir}/RECOMMENDATIONS.md: per technique, ranked — what it is, 
 Return via the required schema: up to 3 recommendations as one paragraph each (~400 words max), including the simpler alternative and proposed experiment, a short note on notable near-miss rejections, and stats. If none survive, say no adoption is justified and set techniquesSurfaced to 0. Never pad the result to meet a quota.`
 }
 
+// A fresh directory allocated by init-workspace.sh isolates this expedition's
+// writes from all previous reports, including when an analyst returns without writing.
+const reportsPrefix = `${args.workspaceDir}/reports/run.`
+if (typeof args.reportsDir !== 'string' || !args.reportsDir.startsWith(reportsPrefix) || !/^[A-Za-z0-9]+$/.test(args.reportsDir.slice(reportsPrefix.length))) {
+  return { status: 'blocked', reason: 'invalid_reports_dir', notes: 'Pass the fresh reports directory from init-workspace.sh.' }
+}
 phase('Discovery')
 const discoveryResults = await parallel(
   AXES.map((axis) => () =>
@@ -349,7 +355,7 @@ const analysisResults = await parallel(
   clonedSelection.map((c) => () => {
     const dirName = c.fullName.replace('/', '__')
     const repoPath = `${args.workspaceDir}/repos/${dirName}`
-    const reportPath = `${args.workspaceDir}/reports/${dirName}.md`
+    const reportPath = `${args.reportsDir}/${dirName}.md`
     return agent(analysisPrompt(args.fingerprint, args.focusArea, repoPath, reportPath, c.fullName), {
       label: `analyze:${dirName}`,
       phase: 'Analysis',
@@ -360,12 +366,12 @@ const analysisResults = await parallel(
 log(`Analysis: ${analysisResults.filter(Boolean).length}/${clonedSelection.length} analysts returned`)
 
 // Validate every expected report exists and is non-empty before synthesis.
-// No fs here, so an agent verifies the files. A failed analyst cannot be rescued
-// by a stale report left at the same path by an earlier expedition.
+// No fs here, so an agent verifies the files. Null analyst results are excluded;
+// the fresh report directory also prevents reuse after a silently failed write.
 const failedAnalysts = clonedSelection.filter((_, index) => analysisResults[index] == null).map((c) => c.fullName)
 const expectedReports = clonedSelection.filter((_, index) => analysisResults[index] != null).map((c) => ({
   fullName: c.fullName,
-  path: `${args.workspaceDir}/reports/${c.fullName.replace('/', '__')}.md`,
+  path: `${args.reportsDir}/${c.fullName.replace('/', '__')}.md`,
 }))
 if (expectedReports.length === 0) {
   return { status: 'blocked', reason: 'missing_reports',
@@ -389,10 +395,11 @@ for (let attempt = 0; attempt < 2; attempt++) {
   log(`Report verification attempt ${attempt + 1} failed`)
 }
 const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
-// Preserve completed research on a verifier outage. The explicit report list
-// still limits synthesis, and the degraded result must be visible to the user.
-if (reportsUnverified) log('Report verification unavailable after retry; synthesis must report its coverage limits')
-const missingPaths = reportsUnverified ? [] : reportCheck.missing
+if (reportsUnverified) {
+  return { status: 'blocked', reason: 'report_verification_failed', reports: expectedReports,
+    notes: 'Report verification failed twice. Keep these artifacts for inspection or a synthesis-only retry after verifying them; no recommendations were produced.' }
+}
+const missingPaths = reportCheck.missing
 const missingReports = expectedReports
   .filter((r) => missingPaths.includes(r.path))
   .map((r) => r.fullName)
@@ -406,10 +413,7 @@ if (missingReports.length > 0) {
 }
 
 phase('Synthesis')
-const coverageNote = reportsUnverified
-  ? '\n\nReport existence verification failed twice. Report which listed files you actually read. If a listed report is unreadable, explicitly limit the recommendations and stats to readable reports; never silently substitute an older report or claim full coverage.'
-  : ''
-const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports) + coverageNote, {
+const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
   label: 'synthesize',
   model: 'opus',
   schema: SYNTHESIS_SCHEMA,

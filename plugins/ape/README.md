@@ -78,7 +78,7 @@ one-shot clone retry are actual code now, not prose trusted to be followed corre
 | Command | `commands/study.md` | `/ape:study <GitHub URL> [focus]` — synchronous depth-first comparison of one named repository or subdirectory |
 | Command | `commands/clean.md` | `/ape:clean [--all]` — sanctioned deletion of clones (keeps reports) |
 | Workflow script | `scripts/ape-forage.workflow.js` | The canonical orchestration — discovery, dedupe, ranking, clone+retry, analysis, synthesis. Synced into `~/.claude/workflows/ape-forage.js` before each run. |
-| Script | `scripts/init-workspace.sh` | Phase 0 helper — creates the workspace and reports whether a fingerprint already exists, as one command. |
+| Script | `scripts/init-workspace.sh` | Phase 0 helper — creates the workspace and a fresh report directory for each expedition, preserving earlier research. |
 | Script | `scripts/clone-candidates.sh` | Clone helper, called from inside the Workflow script — clones the selected candidates in the background and returns only a log tail. |
 | Script | `scripts/search-repos.sh` | Discovery helper — runs several `gh search` queries as one command. |
 | Script | `scripts/triage-repos.sh` | Discovery helper — runs several `gh repo view` metadata checks as one command instead of a shell for-loop. |

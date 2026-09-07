@@ -130,7 +130,7 @@ If a candidate matches any of these, drop it — no rule needed.
 
 Read in parallel:
 
-- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py --json` — patterns, source lines, and completed/error/unobserved result counts from the last 50 transcripts. The default text mode also provides SSH/sudo drills. If absent, Phase 1 is unavailable; run with `--audit-only`.
+- Run both `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py --json` (patterns, source lines, and completed/error/unobserved result counts from the last 50 transcripts) and `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` (SSH/sudo drill prefixes). Read the JSON-cited transcript lines for the complete remote command and quote style before forming a rule; drill prefixes are not complete shell commands. If the script is absent, Phase 1 is unavailable; run with `--audit-only`.
 - `~/.claude/claude-tuneup.config.json` if it exists — see **Configuration** above; fall back to the documented defaults for any field it omits, and to all defaults if the file is absent entirely.
 - `~/.claude/settings.json` — follow the symlink to the real file if it's a link
 - `.claude/settings.json` if it exists

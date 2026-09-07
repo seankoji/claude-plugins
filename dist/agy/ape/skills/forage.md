@@ -20,10 +20,12 @@ Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current d
 ```bash
 slug="$(basename "$(pwd)")"
 mkdir -p ~/tmp/repo-research/"$slug"/repos ~/tmp/repo-research/"$slug"/reports
+reports_dir="$(mktemp -d ~/tmp/repo-research/"$slug"/reports/run.XXXXXXXX)"
+echo "$reports_dir"
 ls -la ~/tmp/repo-research/"$slug"
 ```
 
-3. `~/tmp/repo-research/<slug>/` is the workspace for every later phase. If it already holds a `fingerprint.md` that still matches the current commit, dirty changes, and focus, reuse it; age alone is insufficient. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
+3. `~/tmp/repo-research/<slug>/` is the workspace. Keep the freshly emitted report directory for this run; never reuse an old directory. Inspect the current project and rewrite `fingerprint.md` every run (≤150 words): stack, domain, architecture, notable patterns, 3–5 current weaknesses relevant to the focus, and an explicit **already-in-use** list. Include the current commit and focus, and inspect dirty changes. An old fingerprint is only a checklist to recheck. Nothing already in use may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 None of the bundled `gh` helpers ship either (same directory, same exclusion), so the searches below are ordinary `gh` calls rather than one pre-approvable script per phase. Headless runs auto-deny any tool call needing a permission they cannot prompt for, and say so clearly (`docs/platform-matrix.md`, Item 9) — so an unattended run needs the matching allow-rules added under `permissions.allow` in `settings.json` first, deliberately, never silently.
@@ -108,7 +110,7 @@ Judge applicability against the fingerprint **including its already-in-use list*
 recommending something the host already has is a failure. "Impressive, but doesn't transfer
 because X" is a valid and useful verdict; say it. Flag copyleft licences (GPL/AGPL): the
 idea transfers freely, verbatim code does not. Write each report to
-`<workspace>/reports/<owner>__<repo>.md` (≤600 words) — per technique: name, immutable
+`<fresh-report-directory>/<owner>__<repo>.md` (≤600 words) — per technique: name, immutable
 permalink, the problem it solves, which fingerprint weakness it addresses and where it would
 land here, effort (S/M/L), its main tradeoff, and the strongest evidence against transfer.
 
@@ -136,5 +138,4 @@ Report whichever outcome the expedition actually reached:
 - **`no_candidates`** — nothing survived discovery or ranking. Say so and stop; a fresh run,
   probably with a different focus area, is the only way forward.
 - **`clone_failed`** — surface the failed list. Once the user has addressed the cause (auth,
-  rate limit, disk space), re-running `/forage` costs only discovery through clone again:
-  the fingerprint is reused from the workspace.
+  rate limit, disk space), re-run `/forage` with a refreshed fingerprint and a fresh report directory.

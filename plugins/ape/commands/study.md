@@ -26,9 +26,10 @@ Arguments: `$ARGUMENTS`
    prints `full_name`, `target_path`, `revision`, `report_path`, `fingerprint_path`, and
    `fingerprint_fresh`.
    Stop on any non-zero exit. Never reinterpret a rejected URL with ad hoc shell commands.
-3. If `fingerprint_fresh=true`, reuse `fingerprint_path`. Otherwise write it in
+3. Inspect the current project and refresh `fingerprint_path` for this focus; write it in
    at most 150 words: stack, domain, architecture, notable patterns, 3–5 weaknesses relevant
-   to the focus, and an explicit already-in-use list. Show the fingerprint before analysis.
+   to the focus, and an explicit already-in-use list. Check dirty changes too; an age-only
+   `fingerprint_fresh` value does not establish relevance. Show the fingerprint before analysis.
 
 ## Phase 1 — Compare one source deeply
 
