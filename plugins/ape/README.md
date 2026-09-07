@@ -104,10 +104,13 @@ Drop this directory into your plugin marketplace repo and add an entry:
 /ape:clean --all           # full wipe
 ```
 
-All artifacts land in `~/tmp/repo-research/<project-dir-name>/`. Forage uses
-`fingerprint.md`, `repos/`, `reports/*.md`, and `RECOMMENDATIONS.md`. Study uses
+All artifacts land in `~/tmp/repo-research/<project-dir-name>/`. Each forage expedition
+uses a fresh `reports/run.<random>/` containing its fingerprint, clones under `repos/`,
+analyst reports, and `RECOMMENDATIONS.md`. Study uses
 `studies/<owner>__<repo>/` for the pinned clone, source fingerprint, and comparison report.
-Reports persist so a later run can detect source or host-project drift before re-analysis.
+Runs are retained without automatic expiry so failures remain inspectable. `/ape:clean`
+removes their clones while keeping evidence; `/ape:clean --all` removes the full workspace
+when explicitly requested. Retained runs consume disk until cleaned.
 
 Use `/ape:forage` when the source is unknown and coverage matters. Use `/ape:study` when
 the user has already named the source and needs line-level transfer judgment. Study is

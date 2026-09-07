@@ -9,6 +9,11 @@ IDs within a transcript. Repeated calls, errors, and missing results do not esta
 approval or safety. The scanner reads local transcripts and never edits permissions;
 zero proposed additions is a valid result.
 
+The default text report retains streaming, raw occurrence counts and SSH/sudo drill
+prefixes. JSON counts distinct call IDs, so replayed turns can make its counts lower.
+Use JSON counts for the proposal threshold, then inspect source results: a permission
+denial may reveal avoidable friction, but repetition never authorizes a new rule.
+
 A three-phase permission audit and settings tuneup command for [Claude Code](https://code.claude.com/) — scans recent transcripts to surface missing allowlist entries, classifies them by global vs project scope, deduplicates across settings files, and logs findings to a running notes file you can act on.
 
 ## Platforms

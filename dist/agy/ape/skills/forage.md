@@ -25,7 +25,7 @@ echo "$reports_dir"
 ls -la ~/tmp/repo-research/"$slug"
 ```
 
-3. `~/tmp/repo-research/<slug>/` is the workspace. Keep the freshly emitted report directory for this run; never reuse an old directory. Inspect the current project and rewrite `fingerprint.md` every run (≤150 words): stack, domain, architecture, notable patterns, 3–5 current weaknesses relevant to the focus, and an explicit **already-in-use** list. Include the current commit and focus, and inspect dirty changes. An old fingerprint is only a checklist to recheck. Nothing already in use may be recommended later.
+3. `~/tmp/repo-research/<slug>/` is the workspace. Keep the freshly emitted report directory for this run; never reuse an old directory. Inspect the current project and write `<fresh-report-directory>/fingerprint.md` every run (≤150 words): stack, domain, architecture, notable patterns, 3–5 current weaknesses relevant to the focus, and an explicit **already-in-use** list. Include the current commit and focus, and inspect dirty changes. An old fingerprint is only a checklist to recheck. Nothing already in use may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 None of the bundled `gh` helpers ship either (same directory, same exclusion), so the searches below are ordinary `gh` calls rather than one pre-approvable script per phase. Headless runs auto-deny any tool call needing a permission they cannot prompt for, and say so clearly (`docs/platform-matrix.md`, Item 9) — so an unattended run needs the matching allow-rules added under `permissions.allow` in `settings.json` first, deliberately, never silently.
@@ -87,7 +87,7 @@ rejection — including anything cut purely for the cap — a one-line reason. *
 
 ### 3. Clone
 
-Clone each selection into `<workspace>/repos/<owner>__<repo>` (shallow; shallower still
+Clone each selection into `<fresh-report-directory>/repos/<owner>__<repo>` (shallow; shallower still
 for anything over ~300 MB), then verify every directory exists and is non-empty — a clone
 step that reports success without a non-empty directory has failed. Retry the failures
 **once**. If fewer than 2 repos verify after that retry, stop with `clone_failed` and the
@@ -121,7 +121,7 @@ list and against the other reports; dedupe convergent findings and name the conf
 anything already in use, anything incompatible with an existing pattern, and anything an
 analyst honestly flagged as not transferring — that rejection is signal, not noise to
 override. Rank the survivors by expected value against the fingerprint's weaknesses, not by
-how confidently they were written up. Write `<workspace>/RECOMMENDATIONS.md`: per technique,
+how confidently they were written up. Write `<fresh-report-directory>/RECOMMENDATIONS.md`: per technique,
 ranked — what it is, immutable source permalink, the specific modules **here** it would
 land in, effort (S/M/L), tradeoffs and risks (mandatory, not just upside), and the strongest
 evidence against adopting it. Include the simpler local alternative and a proposed experiment with a baseline, measurable pass condition, and abandon condition; do not report proposed gains as measured results.

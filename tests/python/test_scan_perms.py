@@ -148,6 +148,22 @@ class IterToolUsesTest(unittest.TestCase):
             self.assertEqual(row["outcomes"], {"completed": 1, "error": 1, "unobserved": 1})
             self.assertEqual([source["line"] for source in row["sources"]], [1, 4, 6])
             self.assertNotIn("command", json.dumps(row))
+            self.assertEqual(len(list(scan_perms.iter_tool_uses([scan_perms.Path(path)]))), 4)
+
+    def test_evidence_retains_only_report_fields_and_handles_invalid_ids(self):
+        calls = [
+            {"type": "tool_use", "name": "Write", "input": {"content": "large write payload" * 10000}},
+            {"type": "tool_use", "id": 42, "name": "Bash", "input": {"command": "git status --short"}},
+            {"type": "tool_use", "id": [], "name": "mcp__fixture__read", "input": {"payload": "large MCP payload" * 10000}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_transcript(directory, "a.jsonl", [json.dumps({"type": "assistant", "message": {"content": calls}})])
+            evidence = list(scan_perms.iter_tool_evidence([scan_perms.Path(path)]))
+            self.assertEqual(len(evidence), 2)
+            self.assertLess(len(json.dumps(evidence)), 1000)
+            self.assertTrue(all(e['outcome'] == 'unobserved' for e in evidence))
+            self.assertEqual(evidence[0]['call']['input']['command'], 'git status')
+            self.assertEqual(evidence[1]['call']['input'], {})
 
     def test_results_do_not_cross_transcript_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:

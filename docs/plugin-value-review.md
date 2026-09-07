@@ -50,3 +50,16 @@ before claiming general gains; the tests in this PR prove specific behavior, not
 If prompt-builder or imps adds steps without improving those outcomes, retire that
 workflow or reduce it to an optional skill. Do not add another orchestration layer to
 explain away a losing comparison.
+
+## Deliberate tradeoffs after adversarial review
+
+Babysitter requires explicit resolution of every review thread, including outdated
+threads, even when GitHub would permit merging without it. Auto-merge also waits for
+that verification. The bundled resolver makes this recoverable; a bot reply or an
+outdated location does not establish that the finding was fixed. This costs a review
+step on repositories with weaker protection rules.
+
+Prompt-builder keeps the shorter fully passing prompt by default. A longer prompt's
+untested benefit is a hypothesis: add the missing case and rerun before claiming it
+wins. The checker reports both scores and byte lengths so an operator can make a
+different choice; it does not prove that brevity improves model quality.

@@ -261,8 +261,9 @@ Return via the required schema: up to 3 recommendations as one paragraph each (~
 
 // A fresh directory allocated by init-workspace.sh isolates this expedition's
 // writes from all previous reports, including when an analyst returns without writing.
-const reportsPrefix = `${args.workspaceDir}/reports/run.`
-if (typeof args.reportsDir !== 'string' || !args.reportsDir.startsWith(reportsPrefix) || !/^[A-Za-z0-9]+$/.test(args.reportsDir.slice(reportsPrefix.length))) {
+const workspaceDir = typeof args.workspaceDir === 'string' ? args.workspaceDir.replace(/\/+$/, '') : ''
+const reportsPrefix = `${workspaceDir}/reports/run.`
+if (!workspaceDir || typeof args.reportsDir !== 'string' || !args.reportsDir.startsWith(reportsPrefix) || !/^[A-Za-z0-9]+$/.test(args.reportsDir.slice(reportsPrefix.length))) {
   return { status: 'blocked', reason: 'invalid_reports_dir', notes: 'Pass the fresh reports directory from init-workspace.sh.' }
 }
 phase('Discovery')
@@ -318,9 +319,9 @@ async function cloneAttempt(list) {
     .join(' ')
   return agent(
     `Run this exact command and report its output, then verify each cloned repo directory is non-empty:
-bash ${shQuote(`${args.pluginRoot}/scripts/clone-candidates.sh`)} ${shQuote(args.workspaceDir)} ${cloneArgs}
+bash ${shQuote(`${args.pluginRoot}/scripts/clone-candidates.sh`)} ${shQuote(args.reportsDir)} ${cloneArgs}
 
-The script validates every candidate up front and exits 1 without cloning anything if any URL or name is invalid. Once validation passes, individual clone failures are fail-soft (it swallows them into its log and exits 1 only in aggregate if any clone failed) — after it returns, check each of these directories under ${args.workspaceDir}/repos/ yourself and report which are present and non-empty vs missing/empty:
+The script validates every candidate up front and exits 1 without cloning anything if any URL or name is invalid. Once validation passes, individual clone failures are fail-soft (it swallows them into its log and exits 1 only in aggregate if any clone failed) — after it returns, check each of these directories under ${args.reportsDir}/repos/ yourself and report which are present and non-empty vs missing/empty:
 ${list.map((c) => c.fullName.replace('/', '__')).join(', ')}
 
 Return via the required schema: "cloned" = the fullName list (original owner/repo form) that verified non-empty, "failed" = the rest.`,
@@ -354,7 +355,7 @@ const clonedSelection = ranking.selected.filter((c) => cloneResult.cloned.includ
 const analysisResults = await parallel(
   clonedSelection.map((c) => () => {
     const dirName = c.fullName.replace('/', '__')
-    const repoPath = `${args.workspaceDir}/repos/${dirName}`
+    const repoPath = `${args.reportsDir}/repos/${dirName}`
     const reportPath = `${args.reportsDir}/${dirName}.md`
     return agent(analysisPrompt(args.fingerprint, args.focusArea, repoPath, reportPath, c.fullName), {
       label: `analyze:${dirName}`,
@@ -413,7 +414,7 @@ if (missingReports.length > 0) {
 }
 
 phase('Synthesis')
-const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
+const synthesis = await agent(synthesisPrompt(args.reportsDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
   label: 'synthesize',
   model: 'opus',
   schema: SYNTHESIS_SCHEMA,
@@ -424,6 +425,5 @@ return {
   recommendations: synthesis.recommendations,
   nearMisses: synthesis.nearMisses,
   stats: { ...synthesis.stats, reposAnalyzed: Math.min(synthesis.stats.reposAnalyzed, expectedReports.length) },
-  reports_unverified: reportsUnverified,
   failed_analysts: failedAnalysts,
 }

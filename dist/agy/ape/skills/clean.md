@@ -8,10 +8,10 @@ description: >
 🐒 This is the "I say so" step — the only sanctioned way to delete ape's clones.
 
 1. Workspace: `~/tmp/repo-research/<project-slug>/` (slug = current directory basename). If it doesn't exist, say so and stop.
-2. Show `du -sh` for the top-level `repos/` and every
+2. Show `du -sh` for the top-level `repos/`, each `reports/run.*/repos/`, and every
    `studies/<owner>__<repo>/repos/` directory, then list their contents so the user sees
    exactly what is about to go. Use `Glob`, not an unbounded filesystem search, to resolve
    the study clone directories.
 3. Ask the user to confirm.
-4. On confirmation, run `__PLUGIN_ROOT__/scripts/clean-ape-workspace.sh <workspace-path> --confirm`. This deletes `repos/` ONLY. Keep `fingerprint.md`, `reports/`, and `RECOMMENDATIONS.md` — they are cheap, and they make re-synthesis and future runs cheaper.
+4. On confirmation, run `__PLUGIN_ROOT__/scripts/clean-ape-workspace.sh <parent-of-each-listed-repos-directory> --confirm` once per directory shown above. Each call deletes that parent's `repos/` only. Keep every fingerprint, report, and `RECOMMENDATIONS.md` for inspection and re-synthesis.
 5. Only if the user passed `--all` (or explicitly asks): run `__PLUGIN_ROOT__/scripts/clean-ape-workspace.sh <workspace-path> --all --confirm` after a second confirmation.

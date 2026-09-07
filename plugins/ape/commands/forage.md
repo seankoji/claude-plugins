@@ -18,7 +18,7 @@ Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current d
 
 1. Run `gh auth status`. If unauthenticated, stop and tell the user to run `gh auth login` — nothing downstream works without it.
 2. Run `${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh` — creates `repos/` and a fresh `reports/run.<random>/` directory under the workspace. Keep the emitted `workspace=` and `reports=` values; never reuse a report directory from an earlier expedition.
-3. Inspect the current project and rewrite `fingerprint.md` on every run (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Include the current commit and focus. Treat an old fingerprint only as a checklist to recheck against current files, including dirty changes. Nothing on the already-in-use list may be recommended later.
+3. Inspect the current project and write `<fresh-report-directory>/fingerprint.md` on every run (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Include the current commit and focus. Treat an old fingerprint only as a checklist to recheck against current files, including dirty changes. Nothing on the already-in-use list may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 ## Phase 1 — Sync the Workflow script

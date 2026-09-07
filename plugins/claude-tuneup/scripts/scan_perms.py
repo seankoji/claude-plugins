@@ -102,10 +102,21 @@ def iter_tool_evidence(transcripts):
                             if not isinstance(block, dict):
                                 continue
                             if msg.get("type") == "assistant" and block.get("type") == "tool_use":
-                                key = block.get("id") or (line, index)
-                                if not isinstance(key, (str, tuple)):
+                                name, inp = block.get("name"), block.get("input") or {}
+                                if not isinstance(name, str) or not isinstance(inp, dict):
                                     continue
-                                calls.setdefault(key, {"call": block, "transcript": str(path), "line": line})
+                                if name == "Bash" and isinstance(inp.get("command"), str):
+                                    leaders, head, sub = first_real_token(first_segment(inp["command"]))
+                                    command = " ".join(leaders + [head] + ([sub] if sub else []))
+                                    projected = {"name": name, "input": {"command": command}}
+                                elif name.startswith("mcp__"):
+                                    projected = {"name": name, "input": {}}
+                                else:
+                                    continue
+                                key = block.get("id")
+                                if not isinstance(key, str) or not key:
+                                    key = (line, index)
+                                calls.setdefault(key, {"call": projected, "transcript": str(path), "line": line})
                             elif msg.get("type") == "user" and block.get("type") == "tool_result":
                                 key = block.get("tool_use_id")
                                 if isinstance(key, str):
@@ -124,8 +135,25 @@ def iter_tool_evidence(transcripts):
 
 
 def iter_tool_uses(transcripts):
-    for evidence in iter_tool_evidence(transcripts):
-        yield evidence["call"]
+    """Keep the legacy text report streaming, with raw occurrence counts."""
+    for path in transcripts:
+        try:
+            with open(path, "r") as f:
+                for raw in f:
+                    try:
+                        msg = json.loads(raw)
+                        if msg.get("type") != "assistant":
+                            continue
+                        content = msg.get("message", {}).get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                yield block
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        continue
+        except (FileNotFoundError, PermissionError):
+            continue
 
 
 def evidence_report(transcripts):

@@ -272,19 +272,27 @@ test('synthesis reads only this run reports and may recommend nothing', async ()
   async function agent(prompt, opts) {
     if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
     if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
-    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
-    if (opts.label.startsWith('analyze:')) return {}
+    if (opts.label === 'clone') {
+      assert.ok(prompt.includes("'/workspace/reports/run.fixture'"))
+      return { cloned: ['org/p', 'org/q'], failed: [] }
+    }
+    if (opts.label.startsWith('analyze:')) {
+      assert.ok(prompt.includes('/workspace/reports/run.fixture/repos/'))
+      assert.ok(!prompt.includes('/workspace/repos/'))
+      return {}
+    }
     if (opts.label === 'verify-reports') return { missing: [] }
     if (opts.label === 'synthesize') {
       assert.ok(prompt.includes('/workspace/reports/run.fixture/org__p.md'))
       assert.ok(prompt.includes('/workspace/reports/run.fixture/org__q.md'))
       assert.ok(!prompt.includes('/workspace/reports/org__p.md'))
       assert.ok(!prompt.includes('reports/*.md'))
+      assert.ok(prompt.includes('Write /workspace/reports/run.fixture/RECOMMENDATIONS.md'))
       return { recommendations: 'No adoption justified.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 0 } }
     }
     throw new Error(`unexpected agent call: ${opts.label}`)
   }
-  const outcome = await runWorkflow({ agent, parallel })
+  const outcome = await runWorkflow({ agent, parallel, args: baseArgs({ workspaceDir: '/workspace/' }) })
   assert.equal(outcome.status, 'final')
   assert.equal(outcome.stats.techniquesSurfaced, 0)
 })
@@ -377,5 +385,5 @@ test('a transient verifier failure recovers on the one allowed retry', async () 
   const outcome = await runWorkflow({ agent, parallel })
   assert.equal(attempts, 2)
   assert.equal(outcome.status, 'final')
-  assert.equal(outcome.reports_unverified, false)
+  assert.equal('reports_unverified' in outcome, false)
 })

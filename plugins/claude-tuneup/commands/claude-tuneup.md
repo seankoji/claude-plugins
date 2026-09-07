@@ -142,11 +142,14 @@ Read in parallel:
 
 **Pre-filter**: before surfacing any candidate, load `~/.claude/settings.json`, `.claude/settings.json`, and `.claude/settings.local.json` and build the combined prefix-match set. Drop any candidate whose raw command is already prefix-covered — the scanner counts raw invocations with no visibility into existing rules, so this check is mandatory to avoid proposing rules the harness already auto-allows. (Recurring de-dupe miss — see `claude-tuneup.notes.md`.)
 
-From scan output, investigate patterns with **count ≥ 3** that aren't already in any
+From JSON scan output, investigate patterns with **count ≥ 3** that aren't already in any
 allowlist. Counts are observations, not proof of permission friction or approval.
 Inspect the cited source lines and corresponding results before recommending a rule.
-Never widen permissions because a denied or failed call repeats; errors may be product,
-network, or policy failures. Missing results mean unknown, not successful execution.
+Repetition alone never justifies widening permissions. Investigate denied calls as
+possible approval friction: a safe read-only command rejected for lack of an allow rule
+may justify a narrow proposal for the user's approval. A deliberate user refusal or
+policy restriction must be respected. Generic errors also include product/network
+failures; inspect the cited result to distinguish them. Missing results mean unknown.
 Each proposal must cite its transcript/line, explain the actual avoidable approval,
 and show the narrow rule. If friction cannot be established, report the observation
 without proposing an allow rule. Zero proposed additions is a successful audit.
