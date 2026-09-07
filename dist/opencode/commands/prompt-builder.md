@@ -301,8 +301,23 @@ Prefer the host's native evaluation runner when it supports the required paired
 comparison. Verify it runs; advertised help alone is not evidence of availability.
 The bundled evaluator below only replays saved outputs and needs no model client.
 
-Save the suite and actual outputs beside the prompt, using the JSON shapes in the
-[README](../README.md#replayable-evaluation). Run:
+Save the suite and actual outputs beside the prompt using these shapes. Include all
+three kinds (`normal`, `edge`, `adversarial`), unique IDs, and nonempty check lists:
+
+```json
+{"cases":[{"id":"normal-1","kind":"normal","input":"actual fixture input","checks":[{"equals":"expected output"}]}]}
+```
+
+Each run file records the exact prompt, model, settings, and all case inputs/outputs:
+
+```json
+{"prompt":"exact prompt text","model":"resolved model id","settings":{},"inputs":{"normal-1":"actual fixture input"},"outputs":{"normal-1":"actual model output"}}
+```
+
+The one-case shapes above illustrate fields; an executable suite needs at least three
+cases, one of each kind. Inputs must match the suite exactly in both run files. A check
+has one predicate: `equals`, `contains`, or `not_contains` with a string value, or
+`json_equals` with a JSON value. Run:
 
 ```bash
 python3 "__PLUGIN_ROOT__/scripts/evaluate.py" suite.json baseline.json candidate.json

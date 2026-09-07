@@ -82,7 +82,7 @@ failed list.
 
 ### 4. Analysis — one pass per cloned repo
 
-Extract 0–3 techniques per repo; zero is valid when no approach beats the local alternative. Ground each, each grounded in a GitHub blob permalink pinned to the
+Extract 0–3 techniques per repo; zero is valid when no approach beats the local alternative. Ground each finding in a GitHub blob permalink pinned to the
 cloned repo's exact commit SHA and line range.
 "They use CI / linting / tests" is not a finding; an abstraction, a testing strategy, a
 build or orchestration trick, an architectural seam is. Read in this order and stop as soon

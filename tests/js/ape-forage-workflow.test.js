@@ -242,7 +242,7 @@ test('blocks with reason "missing_reports" when the report-check agent flags a m
   })
 })
 
-test('blocks when the report verifier dies', async () => {
+test('retries the verifier then preserves research with explicit coverage limits', async () => {
   const logs = []
   async function agent(prompt, opts) {
     if (opts.label === 'discover:A') return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
@@ -263,8 +263,9 @@ test('blocks when the report verifier dies', async () => {
 
   const outcome = await runWorkflow({ agent, parallel, log: (m) => logs.push(m) })
 
-  assert.equal(outcome.status, 'blocked')
-  assert.equal(outcome.reason, 'unverified_reports')
+  assert.equal(outcome.status, 'final')
+  assert.equal(outcome.reports_unverified, true)
+  assert.equal(logs.filter((m) => m.startsWith('Report verification attempt')).length, 2)
 })
 
 
@@ -300,4 +301,26 @@ test('a failed analyst cannot be replaced with an existing cached report', async
   const outcome = await runWorkflow({ agent, parallel })
   assert.equal(outcome.reason, 'missing_reports')
   assert.deepEqual(outcome.missing, ['org/p'])
+})
+
+
+test('a transient verifier failure recovers on the one allowed retry', async () => {
+  let attempts = 0
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) return {}
+    if (opts.label === 'verify-reports') {
+      attempts += 1
+      if (attempts === 1) throw new Error('temporary outage')
+      return { missing: [] }
+    }
+    if (opts.label === 'synthesize') return { recommendations: 'No adoption justified.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 0 } }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(attempts, 2)
+  assert.equal(outcome.status, 'final')
+  assert.equal(outcome.reports_unverified, false)
 })

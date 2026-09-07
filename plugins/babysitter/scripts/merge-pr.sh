@@ -14,7 +14,12 @@
 # handshake cleanly. `gh` is used only for `gh auth token`, a local credential read.
 #
 # Usage:
-#   merge-pr.sh --repo <owner/name> --pr <N> [--method squash|merge|rebase]
+#   merge-pr.sh --repo <owner/name> --pr <N> [--method squash|merge|rebase] [--no-auto]
+#   merge-pr.sh --repo <owner/name> --pr <N> --resolve-thread <ID> --verified-head <SHA>
+#
+# The resolution mode is a separate, explicit action after the agent verifies the
+# finding and posts its evidence. It checks thread ownership and the verified head,
+# resolves that one thread, and exits without attempting a merge or auto-merge.
 #
 # Without --method, tries squash, then merge, then rebase, stopping at the first the
 # repository accepts — GitHub's own error names any method the repo disallows, which
@@ -28,7 +33,7 @@
 # considers the PR blocked; the exit code and reason are unaffected.
 #
 # Exit codes:
-#   0 — merged (stdout: "MERGED <repo>#<pr> via <method>")
+#   0 — merged, or explicit resolution mode printed "RESOLVED <repo>#<pr> ..."
 #   2 — precondition failed (missing gh/curl/jq, bad arguments)
 #   3 — the GitHub query itself failed (network, rate limit, permissions)
 #   4 — blocked on something this script will not act on unasked: a required human
@@ -42,8 +47,8 @@
 #     required reviewer, or an org ruleset exists on purpose; the fix for a PR that
 #     cannot satisfy one is either satisfying it for real or a human's call to waive
 #     it, never a flag this script reaches for on its own.
-#   - Never resolves review threads. A reply marker is not proof of a verified fix;
-#     the reviewing agent must verify the change and resolve the thread explicitly.
+#   - Never resolves review threads as part of merging. Resolution requires the
+#     separate --resolve-thread action and the agent's --verified-head assertion.
 #   - Never rebases or force-pushes the PR branch itself. `--method rebase` is
 #     GitHub's server-side "rebase and merge" against the *base* branch (replays the
 #     PR's commits, then fast-forwards the base) — it never rewrites or force-pushes
@@ -59,6 +64,9 @@ usage() {
 REPO=""
 PR_NUMBER=""
 METHOD=""
+RESOLVE_THREAD=""
+VERIFIED_HEAD=""
+AUTO_MERGE=1
 
 die() {
   echo "merge-pr.sh: $1" >&2
@@ -78,6 +86,18 @@ while [ $# -gt 0 ]; do
   --method)
     METHOD="${2:-}"
     shift 2
+    ;;
+  --resolve-thread)
+    RESOLVE_THREAD="${2:-}"
+    shift 2
+    ;;
+  --verified-head)
+    VERIFIED_HEAD="${2:-}"
+    shift 2
+    ;;
+  --no-auto)
+    AUTO_MERGE=0
+    shift
     ;;
   -h | --help)
     usage
@@ -99,6 +119,11 @@ case "$METHOD" in
 '' | squash | merge | rebase) ;;
 *) die "--method must be squash, merge, or rebase, got: ${METHOD}" ;;
 esac
+if [ -n "$RESOLVE_THREAD" ] || [ -n "$VERIFIED_HEAD" ]; then
+  [ -n "$RESOLVE_THREAD" ] && [ -n "$VERIFIED_HEAD" ] || die "resolution requires both --resolve-thread and --verified-head"
+  [[ "$VERIFIED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die "--verified-head must be a full lowercase commit SHA"
+  [ -z "$METHOD" ] || die "resolution mode cannot also select a merge method"
+fi
 
 OWNER="${REPO%%/*}"
 NAME="${REPO#*/}"
@@ -246,9 +271,9 @@ enable_automerge() {
   local methods_upper=(SQUASH MERGE REBASE)
   [ -n "$METHOD" ] && methods_upper=("$(tr '[:lower:]' '[:upper:]' <<<"$METHOD")")
   for m in "${methods_upper[@]}"; do
-    mutation=$(jq -n --arg id "$pr_id" --arg m "$m" '{
-      query: "mutation($id:ID!,$m:PullRequestMergeMethod!){ enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m}){ pullRequest{ autoMergeRequest{ enabledAt } } } }",
-      variables: { id: $id, m: $m }
+    mutation=$(jq -n --arg id "$pr_id" --arg m "$m" --arg sha "$expected_head" '{
+      query: "mutation($id:ID!,$m:PullRequestMergeMethod!,$sha:GitObjectID!){ enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m, expectedHeadOid:$sha}){ pullRequest{ autoMergeRequest{ enabledAt } } } }",
+      variables: { id: $id, m: $m, sha: $sha }
     }')
     resp="$(curl_graphql_retry "$mutation")" || continue
     if jq -e '.data.enablePullRequestAutoMerge.pullRequest.autoMergeRequest.enabledAt' >/dev/null 2>&1 <<<"$resp"; then
@@ -264,10 +289,12 @@ enable_automerge() {
 # reason are the same whether or not auto-merge could be armed.
 blocked() {
   local reason="$1" detail="$2" automerge="unavailable"
-  case "$reason" in
-  head_changed | incomplete_review_state | unanswered_threads) ;;
-  *) enable_automerge && automerge="armed" ;;
-  esac
+  if [ "$AUTO_MERGE" = 1 ]; then
+    case "$reason" in
+    head_changed | incomplete_review_state | unanswered_threads) ;;
+    *) enable_automerge && automerge="armed" ;;
+    esac
+  fi
   echo "BLOCKED ${REPO}#${PR_NUMBER} reason=${reason} detail=${detail} automerge=${automerge}"
   exit 4
 }
@@ -289,6 +316,23 @@ try_merge() {
 }
 
 state="$(fetch_state)" || die "could not read PR state" 3
+expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
+if [ "$AUTO_MERGE" = 0 ] && jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null <<<"$state"; then
+  die "auto-merge is already enabled; disable it before using --no-auto for an exact-commit flow" 4
+fi
+if [ -n "$RESOLVE_THREAD" ]; then
+  [ "$VERIFIED_HEAD" = "$expected_head" ] || die "verified head changed; re-verify the finding before resolving" 4
+  # Query the node directly so resolution works beyond the first 100 threads too.
+  query=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"query($id:ID!){node(id:$id){... on PullRequestReviewThread{id pullRequest{id headRefOid}}}}",variables:{id:$id}}')
+  thread_state="$(curl_graphql_retry "$query")" || die "thread query failed" 3
+  pr_id="$(jq -r '.data.repository.pullRequest.id' <<<"$state")"
+  jq -e --arg id "$pr_id" --arg sha "$VERIFIED_HEAD" '.errors == null and .data.node.pullRequest.id == $id and .data.node.pullRequest.headRefOid == $sha' >/dev/null <<<"$thread_state" || die "thread does not belong to this PR at the verified head" 4
+  mutation=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",variables:{id:$id}}')
+  resolution="$(curl_graphql_retry "$mutation")" || die "thread resolution outcome unknown; refresh before retrying" 3
+  jq -e '.errors == null and .data.resolveReviewThread.thread.isResolved == true' >/dev/null <<<"$resolution" || die "thread resolution failed" 3
+  echo "RESOLVED ${REPO}#${PR_NUMBER} thread=${RESOLVE_THREAD} head=${VERIFIED_HEAD}"
+  exit 0
+fi
 mergeable="$(jq -r '.data.repository.pullRequest.mergeable' <<<"$state")"
 merge_state="$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$state")"
 

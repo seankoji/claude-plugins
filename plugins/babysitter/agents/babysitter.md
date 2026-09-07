@@ -244,7 +244,16 @@ blocker:
 Then handle the reason:
 
 - `reason=unanswered_threads` — verify the fix or rejection against the current diff,
-  reply with evidence, explicitly resolve the thread, and run the merge again.
+  reply with evidence, then use the host's GitHub resolution tool or the bundled
+  curl-backed action below. It resolves only the named thread and never merges:
+
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <repo> --pr <number> --resolve-thread <thread-id> --verified-head <full-commit-sha-you-verified>
+  ```
+
+  Refresh the head and rerun relevant verification if it changed. Run merge mode
+  separately only after every finding is settled. Thread resolution has no atomic
+  GitHub head precondition; the helper checks ownership/head immediately before it.
 - `reason=head_changed` — inspect the new head, rerun relevant gates, and retry.
 - `reason=incomplete_review_state` — paginate every review thread and use the host's
   verified PR merge flow. The helper cannot certify a truncated snapshot.
@@ -261,6 +270,11 @@ Then handle the reason:
 - `reason=unknown` — every merge method failed and GitHub gave no clearer category.
   Return `blocked` with `blocked_on: "merge:unknown"` and the script's `detail=` in
   `notes`; do not guess at a fix.
+
+The expected-head check on auto-merge applies when arming it. GitHub auto-merge may
+later merge a new eligible head under repository rules; it is not a permanent SHA
+lock. If the operator requires approval of one exact commit, disable any existing
+auto-merge request using the host's GitHub tools and pass `--no-auto` to merge mode.
 
 One retry per reason, not a loop: if the second attempt comes back blocked the same
 way, return `blocked` with the exact `blocked_on`. The orchestrator will not merge for

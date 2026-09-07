@@ -53,9 +53,12 @@ This runs in the background — discovery (3 axes in parallel), a ranking judgme
 **On completion, branch on the returned `status`:**
 
 - **`final`** — this is the expedition's deliverable, not a status update. Present the `recommendations` field to the user directly, verbatim — do not re-summarize it, and do not read `RECOMMENDATIONS.md` or `reports/*.md` yourself to "check" it. Mention `nearMisses` if non-empty, and the `stats` line (repos analyzed, techniques surfaced).
+  If `reports_unverified=true`, also state that the report verifier failed twice and
+  report coverage is unverified. Preserve the synthesis's coverage limits; do not call
+  it a fully verified expedition.
 - **`blocked` (`reason: "no_candidates"`)** — nothing survived discovery/triage/ranking. Tell the user and stop; a fresh run is the only way forward (a different focus area may surface more candidates).
 - **`blocked` (`reason: "clone_failed"`)** — surface the `failed` list to the user. Once they've addressed the cause (auth, rate-limit, disk space), re-run `/ape:forage` — the fingerprint will be reused from cache, so the re-run costs only discovery through clone again, not the whole expedition.
 
-- **`blocked` (`reason: `missing_reports` or `unverified_reports`)** — report the missing analysts or failed verification. Do not synthesize from cached reports or claim the expedition completed.
+- **`blocked` (`reason: "missing_reports"`)** — report the failed analysts or missing files. Do not substitute cached reports or claim the expedition completed.
 
 **If the `Workflow` tool is unavailable in this session:** tell the user this command requires the `Workflow` tool and stop — there is no prose fallback path.

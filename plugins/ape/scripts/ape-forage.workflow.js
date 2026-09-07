@@ -371,17 +371,27 @@ if (analysisResults.some((result) => result == null)) {
     missing: expectedReports.filter((_, index) => analysisResults[index] == null).map((r) => r.fullName),
     notes: 'An analyst failed; cached reports cannot substitute for this run.' }
 }
-const reportCheck = await agent(
+let reportCheck = null
+for (let attempt = 0; attempt < 2; attempt++) {
+  try {
+    reportCheck = await agent(
   `Check whether each of these files exists and is non-empty:\n` +
     expectedReports.map((r) => r.path).join('\n') +
     `\n\nReturn the paths that are missing or zero-length, verbatim as given. ` +
     `Read nothing else and create, modify or delete no file.`,
   { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
-)
-if (!reportCheck || !Array.isArray(reportCheck.missing)) {
-  return { status: 'blocked', reason: 'unverified_reports', notes: 'Report verification returned no usable result.' }
+    )
+  } catch {
+    reportCheck = null
+  }
+  if (reportCheck && Array.isArray(reportCheck.missing)) break
+  log(`Report verification attempt ${attempt + 1} failed`)
 }
-const missingPaths = reportCheck?.missing ?? []
+const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
+// Preserve completed research on a verifier outage. The explicit report list
+// still limits synthesis, and the degraded result must be visible to the user.
+if (reportsUnverified) log('Report verification unavailable after retry; synthesis must report its coverage limits')
+const missingPaths = reportsUnverified ? [] : reportCheck.missing
 const missingReports = expectedReports
   .filter((r) => missingPaths.includes(r.path))
   .map((r) => r.fullName)
@@ -395,7 +405,10 @@ if (missingReports.length > 0) {
 }
 
 phase('Synthesis')
-const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
+const coverageNote = reportsUnverified
+  ? '\n\nReport existence verification failed twice. Report which listed files you actually read. If a listed report is unreadable, explicitly limit the recommendations and stats to readable reports; never silently substitute an older report or claim full coverage.'
+  : ''
+const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports) + coverageNote, {
   label: 'synthesize',
   model: 'opus',
   schema: SYNTHESIS_SCHEMA,
@@ -406,4 +419,5 @@ return {
   recommendations: synthesis.recommendations,
   nearMisses: synthesis.nearMisses,
   stats: synthesis.stats,
+  reports_unverified: reportsUnverified,
 }
