@@ -224,14 +224,14 @@ worktree:
 ${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <repo> --pr <number>
 ```
 
-It syncs a branch that fell behind base again (server-side `update-branch`), resolves
-threads that carry a `[babysitter]` reply, and merges — the two live-state failures a
-worktree cannot see. Then:
+It syncs a branch that fell behind base again (server-side `update-branch`), checks
+that every review thread is resolved, and pins the merge to the checked head SHA.
+A `[babysitter]` reply never authorizes automatic thread resolution. Then:
 
 - `MERGED ...` — you are done: `status: "merged"`, `merge.result: "MERGED"`.
 
-Every `BLOCKED` line carries `automerge=<armed|unavailable>` on the end, whatever the
-reason — read it first, it decides whether *you* must retry the merge after fixing the
+Every `BLOCKED` line carries `automerge=<armed|unavailable>` on the end. Head changes
+and incomplete or unresolved review state never arm auto-merge; for other blockers — read it first, it decides whether *you* must retry the merge after fixing the
 blocker:
 
 - `automerge=armed` — GitHub has auto-merge enabled and will merge the moment the
@@ -243,7 +243,11 @@ blocker:
 
 Then handle the reason:
 
-- `reason=unanswered_threads` — answer the thread (step 4) and run the merge again.
+- `reason=unanswered_threads` — verify the fix or rejection against the current diff,
+  reply with evidence, explicitly resolve the thread, and run the merge again.
+- `reason=head_changed` — inspect the new head, rerun relevant gates, and retry.
+- `reason=incomplete_review_state` — paginate every review thread and use the host's
+  verified PR merge flow. The helper cannot certify a truncated snapshot.
 - `reason=conflict` — merge `origin/<base-ref>` in your worktree, resolve per step 2,
   re-run the gate, push, and run the merge again.
 - `reason=behind` — the branch fell behind base again and the server-side

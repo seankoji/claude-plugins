@@ -111,7 +111,7 @@ YQ_TIMEOUT_SECONDS = 60
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "offload-sidecar"
 # Kept in lockstep with plugin.json / marketplace.json.
-SERVER_VERSION = "0.3.6"
+SERVER_VERSION = "0.3.7"
 
 # --- agy (Google Antigravity CLI) engine defaults ---------------------------
 # Model names are agy's display names, exactly as `agy models` prints them.
@@ -3137,6 +3137,9 @@ def handle_merge_files(args):
         "status": "success",
         "message": f"merged {len(resolved)} files -> {write_path}",
         "operation": "merge_files",
+        "engine": "deterministic",
+        "validation_scope": "deterministic_transform",
+        "output_sha256": hashlib.sha256(output_data).hexdigest(),
         "input_bytes": total_in,
         "output_bytes": len(output_data),
         "output_path": write_path,
@@ -3197,6 +3200,7 @@ def handle_split_file(args):
 
     stem, ext = os.path.splitext(os.path.basename(input_real))
     written = []
+    hashes = {}
     for idx, chunk_lines in enumerate(chunks, start=1):
         chunk_path = os.path.join(output_dir, f"{stem}.part{idx:03d}{ext}")
         try:
@@ -3204,15 +3208,20 @@ def handle_split_file(args):
         except SidecarError as e:
             return error_payload(str(e))
         try:
-            write_bytes_no_symlink(write_path, "".join(chunk_lines).encode("utf-8"))
+            chunk_data = "".join(chunk_lines).encode("utf-8")
+            write_bytes_no_symlink(write_path, chunk_data)
         except OSError as e:
             return error_payload(f"failed to write chunk '{chunk_path}': {e}")
         written.append(write_path)
+        hashes[write_path] = hashlib.sha256(chunk_data).hexdigest()
 
     return {
         "status": "success",
         "message": f"split into {len(written)} chunk(s) in {output_dir}",
         "operation": "split_file",
+        "engine": "deterministic",
+        "validation_scope": "deterministic_transform",
+        "output_sha256_by_path": hashes,
         "input_bytes": len(data),
         "chunk_paths": written,
         "output_path": output_dir,
@@ -3407,6 +3416,8 @@ def handle_process_local_file(args):
             "operation": operation,
             "tier": cfg["tier"],
             "engine": cfg["engine"],
+            "validation_scope": "format_and_heuristics_only",
+            "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
             "model": cfg["model"],
             "input_bytes": input_byte_count,
             "output_bytes": len(output_text.encode("utf-8")),
@@ -3474,6 +3485,9 @@ def handle_process_local_file(args):
         "input_bytes": input_byte_count,
         "output_bytes": len(output_data),
         "output_path": write_path,
+        "engine": engine or "deterministic",
+        "validation_scope": "deterministic_transform",
+        "output_sha256": hashlib.sha256(output_data).hexdigest(),
     }
     if engine:
         # Tells the caller the hybrid op ran deterministically (no model).

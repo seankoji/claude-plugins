@@ -6,6 +6,10 @@
 
 A [Claude Code](https://code.claude.com/) plugin marketplace by [@seankoji](https://github.com/seankoji).
 
+Install for a specific recurring problem. A direct prompt, shell command, or native
+PR flow is often enough. The [plugin value review](./docs/plugin-value-review.md)
+explains where each plugin earns its cost, where to skip it, and what remains unproven.
+
 ## Available plugins
 
 | Plugin | Description |

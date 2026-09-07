@@ -2,6 +2,13 @@
 
 # claude-tuneup
 
+Permission proposals must explain actual avoidable approval friction and cite the
+transcript line that demonstrates it. `scripts/scan_perms.py --json` supplies source
+locations and correlated completed/error/unobserved counts, deduplicating replayed call
+IDs within a transcript. Repeated calls, errors, and missing results do not establish
+approval or safety. The scanner reads local transcripts and never edits permissions;
+zero proposed additions is a valid result.
+
 A three-phase permission audit and settings tuneup command for [Claude Code](https://code.claude.com/) — scans recent transcripts to surface missing allowlist entries, classifies them by global vs project scope, deduplicates across settings files, and logs findings to a running notes file you can act on.
 
 ## Platforms

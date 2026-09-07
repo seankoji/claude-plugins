@@ -4,7 +4,7 @@ description: Explicit Codex command for substantial implementation work that sho
 metadata:
   version: "0.1.0"
   source-command: "plugins/imps/commands/imps.md"
-  source-version: "0.3.56"
+  source-version: "0.3.57"
 ---
 
 # Imps for Codex
@@ -114,6 +114,11 @@ deliverable when one does not already exist.
 Keep the parent task focused on decisions. Delegate narrow mechanical reconnaissance to
 scout agents and code-structure questions to explorer agents. Do not ask multiple agents
 the same question.
+
+Apply the dispatch value check in the task-sizing reference before launching agents.
+Reuse facts already verified in this run; record the independent result each additional
+agent will produce. Include worker count, integration conflicts, and repair rounds in
+the final report.
 
 Create a dependency table with one row per real unit of work:
 

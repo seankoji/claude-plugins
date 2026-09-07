@@ -132,6 +132,32 @@ class FindRecentTranscriptsTest(unittest.TestCase):
 
 
 class IterToolUsesTest(unittest.TestCase):
+    def test_evidence_correlates_results_and_deduplicates_replayed_calls(self):
+        call = {"type": "tool_use", "id": "call-1", "name": "Bash", "input": {"command": "git status"}}
+        def event(kind, block):
+            return json.dumps({"type": kind, "message": {"content": [block]}})
+        with tempfile.TemporaryDirectory() as directory:
+            lines = [event("assistant", call), event("assistant", call),
+                     event("user", {"type": "tool_result", "tool_use_id": "call-1", "is_error": True}),
+                     event("assistant", {**call, "id": "call-2"}),
+                     event("user", {"type": "tool_result", "tool_use_id": "call-2", "content": "ok"}),
+                     event("assistant", {**call, "id": "call-3"})]
+            path = _write_transcript(directory, "a.jsonl", lines)
+            row = scan_perms.evidence_report([scan_perms.Path(path)])["patterns"][0]
+            self.assertEqual(row["count"], 3)
+            self.assertEqual(row["outcomes"], {"completed": 1, "error": 1, "unobserved": 1})
+            self.assertEqual([source["line"] for source in row["sources"]], [1, 4, 6])
+            self.assertNotIn("command", json.dumps(row))
+
+    def test_results_do_not_cross_transcript_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a = _write_transcript(directory, "a.jsonl", [json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "shared", "name": "Bash", "input": {"command": "git status"}}]}})])
+            b = _write_transcript(directory, "b.jsonl", [json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "shared", "content": "ok"}]}})])
+            report = scan_perms.evidence_report([scan_perms.Path(a), scan_perms.Path(b)])
+            self.assertEqual(report["patterns"][0]["outcomes"]["unobserved"], 1)
+
     def test_extracts_bash_tool_use(self):
         with tempfile.TemporaryDirectory() as d:
             path = _write_transcript(d, "a.jsonl", [_tool_use_line("Bash", {"command": "git status"})])
@@ -200,7 +226,7 @@ class MainEndToEndTest(unittest.TestCase):
     def _run_main_capturing_stdout(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            scan_perms.main()
+            scan_perms.main([])
         return buf.getvalue()
 
     def test_safe_read_only_pattern_surfaces_in_bash_table(self):
@@ -256,7 +282,7 @@ class MainEndToEndTest(unittest.TestCase):
             with mock.patch.object(scan_perms, "PROJECTS_DIR", scan_perms.Path(empty)):
                 with self.assertRaises(SystemExit) as ctx:
                     with contextlib.redirect_stderr(io.StringIO()):
-                        scan_perms.main()
+                        scan_perms.main([])
             self.assertEqual(ctx.exception.code, 1)
 
     def test_mcp_tool_use_counted(self):

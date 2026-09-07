@@ -44,7 +44,10 @@ Dispatch one synchronous general-purpose analyst on opus. Give it the fingerprin
 - Write one report to `report_path`, at most 900 words, with these sections: `Overlap`,
   `Adopt`, `Adapt`, `Reject`, and `Command case`. Each adopt/adapt item names the local
   files or modules it would change, effort S/M/L, the main tradeoff, and the strongest
-  evidence against adoption. `Reject` includes impressive ideas that do not transfer.
+  evidence against adoption. Also name the simpler local alternative and a bounded
+  experiment with a baseline, pass condition, and abandon condition. Label these as
+  proposed tests, not measured improvements. `Reject` includes impressive ideas that
+  do not transfer; empty `Adopt` and `Adapt` sections are valid outcomes.
 - `Command case` answers whether the comparison reveals a repeated workflow that deserves
   a new command, an existing-command mode, or neither. It must name the boundary.
 - Return the complete report text after writing it. Do not edit the current project.

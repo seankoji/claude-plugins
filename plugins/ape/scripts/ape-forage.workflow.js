@@ -129,7 +129,7 @@ const CLONE_SCHEMA = {
 const SYNTHESIS_SCHEMA = {
   type: 'object',
   properties: {
-    recommendations: { type: 'string', description: "top 2-3 pitches, verbatim, ~400 words max" },
+    recommendations: { type: 'string', description: "0-3 justified recommendations, or an explicit no-adoption verdict; ~400 words max" },
     nearMisses: { type: 'string', description: '<=40 words, or "" if none' },
     stats: {
       type: 'object',
@@ -206,7 +206,7 @@ Return via the required schema.`
 }
 
 function analysisPrompt(fingerprint, focusArea, repoPath, reportPath, fullName) {
-  return `You are deep-reading ONE cloned repository (${fullName}) to extract techniques transferable to a host project, grounded in file:line evidence. Extract 1-3 techniques. "They use CI / linting / tests" is not a finding — a finding is a specific, non-obvious pattern with evidence: an abstraction, a testing strategy, a build/orchestration trick, an architectural seam.
+  return `You are deep-reading ONE cloned repository (${fullName}) to extract techniques transferable to a host project, grounded in file:line evidence. Extract 0-3 techniques; zero is a useful result when nothing beats the host's existing approach. "They use CI / linting / tests" is not a finding — a finding is a specific, non-obvious pattern with evidence: an abstraction, a testing strategy, a build/orchestration trick, an architectural seam.
 
 Project fingerprint:
 ${fingerprint}
@@ -230,12 +230,12 @@ Honesty requirements:
 - "Impressive, but doesn't transfer because X" is a valid and useful verdict. Say it.
 - Flag copyleft licenses (GPL/AGPL): the idea transfers freely, verbatim code does not.
 
-Write the report to ${reportPath} (<=600 words). Per technique: name — immutable source permalink — problem it solves — which fingerprint weakness it addresses and where it would land in the host project — effort (S/M/L) — main tradeoff and strongest evidence against transfer.
+Write the report to ${reportPath} (<=600 words). Per technique: name — immutable source permalink — problem it solves — which fingerprint weakness it addresses and where it would land in the host project — effort (S/M/L) — main tradeoff and strongest evidence against transfer. Include the simpler local alternative and a bounded adoption experiment with a baseline, measurable pass condition, and condition for abandoning the idea. These are proposed experiments, never measured improvements.
 
 Then return ONLY: the repo name plus one line per technique (name + applicability verdict). Three lines maximum.`
 }
 
-function synthesisPrompt(workspaceDir, focusArea, fingerprint, rejected) {
+function synthesisPrompt(workspaceDir, focusArea, fingerprint, rejected, reports) {
   return `You are synthesizing every per-repo analyst report from a code-foraging expedition into ranked, actionable recommendations for the host project.
 
 Workspace: ${workspaceDir}
@@ -248,14 +248,15 @@ Rejected before cloning (do not re-litigate these — they were already judged n
 ${JSON.stringify(rejected, null, 2)}
 
 Method:
-1. Read every file under ${workspaceDir}/reports/*.md.
+1. Read ONLY these reports from this run; ignore other cached reports:
+${reports.map((r) => r.path).join('\n')}
 2. Cross-check each technique against the fingerprint's already-in-use list and against every other report. Recommending something the host already has is a failure, not a finding. If two analysts converged on the same or conflicting techniques, dedupe and note the agreement or conflict.
 3. Kill anything already in use, anything incompatible with an existing pattern, and anything an analyst already flagged as "doesn't transfer" — an analyst's honest rejection is signal, not noise to override.
 4. Rank the survivors by expected value against the fingerprint's weaknesses, not by how confidently an analyst wrote about it.
 
 Write ${workspaceDir}/RECOMMENDATIONS.md: per technique, ranked — what it is, immutable source permalink, the specific modules HERE it would land in, effort (S/M/L), tradeoffs and risks (mandatory, not just upside), and the strongest evidence against adopting it.
 
-Return via the required schema: the top 2-3 recommendations as one paragraph each (make it read like a finished pitch, not a report summary, ~400 words max), a short note on notable near-miss rejections, and stats.`
+Return via the required schema: up to 3 recommendations as one paragraph each (~400 words max), including the simpler alternative and proposed experiment, a short note on notable near-miss rejections, and stats. If none survive, say no adoption is justified and set techniquesSurfaced to 0. Never pad the result to meet a quota.`
 }
 
 phase('Discovery')
@@ -359,15 +360,17 @@ const analysisResults = await parallel(
 log(`Analysis: ${analysisResults.filter(Boolean).length}/${clonedSelection.length} analysts returned`)
 
 // Validate every expected report exists and is non-empty before synthesis.
-// No fs here — the script sandbox has no Node APIs — so one cheap agent stats
-// the files. If that agent itself dies, proceed rather than block falsely — but
-// log it explicitly (below): synthesis only globs reports/*.md and is never told
-// which repos were expected, so it has no independent way to notice one missing.
-// The log line is the only operator-visible signal that the gate went unverified.
+// No fs here, so an agent verifies the files. A failed analyst cannot be rescued
+// by a stale report left at the same path by an earlier expedition.
 const expectedReports = clonedSelection.map((c) => ({
   fullName: c.fullName,
   path: `${args.workspaceDir}/reports/${c.fullName.replace('/', '__')}.md`,
 }))
+if (analysisResults.some((result) => result == null)) {
+  return { status: 'blocked', reason: 'missing_reports',
+    missing: expectedReports.filter((_, index) => analysisResults[index] == null).map((r) => r.fullName),
+    notes: 'An analyst failed; cached reports cannot substitute for this run.' }
+}
 const reportCheck = await agent(
   `Check whether each of these files exists and is non-empty:\n` +
     expectedReports.map((r) => r.path).join('\n') +
@@ -376,7 +379,7 @@ const reportCheck = await agent(
   { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
 )
 if (!reportCheck || !Array.isArray(reportCheck.missing)) {
-  log('Report check: verify-reports agent returned no usable result — proceeding unverified, not blocked')
+  return { status: 'blocked', reason: 'unverified_reports', notes: 'Report verification returned no usable result.' }
 }
 const missingPaths = reportCheck?.missing ?? []
 const missingReports = expectedReports
@@ -392,7 +395,7 @@ if (missingReports.length > 0) {
 }
 
 phase('Synthesis')
-const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected), {
+const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
   label: 'synthesize',
   model: 'opus',
   schema: SYNTHESIS_SCHEMA,

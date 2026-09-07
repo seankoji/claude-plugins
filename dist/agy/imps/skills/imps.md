@@ -324,6 +324,10 @@ select for this session, not a plan-mode routing rule.
 Read the `## Active rules` section from each that exists. Project-scoped rules win on
 conflict. Apply them to tier assignment, task boundaries, and dependency detection.
 
+Read the dispatch value check in `__PLUGIN_ROOT__/references/task-sizing.md` first.
+Reuse facts already verified in this run. Only delegate exploration for a named,
+bounded unknown; skip the recon pass when the brief already supplies the answers.
+
 **Step 1:** Ground the plan in reality — but **delegate the exploration** rather than
 doing it in this context: dispatch cheap read-only runs for mechanical recon (default
 branch, gate commands, file/symbol enumeration, "where is X"). Read a file directly only

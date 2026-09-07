@@ -130,7 +130,7 @@ If a candidate matches any of these, drop it — no rule needed.
 
 Read in parallel:
 
-- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` — frequency tables for Bash, MCP, SSH/sudo drills (last 50 transcripts). If absent, Phase 1 is unavailable; run with `--audit-only`.
+- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py --json` — patterns, source lines, and completed/error/unobserved result counts from the last 50 transcripts. The default text mode also provides SSH/sudo drills. If absent, Phase 1 is unavailable; run with `--audit-only`.
 - `~/.claude/claude-tuneup.config.json` if it exists — see **Configuration** above; fall back to the documented defaults for any field it omits, and to all defaults if the file is absent entirely.
 - `~/.claude/settings.json` — follow the symlink to the real file if it's a link
 - `.claude/settings.json` if it exists
@@ -142,7 +142,14 @@ Read in parallel:
 
 **Pre-filter**: before surfacing any candidate, load `~/.claude/settings.json`, `.claude/settings.json`, and `.claude/settings.local.json` and build the combined prefix-match set. Drop any candidate whose raw command is already prefix-covered — the scanner counts raw invocations with no visibility into existing rules, so this check is mandatory to avoid proposing rules the harness already auto-allows. (Recurring de-dupe miss — see `claude-tuneup.notes.md`.)
 
-From scan output, surface candidates with **count ≥ 3** that aren't already in any allowlist.
+From scan output, investigate patterns with **count ≥ 3** that aren't already in any
+allowlist. Counts are observations, not proof of permission friction or approval.
+Inspect the cited source lines and corresponding results before recommending a rule.
+Never widen permissions because a denied or failed call repeats; errors may be product,
+network, or policy failures. Missing results mean unknown, not successful execution.
+Each proposal must cite its transcript/line, explain the actual avoidable approval,
+and show the narrow rule. If friction cannot be established, report the observation
+without proposing an allow rule. Zero proposed additions is a successful audit.
 
 For each candidate:
 

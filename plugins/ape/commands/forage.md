@@ -18,7 +18,7 @@ Workspace: `~/tmp/repo-research/<project-slug>/` where the slug is the current d
 
 1. Run `gh auth status`. If unauthenticated, stop and tell the user to run `gh auth login` — nothing downstream works without it.
 2. Run `${CLAUDE_PLUGIN_ROOT}/scripts/init-workspace.sh` — a single preapprovable command that creates `repos/` and `reports/` under the workspace and reports whether `fingerprint.md` already exists (with its `ls -la` timestamp).
-3. If the script reported an existing `fingerprint.md` and its timestamp is under 30 days old, reuse it. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
+3. Check any existing `fingerprint.md` against the current commit, dirty changes, and focus. Reuse only if those inputs still match; age alone does not establish relevance. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 ## Phase 1 — Sync the Workflow script
@@ -55,5 +55,7 @@ This runs in the background — discovery (3 axes in parallel), a ranking judgme
 - **`final`** — this is the expedition's deliverable, not a status update. Present the `recommendations` field to the user directly, verbatim — do not re-summarize it, and do not read `RECOMMENDATIONS.md` or `reports/*.md` yourself to "check" it. Mention `nearMisses` if non-empty, and the `stats` line (repos analyzed, techniques surfaced).
 - **`blocked` (`reason: "no_candidates"`)** — nothing survived discovery/triage/ranking. Tell the user and stop; a fresh run is the only way forward (a different focus area may surface more candidates).
 - **`blocked` (`reason: "clone_failed"`)** — surface the `failed` list to the user. Once they've addressed the cause (auth, rate-limit, disk space), re-run `/ape:forage` — the fingerprint will be reused from cache, so the re-run costs only discovery through clone again, not the whole expedition.
+
+- **`blocked` (`reason: `missing_reports` or `unverified_reports`)** — report the missing analysts or failed verification. Do not synthesize from cached reports or claim the expedition completed.
 
 **If the `Workflow` tool is unavailable in this session:** tell the user this command requires the `Workflow` tool and stop — there is no prose fallback path.
