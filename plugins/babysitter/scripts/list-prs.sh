@@ -240,7 +240,7 @@ fragment PRState on PullRequest {
   # reply the newest id and re-trigger a COMMENT event on the following poll.
   comments(last: 10) { nodes { databaseId body } }
   reviews(last: 1) { nodes { databaseId state } }
-  reviewThreads(first: 100) {
+  reviewThreads(first: 20) {
     nodes {
       isResolved
       isOutdated
@@ -253,7 +253,7 @@ fragment PRState on PullRequest {
         oid
         statusCheckRollup {
           state
-          contexts(first: 100) {
+          contexts(first: 30) {
             nodes {
               __typename
               ... on CheckRun { name conclusion }
