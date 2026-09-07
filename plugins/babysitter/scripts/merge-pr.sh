@@ -300,7 +300,7 @@ blocked() {
   fi
   if [ "$AUTO_MERGE" = 1 ]; then
     case "$reason" in
-    head_changed | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr | permission_denied | validation_failed) ;;
+    head_changed | conflict | behind | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr | permission_denied | validation_failed) ;;
     *)
       if enable_automerge "$reason"; then
         automerge="armed"
@@ -318,7 +318,7 @@ blocked() {
 handle_terminal_state() {
   case "$(jq -r '.data.repository.pullRequest.state' <<<"$state")" in
     MERGED) echo "MERGED ${REPO}#${PR_NUMBER} via preexisting${1:+ prior_blocker=$1}"; exit 0 ;;
-    CLOSED) blocked "closed" "PR was closed without merging; no action taken" ;;
+    CLOSED) blocked "closed" "PR was closed without merging; no action taken${1:+; prior_blocker=$1}" ;;
   esac
 }
 

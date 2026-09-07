@@ -408,7 +408,9 @@ async function synthesizeReports(expectedReports, failedAnalysts, rejected) {
     } catch {
       reportCheck = null
     }
-    if (reportCheck && Array.isArray(reportCheck.missing)) break
+    if (reportCheck && Array.isArray(reportCheck.missing) &&
+        reportCheck.missing.every(path => expectedReports.some(report => report.path === path))) break
+    reportCheck = null
     log(`Report verification attempt ${attempt + 1} failed`)
   }
   const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
@@ -425,7 +427,6 @@ async function synthesizeReports(expectedReports, failedAnalysts, rejected) {
       status: 'blocked',
       reason: 'missing_reports',
       missing: missingReports,
-      resume,
       notes: `Analysis completed but reports are missing/empty for: ${missingReports.join(', ')}`,
     }
   }

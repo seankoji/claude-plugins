@@ -124,8 +124,8 @@ def iter_tool_evidence(transcripts):
                                 key = block.get("tool_use_id")
                                 if isinstance(key, str):
                                     outcome = "error" if block.get("is_error") else "completed"
-                                    if outcomes.get(key) != "error":
-                                        outcomes[key] = outcome
+                                    if outcomes.get(key, {}).get("outcome") != "error":
+                                        outcomes[key] = {"outcome": outcome, "result_line": line}
                     except (json.JSONDecodeError, AttributeError, TypeError):
                         # A single malformed-but-valid-JSON line (e.g. an
                         # aborted turn with "message": null) shouldn't abort
@@ -139,7 +139,7 @@ def iter_tool_evidence(transcripts):
                 if replay_key in seen_replays:
                     continue
                 seen_replays.add(replay_key)
-            yield {**evidence, "outcome": outcomes.get(key, "unobserved")}
+            yield {**evidence, **outcomes.get(key, {"outcome": "unobserved", "result_line": None})}
 
 
 def iter_tool_uses(transcripts):
@@ -188,7 +188,7 @@ def evidence_report(transcripts):
         row["count"] += 1
         row["outcomes"][evidence["outcome"]] += 1
         if len(row["sources"]) < 3:
-            row["sources"].append({k: evidence[k] for k in ("transcript", "line", "outcome")})
+            row["sources"].append({k: evidence[k] for k in ("transcript", "line", "result_line", "outcome")})
     return {"transcripts_scanned": len(transcripts),
             "scope": "observed calls and tool results; frequency and completion do not prove permission prompts or approval",
             "patterns": sorted(patterns.values(), key=lambda row: (-row["count"], row["tool"], row["pattern"]))}

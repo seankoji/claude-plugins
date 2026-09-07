@@ -150,7 +150,7 @@ possible approval friction: a safe read-only command rejected for lack of an all
 may justify a narrow proposal for the user's approval. A deliberate user refusal or
 policy restriction must be respected. Generic errors also include product/network
 failures; inspect the cited result to distinguish them. Missing results mean unknown.
-Each proposal must cite its transcript/line, explain the actual avoidable approval,
+Each proposal must cite its transcript, call `line`, and `result_line` when present, explain the actual avoidable approval,
 and show the narrow rule. If friction cannot be established, report the observation
 without proposing an allow rule. Zero proposed additions is a successful audit.
 

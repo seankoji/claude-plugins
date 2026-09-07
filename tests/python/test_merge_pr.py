@@ -41,14 +41,15 @@ elif query.startswith("query"):
           "reviewThreads":{"nodes":threads,"pageInfo":{"hasNextPage":mode=="truncated"}},
           "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}
     if mode in ("merged", "closed"): pr = {"state":mode.upper()}
+    if mode == "conflict": pr["mergeable"] = "CONFLICTING"
     if mode == "behind":
         pr["mergeStateStatus"] = "BEHIND"
         if state_file.exists(): pr["headRefOid"] = "b"*40
     if mode == "null": pr = None
-    if mode in ("failing", "preexisting-failing", "merged-after-block"): pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
+    if mode in ("failing", "preexisting-failing", "merged-after-block", "closed-after-block"): pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
     if mode in ("already-auto", "preexisting-unresolved", "preexisting-failing"): pr["autoMergeRequest"] = {"enabledAt":"fixture-time"}
-    if mode == "merged-after-block":
-        if state_file.exists(): pr = {"state":"MERGED"}
+    if mode in ("merged-after-block", "closed-after-block"):
+        if state_file.exists(): pr = {"state":"CLOSED" if mode.startswith("closed") else "MERGED"}
         state_file.write_text("queried")
     payload = {"data":{"repository":{"pullRequest":pr}}}
 elif "resolveReviewThread" in query:
@@ -102,12 +103,19 @@ print(code, end="")
         self.assertIn("reason=closed", result.stdout)
         self.assertEqual(len(calls), 1)
 
-    def test_behind_timeout_arms_against_updated_head(self):
+    def test_behind_timeout_does_not_arm_for_future_commits(self):
         result, calls = self.run_helper("behind")
         self.assertEqual(result.returncode, 4, result.stderr)
         self.assertIn("reason=behind", result.stdout)
-        self.assertIn("automerge=armed", result.stdout)
-        self.assertEqual(calls[-1]["variables"]["sha"], "b" * 40)
+        self.assertIn("automerge=unavailable", result.stdout)
+        self.assertFalse(any('enablePullRequestAutoMerge' in c.get('query', '') for c in calls))
+
+    def test_conflict_does_not_arm_for_future_commits(self):
+        result, calls = self.run_helper("conflict")
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertIn("reason=conflict", result.stdout)
+        self.assertIn("automerge=unavailable", result.stdout)
+        self.assertEqual(len(calls), 1)
 
     def test_success_pins_head_and_requires_merged_true(self):
         result, calls = self.run_helper("success")
@@ -186,6 +194,11 @@ print(code, end="")
         result, calls = self.run_helper("merged-after-block")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("MERGED", result.stdout)
+        self.assertIn("prior_blocker=failing_checks", result.stdout)
+        self.assertEqual(len(calls), 2)
+        result, calls = self.run_helper("closed-after-block")
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertIn("reason=closed", result.stdout)
         self.assertIn("prior_blocker=failing_checks", result.stdout)
         self.assertEqual(len(calls), 2)
 

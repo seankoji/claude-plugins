@@ -27,3 +27,8 @@ class WorkspaceTest(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(list(second.iterdir()), [])
             self.assertEqual(old.read_text(), 'previous expedition')
+            subprocess.run(['bash', str(SCRIPT.with_name('clean-ape-workspace.sh')),
+                            str(first), '--all', '--confirm'], env=env,
+                           capture_output=True, text=True, check=True)
+            self.assertFalse(first.exists())
+            self.assertTrue(second.is_dir())

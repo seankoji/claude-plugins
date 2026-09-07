@@ -236,7 +236,9 @@ A `[babysitter]` reply never authorizes automatic thread resolution. Then:
   PR before retrying; preserve the exact error if it remains unavailable.
 
 Every `BLOCKED` line carries `automerge=<armed|preexisting|unavailable>` on the end. Head changes
-and incomplete or unresolved review state never arm auto-merge; for other blockers — read it first, it decides whether *you* must retry the merge after fixing the
+and blockers requiring new commits (conflict/behind), or incomplete/unresolved review
+state, never arm auto-merge. For other blockers, read it first: it decides whether you
+must retry the merge after fixing the
 blocker:
 
 - `automerge=armed` — this run enabled auto-merge and GitHub will merge the moment the

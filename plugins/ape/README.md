@@ -102,6 +102,7 @@ Drop this directory into your plugin marketplace repo and add an entry:
 /ape:study https://github.com/owner/repo/tree/main/plugins/example
 /ape:clean                 # delete forage clones, keep fingerprint + reports
 /ape:clean --all           # full wipe
+/ape:clean --run <path>    # delete one saved expedition, including its evidence
 ```
 
 All artifacts land in `~/tmp/repo-research/<project-dir-name>/`. Each forage expedition
@@ -109,8 +110,10 @@ uses a fresh `reports/run.<random>/` containing its fingerprint, clones under `r
 analyst reports, and `RECOMMENDATIONS.md`. Study uses
 `studies/<owner>__<repo>/` for the pinned clone, source fingerprint, and comparison report.
 Runs are retained without automatic expiry so failures remain inspectable. `/ape:clean`
-removes their clones while keeping evidence; `/ape:clean --all` removes the full workspace
-when explicitly requested. Retained runs consume disk until cleaned.
+removes their clones while keeping evidence; `--run <path>` deletes one named run and
+`--all` removes the full workspace when explicitly requested. Retained runs consume
+disk until cleaned. Authentication runs before the directory is allocated; an abandoned
+run can still leave an empty directory, which the named-run cleanup also removes.
 
 Use `/ape:forage` when the source is unknown and coverage matters. Use `/ape:study` when
 the user has already named the source and needs line-level transfer judgment. Study is

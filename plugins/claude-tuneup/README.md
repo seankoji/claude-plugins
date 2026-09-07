@@ -4,7 +4,8 @@
 
 Permission proposals must explain actual avoidable approval friction and cite the
 transcript line that demonstrates it. `scripts/scan_perms.py --json` supplies source
-locations and correlated completed/error/unobserved counts, deduplicating replayed call
+locations (`line` for the call, `result_line` for its result or null when unobserved)
+and correlated completed/error/unobserved counts, deduplicating replayed call
 IDs within a transcript and identical ID/input replays across files. Results are
 correlated within each file; the first scanned copy supplies the evidence, so a result
 from a different file cannot silently complete a call. Repeated calls, errors, and missing results do not establish

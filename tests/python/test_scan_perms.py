@@ -147,6 +147,7 @@ class IterToolUsesTest(unittest.TestCase):
             self.assertEqual(row["count"], 3)
             self.assertEqual(row["outcomes"], {"completed": 1, "error": 1, "unobserved": 1})
             self.assertEqual([source["line"] for source in row["sources"]], [1, 4, 6])
+            self.assertEqual([source["result_line"] for source in row["sources"]], [3, 5, None])
             self.assertNotIn("command", json.dumps(row))
             self.assertEqual(len(list(scan_perms.iter_tool_uses([scan_perms.Path(path)]))), 4)
 

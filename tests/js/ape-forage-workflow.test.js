@@ -239,7 +239,6 @@ test('blocks with reason "missing_reports" when the report-check agent flags a m
     status: 'blocked',
     reason: 'missing_reports',
     missing: ['org/q'],
-    resume: { reports: ['p', 'q'].map(name => ({fullName: `org/${name}`, path: `/workspace/reports/run.fixture/org__${name}.md`})), failedAnalysts: [], rejected: [] },
     notes: 'Analysis completed but reports are missing/empty for: org/q',
   })
 })
@@ -282,6 +281,21 @@ test('retries the verifier then blocks synthesis and preserves report paths', as
   } }) })
   assert.equal(invalid.reason, 'invalid_resume')
   assert.deepEqual(resumedLabels, ['verify-reports', 'synthesize'])
+})
+
+test('unknown paths in a verifier response cannot certify the expected reports', async () => {
+  let attempts = 0
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) return {}
+    if (opts.label === 'verify-reports') { attempts++; return { missing: ['/outside/this/run.md'] } }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(attempts, 2)
+  assert.equal(outcome.reason, 'report_verification_failed')
 })
 
 
