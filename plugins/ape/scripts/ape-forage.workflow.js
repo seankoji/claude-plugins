@@ -362,14 +362,15 @@ log(`Analysis: ${analysisResults.filter(Boolean).length}/${clonedSelection.lengt
 // Validate every expected report exists and is non-empty before synthesis.
 // No fs here, so an agent verifies the files. A failed analyst cannot be rescued
 // by a stale report left at the same path by an earlier expedition.
-const expectedReports = clonedSelection.map((c) => ({
+const failedAnalysts = clonedSelection.filter((_, index) => analysisResults[index] == null).map((c) => c.fullName)
+const expectedReports = clonedSelection.filter((_, index) => analysisResults[index] != null).map((c) => ({
   fullName: c.fullName,
   path: `${args.workspaceDir}/reports/${c.fullName.replace('/', '__')}.md`,
 }))
-if (analysisResults.some((result) => result == null)) {
+if (expectedReports.length === 0) {
   return { status: 'blocked', reason: 'missing_reports',
-    missing: expectedReports.filter((_, index) => analysisResults[index] == null).map((r) => r.fullName),
-    notes: 'An analyst failed; cached reports cannot substitute for this run.' }
+    missing: failedAnalysts,
+    notes: 'No analyst completed; cached reports cannot substitute for this run.' }
 }
 let reportCheck = null
 for (let attempt = 0; attempt < 2; attempt++) {
@@ -418,6 +419,7 @@ return {
   status: 'final',
   recommendations: synthesis.recommendations,
   nearMisses: synthesis.nearMisses,
-  stats: synthesis.stats,
+  stats: { ...synthesis.stats, reposAnalyzed: Math.min(synthesis.stats.reposAnalyzed, expectedReports.length) },
   reports_unverified: reportsUnverified,
+  failed_analysts: failedAnalysts,
 }

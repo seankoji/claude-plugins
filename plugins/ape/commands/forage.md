@@ -56,6 +56,8 @@ This runs in the background — discovery (3 axes in parallel), a ranking judgme
   If `reports_unverified=true`, also state that the report verifier failed twice and
   report coverage is unverified. Preserve the synthesis's coverage limits; do not call
   it a fully verified expedition.
+  If `failed_analysts` is nonempty, list those repositories and label the result partial.
+  Their cached reports were excluded; never claim the original breadth of coverage.
 - **`blocked` (`reason: "no_candidates"`)** — nothing survived discovery/triage/ranking. Tell the user and stop; a fresh run is the only way forward (a different focus area may surface more candidates).
 - **`blocked` (`reason: "clone_failed"`)** — surface the `failed` list to the user. Once they've addressed the cause (auth, rate-limit, disk space), re-run `/ape:forage` — the fingerprint will be reused from cache, so the re-run costs only discovery through clone again, not the whole expedition.
 

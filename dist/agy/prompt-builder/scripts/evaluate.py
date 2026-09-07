@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare saved baseline/candidate outputs against a frozen, local JSON suite.
+"""Regression-check transcribed baseline/candidate outputs against a local JSON suite.
 
 Usage: evaluate.py suite.json baseline.json candidate.json
 No model calls, shell execution, or writes. Exit 0: a usable prompt; 1: neither
@@ -84,7 +84,7 @@ def evaluate(suite, baseline, candidate):
     if passed["candidate"] == len(cases) and (winner == "neither" or sizes["candidate"] < sizes["baseline"]):
         winner = "candidate"
     return {"winner": winner, "passed": passed, "total": len(cases), "prompt_bytes": sizes,
-            "cases": rows, "scope": "supplied outputs on this suite; not proof of model execution or general quality"}
+            "cases": rows, "scope": "regression check on transcribed outputs; file hashes do not prove model execution or general quality"}
 
 
 def main():

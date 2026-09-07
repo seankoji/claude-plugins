@@ -329,6 +329,11 @@ passing baseline unless the candidate fixes failures or is shorter with the same
 For subjective criteria, also obtain a blind assessment against the frozen rubric and
 record its limits; string checks cannot certify reasoning or writing quality.
 
+Label this a regression check on transcribed outputs. The script checks strings against
+predicates; the author supplies those strings. File hashes identify the supplied files,
+not authenticated execution. Keep any runner transcript or response IDs with the files
+so the operator can inspect the source; never call this script proof that a model ran.
+
 Keep the winning prompt. A candidate that sounds more sophisticated but fails a case is
 not ready. Do at most two revision rounds. If execution is unavailable, save the suite
 with `evaluation: not_run` and the exact blocker; never invent outputs or claim a gain.

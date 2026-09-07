@@ -221,8 +221,8 @@ fetch_state() {
     echo "merge-pr.sh: GraphQL returned errors: $(jq -c '.errors' <<<"$resp")" >&2
     return 1
   fi
-  if ! jq -e '.data.repository.pullRequest | .state == "OPEN" and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$")) and (.reviewThreads.nodes | type == "array") and (.reviewThreads.pageInfo.hasNextPage | type == "boolean")' >/dev/null 2>&1 <<<"$resp"; then
-    echo "merge-pr.sh: missing or invalid open-PR state" >&2
+  if ! jq -e '.data.repository.pullRequest | if .state == "MERGED" or .state == "CLOSED" then true else .state == "OPEN" and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$")) and (.reviewThreads.nodes | type == "array") and (.reviewThreads.pageInfo.hasNextPage | type == "boolean") end' >/dev/null 2>&1 <<<"$resp"; then
+    echo "merge-pr.sh: missing or invalid PR state" >&2
     return 1
   fi
   echo "$resp"
@@ -264,6 +264,12 @@ sync_behind_branch() {
 # never as a reason to change what it reports.
 enable_automerge() {
   local pr_id already m mutation resp
+  # update-branch can succeed before mergeStateStatus catches up. Arm against a
+  # fresh head and complete review state, never the pre-update snapshot.
+  state="$(fetch_state)" || return 1
+  handle_terminal_state
+  expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
+  jq -e '.data.repository.pullRequest.reviewThreads | .pageInfo.hasNextPage == false and all(.nodes[]; .isResolved == true)' >/dev/null <<<"$state" || return 1
   pr_id="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$state")"
   [ -n "$pr_id" ] || return 1
   already="$(jq -r '.data.repository.pullRequest.autoMergeRequest.enabledAt // empty' <<<"$state")"
@@ -291,12 +297,19 @@ blocked() {
   local reason="$1" detail="$2" automerge="unavailable"
   if [ "$AUTO_MERGE" = 1 ]; then
     case "$reason" in
-    head_changed | incomplete_review_state | unanswered_threads) ;;
+    head_changed | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr) ;;
     *) enable_automerge && automerge="armed" ;;
     esac
   fi
   echo "BLOCKED ${REPO}#${PR_NUMBER} reason=${reason} detail=${detail} automerge=${automerge}"
   exit 4
+}
+
+handle_terminal_state() {
+  case "$(jq -r '.data.repository.pullRequest.state' <<<"$state")" in
+    MERGED) echo "MERGED ${REPO}#${PR_NUMBER} via preexisting"; exit 0 ;;
+    CLOSED) blocked "closed" "PR was closed without merging; no action taken" ;;
+  esac
 }
 
 try_merge() {
@@ -316,17 +329,18 @@ try_merge() {
 }
 
 state="$(fetch_state)" || die "could not read PR state" 3
+handle_terminal_state
 expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
 if [ "$AUTO_MERGE" = 0 ] && jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null <<<"$state"; then
-  die "auto-merge is already enabled; disable it before using --no-auto for an exact-commit flow" 4
+  blocked "automerge_already_enabled" "disable the existing auto-merge request before using --no-auto"
 fi
 if [ -n "$RESOLVE_THREAD" ]; then
-  [ "$VERIFIED_HEAD" = "$expected_head" ] || die "verified head changed; re-verify the finding before resolving" 4
+  [ "$VERIFIED_HEAD" = "$expected_head" ] || blocked "verified_head_changed" "re-verify the finding against the new head before resolving"
   # Query the node directly so resolution works beyond the first 100 threads too.
   query=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"query($id:ID!){node(id:$id){... on PullRequestReviewThread{id pullRequest{id headRefOid}}}}",variables:{id:$id}}')
   thread_state="$(curl_graphql_retry "$query")" || die "thread query failed" 3
   pr_id="$(jq -r '.data.repository.pullRequest.id' <<<"$state")"
-  jq -e --arg id "$pr_id" --arg sha "$VERIFIED_HEAD" '.errors == null and .data.node.pullRequest.id == $id and .data.node.pullRequest.headRefOid == $sha' >/dev/null <<<"$thread_state" || die "thread does not belong to this PR at the verified head" 4
+  jq -e --arg id "$pr_id" --arg sha "$VERIFIED_HEAD" '.errors == null and .data.node.pullRequest.id == $id and .data.node.pullRequest.headRefOid == $sha' >/dev/null <<<"$thread_state" || blocked "thread_not_on_pr" "thread is not on this PR at the verified head; refresh its identity and the finding"
   mutation=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",variables:{id:$id}}')
   resolution="$(curl_graphql_retry "$mutation")" || die "thread resolution outcome unknown; refresh before retrying" 3
   jq -e '.errors == null and .data.resolveReviewThread.thread.isResolved == true' >/dev/null <<<"$resolution" || die "thread resolution failed" 3
@@ -345,6 +359,7 @@ if [ "$merge_state" = "BEHIND" ]; then
     blocked "behind" "update-branch did not clear BEHIND in time"
   fi
   state="$(fetch_state)" || die "could not re-read PR state after update-branch" 3
+  handle_terminal_state
 fi
 
 # A bounded query must not silently certify a partial review snapshot.
@@ -354,7 +369,8 @@ fi
 unanswered_count="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved != true)] | length' <<<"$state")"
 
 if [ "$unanswered_count" -gt 0 ]; then
-  blocked "unanswered_threads" "${unanswered_count} unresolved review thread(s); verify each finding and explicitly resolve it before merging"
+  thread_ids="$(jq -r '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved != true) | .id] | join(",")' <<<"$state")"
+  blocked "unanswered_threads" "${unanswered_count} unresolved review thread(s); threads=${thread_ids}; verify each finding and explicitly resolve it before merging"
 fi
 
 expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
@@ -405,6 +421,7 @@ done
 # fetch. Guard explicitly instead.
 state="$(fetch_state)" || true
 [ -n "$state" ] || state='{}'
+handle_terminal_state
 merge_state="$(jq -r '.data.repository.pullRequest.mergeStateStatus // "UNKNOWN"' <<<"$state")"
 case "$merge_state" in
 BLOCKED)

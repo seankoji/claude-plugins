@@ -103,7 +103,7 @@ land here, effort (S/M/L), its main tradeoff, and the strongest evidence against
 
 ### 5. Synthesis — only once every analysis has returned
 
-Read only the explicit report paths written by successful analysts in this run. A failed analyst or missing/empty report blocks synthesis; never substitute cached reports. Maintain that path list during analysis. Cross-check each technique against the already-in-use
+Read only the explicit report paths written by successful analysts in this run. Exclude failed analysts, list them in a partial result, and block if none succeeded. A missing/empty expected report blocks synthesis; never substitute cached reports. Maintain that path list during analysis. Cross-check each technique against the already-in-use
 list and against the other reports; dedupe convergent findings and name the conflicts. Kill
 anything already in use, anything incompatible with an existing pattern, and anything an
 analyst honestly flagged as not transferring — that rejection is signal, not noise to

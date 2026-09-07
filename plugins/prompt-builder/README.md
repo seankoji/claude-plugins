@@ -4,7 +4,7 @@
 
 Build a reusable prompt only when it earns its complexity. Compare a candidate with a
 minimal baseline on frozen normal, edge, and adversarial cases; keep the simpler prompt
-when both pass. Deliver the prompt with replayable outputs and explicit untested criteria.
+when both pass. Deliver the prompt with saved outputs, a regression check on their transcriptions, and explicit untested criteria.
 
 ## Platforms
 
@@ -24,7 +24,7 @@ Generated output lives under `dist/opencode/` and `dist/agy/prompt-builder/`; se
 2. **Structure** — applies evidence-based techniques (see below) instead of a named acronym framework — none of those are evidence-based, and picking between near-identical ones wastes time without changing the output.
 3. **Draft** — produces a structured prompt with variables documented, format locked down, and constraints phrased as what to do (not just what to avoid).
 4. **Compare** — runs baseline and candidate on the same cases in separate fresh contexts, then checks the saved outputs. At most two revision rounds.
-5. **Deliver** — saves the winner with results, evidence hashes, and limitations. If execution is unavailable, labels the evaluation `not_run`.
+5. **Deliver** — saves the winner with results, file fingerprints, and limitations. If execution is unavailable, labels the evaluation `not_run`.
 
 ## Replayable evaluation
 

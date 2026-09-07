@@ -229,6 +229,9 @@ that every review thread is resolved, and pins the merge to the checked head SHA
 A `[babysitter]` reply never authorizes automatic thread resolution. Then:
 
 - `MERGED ...` — you are done: `status: "merged"`, `merge.result: "MERGED"`.
+  `via preexisting` means another actor or auto-merge already completed it.
+- Exit 3 means a transport/GraphQL failure or ambiguous mutation outcome. Refresh the
+  PR before retrying; preserve the exact error if it remains unavailable.
 
 Every `BLOCKED` line carries `automerge=<armed|unavailable>` on the end. Head changes
 and incomplete or unresolved review state never arm auto-merge; for other blockers — read it first, it decides whether *you* must retry the merge after fixing the
@@ -246,6 +249,8 @@ Then handle the reason:
 - `reason=unanswered_threads` — verify the fix or rejection against the current diff,
   reply with evidence, then use the host's GitHub resolution tool or the bundled
   curl-backed action below. It resolves only the named thread and never merges:
+  Use a GraphQL node ID from `threads=<id>,<id>` in the blocked result, not a numeric
+  comment ID. Match the findings through the host's review-thread read tool first.
 
   ```bash
   ${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <repo> --pr <number> --resolve-thread <thread-id> --verified-head <full-commit-sha-you-verified>
@@ -255,6 +260,11 @@ Then handle the reason:
   separately only after every finding is settled. Thread resolution has no atomic
   GitHub head precondition; the helper checks ownership/head immediately before it.
 - `reason=head_changed` — inspect the new head, rerun relevant gates, and retry.
+- `reason=verified_head_changed` or `reason=thread_not_on_pr` — refresh the PR/thread
+  identity and re-verify the finding; do not resolve a different thread by guesswork.
+- `reason=closed` — stop; the PR was closed without merging. Report it as closed.
+- `reason=automerge_already_enabled` — disable the existing request through the host's
+  GitHub tools before continuing an exact-commit flow.
 - `reason=incomplete_review_state` — paginate every review thread and use the host's
   verified PR merge flow. The helper cannot certify a truncated snapshot.
 - `reason=conflict` — merge `origin/<base-ref>` in your worktree, resolve per step 2,

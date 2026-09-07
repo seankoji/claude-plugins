@@ -289,18 +289,39 @@ test('synthesis reads only this run reports and may recommend nothing', async ()
   assert.equal(outcome.stats.techniquesSurfaced, 0)
 })
 
-test('a failed analyst cannot be replaced with an existing cached report', async () => {
+test('no successful analysts blocks synthesis without reading cached reports', async () => {
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) throw new Error('analyst failed')
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(outcome.status, 'blocked')
+  assert.equal(outcome.reason, 'missing_reports')
+  assert.deepEqual(outcome.missing, ['org/p', 'org/q'])
+})
+
+test('partial synthesis excludes the failed analyst cached report', async () => {
   async function agent(prompt, opts) {
     if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
     if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
     if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
     if (opts.label === 'analyze:org__p') throw new Error('analyst failed')
     if (opts.label === 'analyze:org__q') return {}
+    if (opts.label === 'verify-reports') return { missing: [] }
+    if (opts.label === 'synthesize') {
+      assert.ok(!prompt.includes('/workspace/reports/org__p.md'))
+      assert.ok(prompt.includes('/workspace/reports/org__q.md'))
+      return { recommendations: 'Partial result.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 1 } }
+    }
     throw new Error(`unexpected agent call: ${opts.label}`)
   }
   const outcome = await runWorkflow({ agent, parallel })
-  assert.equal(outcome.reason, 'missing_reports')
-  assert.deepEqual(outcome.missing, ['org/p'])
+  assert.equal(outcome.status, 'final')
+  assert.deepEqual(outcome.failed_analysts, ['org/p'])
+  assert.equal(outcome.stats.reposAnalyzed, 1)
 })
 
 
