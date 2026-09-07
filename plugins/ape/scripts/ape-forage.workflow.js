@@ -21,7 +21,7 @@
 // (dedupe, rank-cap, retry-once, barrier-before-synthesis) is actual code, not prose
 // trusted to be followed correctly every run.
 //
-// args shape (all required): { pluginRoot, fingerprint, focusArea, workspaceDir }
+// args shape: { pluginRoot, fingerprint, focusArea, workspaceDir, reportsDir, resume? }
 //
 // workspaceDir is expected to be a disambiguated path from init-workspace.sh
 // (remote-origin + basename) — repo subdirectories under repos/ are further
@@ -129,7 +129,7 @@ const CLONE_SCHEMA = {
 const SYNTHESIS_SCHEMA = {
   type: 'object',
   properties: {
-    recommendations: { type: 'string', description: "top 2-3 pitches, verbatim, ~400 words max" },
+    recommendations: { type: 'string', description: "0-3 justified recommendations, or an explicit no-adoption verdict; ~400 words max" },
     nearMisses: { type: 'string', description: '<=40 words, or "" if none' },
     stats: {
       type: 'object',
@@ -206,7 +206,7 @@ Return via the required schema.`
 }
 
 function analysisPrompt(fingerprint, focusArea, repoPath, reportPath, fullName) {
-  return `You are deep-reading ONE cloned repository (${fullName}) to extract techniques transferable to a host project, grounded in file:line evidence. Extract 1-3 techniques. "They use CI / linting / tests" is not a finding — a finding is a specific, non-obvious pattern with evidence: an abstraction, a testing strategy, a build/orchestration trick, an architectural seam.
+  return `You are deep-reading ONE cloned repository (${fullName}) to extract techniques transferable to a host project, grounded in file:line evidence. Extract 0-3 techniques; zero is a useful result when nothing beats the host's existing approach. "They use CI / linting / tests" is not a finding — a finding is a specific, non-obvious pattern with evidence: an abstraction, a testing strategy, a build/orchestration trick, an architectural seam.
 
 Project fingerprint:
 ${fingerprint}
@@ -230,12 +230,12 @@ Honesty requirements:
 - "Impressive, but doesn't transfer because X" is a valid and useful verdict. Say it.
 - Flag copyleft licenses (GPL/AGPL): the idea transfers freely, verbatim code does not.
 
-Write the report to ${reportPath} (<=600 words). Per technique: name — immutable source permalink — problem it solves — which fingerprint weakness it addresses and where it would land in the host project — effort (S/M/L) — main tradeoff and strongest evidence against transfer.
+Write the report to ${reportPath} (<=600 words). Per technique: name — immutable source permalink — problem it solves — which fingerprint weakness it addresses and where it would land in the host project — effort (S/M/L) — main tradeoff and strongest evidence against transfer. Include the simpler local alternative and a bounded adoption experiment with a baseline, measurable pass condition, and condition for abandoning the idea. These are proposed experiments, never measured improvements.
 
 Then return ONLY: the repo name plus one line per technique (name + applicability verdict). Three lines maximum.`
 }
 
-function synthesisPrompt(workspaceDir, focusArea, fingerprint, rejected) {
+function synthesisPrompt(workspaceDir, focusArea, fingerprint, rejected, reports) {
   return `You are synthesizing every per-repo analyst report from a code-foraging expedition into ranked, actionable recommendations for the host project.
 
 Workspace: ${workspaceDir}
@@ -248,16 +248,36 @@ Rejected before cloning (do not re-litigate these — they were already judged n
 ${JSON.stringify(rejected, null, 2)}
 
 Method:
-1. Read every file under ${workspaceDir}/reports/*.md.
+1. Read ONLY these reports from this run; ignore other cached reports:
+${reports.map((r) => r.path).join('\n')}
 2. Cross-check each technique against the fingerprint's already-in-use list and against every other report. Recommending something the host already has is a failure, not a finding. If two analysts converged on the same or conflicting techniques, dedupe and note the agreement or conflict.
 3. Kill anything already in use, anything incompatible with an existing pattern, and anything an analyst already flagged as "doesn't transfer" — an analyst's honest rejection is signal, not noise to override.
 4. Rank the survivors by expected value against the fingerprint's weaknesses, not by how confidently an analyst wrote about it.
 
 Write ${workspaceDir}/RECOMMENDATIONS.md: per technique, ranked — what it is, immutable source permalink, the specific modules HERE it would land in, effort (S/M/L), tradeoffs and risks (mandatory, not just upside), and the strongest evidence against adopting it.
 
-Return via the required schema: the top 2-3 recommendations as one paragraph each (make it read like a finished pitch, not a report summary, ~400 words max), a short note on notable near-miss rejections, and stats.`
+Return via the required schema: up to 3 recommendations as one paragraph each (~400 words max), including the simpler alternative and proposed experiment, a short note on notable near-miss rejections, and stats. If none survive, say no adoption is justified and set techniquesSurfaced to 0. Never pad the result to meet a quota.`
 }
 
+// A fresh directory allocated by init-workspace.sh isolates this expedition's
+// writes from all previous reports, including when an analyst returns without writing.
+const workspaceDir = typeof args.workspaceDir === 'string' ? args.workspaceDir.replace(/\/+$/, '') : ''
+const reportsPrefix = `${workspaceDir}/reports/run.`
+if (!workspaceDir || typeof args.reportsDir !== 'string' || !args.reportsDir.startsWith(reportsPrefix) || !/^[A-Za-z0-9]+$/.test(args.reportsDir.slice(reportsPrefix.length))) {
+  return { status: 'blocked', reason: 'invalid_reports_dir', notes: 'Pass the fresh reports directory from init-workspace.sh.' }
+}
+// Recovery reuses the exact saved run's inputs and report allowlist, then repeats
+// verification before synthesis. It never dispatches discovery, cloning, or analysis.
+if (args.resume != null) {
+  const resume = args.resume
+  const valid = Array.isArray(resume.reports) && resume.reports.length > 0 &&
+    Array.isArray(resume.failedAnalysts) && Array.isArray(resume.rejected) &&
+    resume.reports.every(r => r && typeof r.fullName === 'string' && new RegExp(FULL_NAME_PATTERN).test(r.fullName) &&
+      r.path === `${args.reportsDir}/${r.fullName.replace('/', '__')}.md`) &&
+    new Set(resume.reports.map(r => r.path)).size === resume.reports.length
+  if (!valid) return { status: 'blocked', reason: 'invalid_resume', notes: 'Use the resume object returned by this run, with its original arguments.' }
+  return synthesizeReports(resume.reports, resume.failedAnalysts, resume.rejected)
+}
 phase('Discovery')
 const discoveryResults = await parallel(
   AXES.map((axis) => () =>
@@ -311,9 +331,9 @@ async function cloneAttempt(list) {
     .join(' ')
   return agent(
     `Run this exact command and report its output, then verify each cloned repo directory is non-empty:
-bash ${shQuote(`${args.pluginRoot}/scripts/clone-candidates.sh`)} ${shQuote(args.workspaceDir)} ${cloneArgs}
+bash ${shQuote(`${args.pluginRoot}/scripts/clone-candidates.sh`)} ${shQuote(args.reportsDir)} ${cloneArgs}
 
-The script validates every candidate up front and exits 1 without cloning anything if any URL or name is invalid. Once validation passes, individual clone failures are fail-soft (it swallows them into its log and exits 1 only in aggregate if any clone failed) — after it returns, check each of these directories under ${args.workspaceDir}/repos/ yourself and report which are present and non-empty vs missing/empty:
+The script validates every candidate up front and exits 1 without cloning anything if any URL or name is invalid. Once validation passes, individual clone failures are fail-soft (it swallows them into its log and exits 1 only in aggregate if any clone failed) — after it returns, check each of these directories under ${args.reportsDir}/repos/ yourself and report which are present and non-empty vs missing/empty:
 ${list.map((c) => c.fullName.replace('/', '__')).join(', ')}
 
 Return via the required schema: "cloned" = the fullName list (original owner/repo form) that verified non-empty, "failed" = the rest.`,
@@ -347,8 +367,8 @@ const clonedSelection = ranking.selected.filter((c) => cloneResult.cloned.includ
 const analysisResults = await parallel(
   clonedSelection.map((c) => () => {
     const dirName = c.fullName.replace('/', '__')
-    const repoPath = `${args.workspaceDir}/repos/${dirName}`
-    const reportPath = `${args.workspaceDir}/reports/${dirName}.md`
+    const repoPath = `${args.reportsDir}/repos/${dirName}`
+    const reportPath = `${args.reportsDir}/${dirName}.md`
     return agent(analysisPrompt(args.fingerprint, args.focusArea, repoPath, reportPath, c.fullName), {
       label: `analyze:${dirName}`,
       phase: 'Analysis',
@@ -359,48 +379,70 @@ const analysisResults = await parallel(
 log(`Analysis: ${analysisResults.filter(Boolean).length}/${clonedSelection.length} analysts returned`)
 
 // Validate every expected report exists and is non-empty before synthesis.
-// No fs here — the script sandbox has no Node APIs — so one cheap agent stats
-// the files. If that agent itself dies, proceed rather than block falsely — but
-// log it explicitly (below): synthesis only globs reports/*.md and is never told
-// which repos were expected, so it has no independent way to notice one missing.
-// The log line is the only operator-visible signal that the gate went unverified.
-const expectedReports = clonedSelection.map((c) => ({
+// No fs here, so an agent verifies the files. Null analyst results are excluded;
+// the fresh report directory also prevents reuse after a silently failed write.
+const failedAnalysts = clonedSelection.filter((_, index) => analysisResults[index] == null).map((c) => c.fullName)
+const expectedReports = clonedSelection.filter((_, index) => analysisResults[index] != null).map((c) => ({
   fullName: c.fullName,
-  path: `${args.workspaceDir}/reports/${c.fullName.replace('/', '__')}.md`,
+  path: `${args.reportsDir}/${c.fullName.replace('/', '__')}.md`,
 }))
-const reportCheck = await agent(
-  `Check whether each of these files exists and is non-empty:\n` +
-    expectedReports.map((r) => r.path).join('\n') +
-    `\n\nReturn the paths that are missing or zero-length, verbatim as given. ` +
-    `Read nothing else and create, modify or delete no file.`,
-  { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
-)
-if (!reportCheck || !Array.isArray(reportCheck.missing)) {
-  log('Report check: verify-reports agent returned no usable result — proceeding unverified, not blocked')
+if (expectedReports.length === 0) {
+  return { status: 'blocked', reason: 'missing_reports',
+    missing: failedAnalysts,
+    notes: 'No analyst completed; cached reports cannot substitute for this run.' }
 }
-const missingPaths = reportCheck?.missing ?? []
-const missingReports = expectedReports
-  .filter((r) => missingPaths.includes(r.path))
-  .map((r) => r.fullName)
-if (missingReports.length > 0) {
-  return {
-    status: 'blocked',
-    reason: 'missing_reports',
-    missing: missingReports,
-    notes: `Analysis completed but reports are missing/empty for: ${missingReports.join(', ')}`,
+return synthesizeReports(expectedReports, failedAnalysts, ranking.rejected)
+
+async function synthesizeReports(expectedReports, failedAnalysts, rejected) {
+  const resume = { reports: expectedReports, failedAnalysts, rejected }
+  let reportCheck = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      reportCheck = await agent(
+    `Check whether each of these files exists and is non-empty:\n` +
+      expectedReports.map((r) => r.path).join('\n') +
+      `\n\nReturn the paths that are missing or zero-length, verbatim as given. ` +
+      `Read nothing else and create, modify or delete no file.`,
+    { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
+      )
+    } catch {
+      reportCheck = null
+    }
+    if (reportCheck && Array.isArray(reportCheck.missing) &&
+        reportCheck.missing.every(path => expectedReports.some(report => report.path === path))) break
+    reportCheck = null
+    log(`Report verification attempt ${attempt + 1} failed`)
   }
-}
+  const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
+  if (reportsUnverified) {
+    return { status: 'blocked', reason: 'report_verification_failed', reports: expectedReports, resume,
+      notes: 'Report verification failed twice. Reinvoke this workflow with the original args plus the returned resume object to retry verification and synthesis without repeating research.' }
+  }
+  const missingPaths = reportCheck.missing
+  const missingReports = expectedReports
+    .filter((r) => missingPaths.includes(r.path))
+    .map((r) => r.fullName)
+  if (missingReports.length > 0) {
+    return {
+      status: 'blocked',
+      reason: 'missing_reports',
+      missing: missingReports,
+      notes: `Analysis completed but reports are missing/empty for: ${missingReports.join(', ')}`,
+    }
+  }
 
-phase('Synthesis')
-const synthesis = await agent(synthesisPrompt(args.workspaceDir, args.focusArea, args.fingerprint, ranking.rejected), {
-  label: 'synthesize',
-  model: 'opus',
-  schema: SYNTHESIS_SCHEMA,
-})
+  phase('Synthesis')
+  const synthesis = await agent(synthesisPrompt(args.reportsDir, args.focusArea, args.fingerprint, rejected, expectedReports), {
+    label: 'synthesize',
+    model: 'opus',
+    schema: SYNTHESIS_SCHEMA,
+  })
 
-return {
-  status: 'final',
-  recommendations: synthesis.recommendations,
-  nearMisses: synthesis.nearMisses,
-  stats: synthesis.stats,
+  return {
+    status: 'final',
+    recommendations: synthesis.recommendations,
+    nearMisses: synthesis.nearMisses,
+    stats: { ...synthesis.stats, reposAnalyzed: Math.min(synthesis.stats.reposAnalyzed, expectedReports.length) },
+    failed_analysts: failedAnalysts,
+  }
 }

@@ -130,7 +130,7 @@ If a candidate matches any of these, drop it — no rule needed.
 
 Read in parallel:
 
-- `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` — frequency tables for Bash, MCP, SSH/sudo drills (last 50 transcripts). If absent, Phase 1 is unavailable; run with `--audit-only`.
+- Run both `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py --json` (patterns, source lines, and completed/error/unobserved result counts from the last 50 transcripts) and `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py` (SSH/sudo drill prefixes). Read the JSON-cited transcript lines for the complete remote command and quote style before forming a rule; drill prefixes are not complete shell commands. If the script is absent, Phase 1 is unavailable; run with `--audit-only`.
 - `~/.claude/claude-tuneup.config.json` if it exists — see **Configuration** above; fall back to the documented defaults for any field it omits, and to all defaults if the file is absent entirely.
 - `~/.claude/settings.json` — follow the symlink to the real file if it's a link
 - `.claude/settings.json` if it exists
@@ -142,7 +142,17 @@ Read in parallel:
 
 **Pre-filter**: before surfacing any candidate, load `~/.claude/settings.json`, `.claude/settings.json`, and `.claude/settings.local.json` and build the combined prefix-match set. Drop any candidate whose raw command is already prefix-covered — the scanner counts raw invocations with no visibility into existing rules, so this check is mandatory to avoid proposing rules the harness already auto-allows. (Recurring de-dupe miss — see `claude-tuneup.notes.md`.)
 
-From scan output, surface candidates with **count ≥ 3** that aren't already in any allowlist.
+From JSON scan output, investigate patterns with **count ≥ 3** that aren't already in any
+allowlist. Counts are observations, not proof of permission friction or approval.
+Inspect the cited source lines and corresponding results before recommending a rule.
+Repetition alone never justifies widening permissions. Investigate denied calls as
+possible approval friction: a safe read-only command rejected for lack of an allow rule
+may justify a narrow proposal for the user's approval. A deliberate user refusal or
+policy restriction must be respected. Generic errors also include product/network
+failures; inspect the cited result to distinguish them. Missing results mean unknown.
+Each proposal must cite its transcript, call `line`, and `result_line` when present, explain the actual avoidable approval,
+and show the narrow rule. If friction cannot be established, report the observation
+without proposing an allow rule. Zero proposed additions is a successful audit.
 
 For each candidate:
 

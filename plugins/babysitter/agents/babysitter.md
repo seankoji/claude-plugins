@@ -224,26 +224,60 @@ worktree:
 ${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <repo> --pr <number>
 ```
 
-It syncs a branch that fell behind base again (server-side `update-branch`), resolves
-threads that carry a `[babysitter]` reply, and merges — the two live-state failures a
-worktree cannot see. Then:
+It syncs a branch that fell behind base again (server-side `update-branch`), checks
+that every review thread is resolved, and pins the merge to the checked head SHA.
+A `[babysitter]` reply never authorizes automatic thread resolution. Then:
 
 - `MERGED ...` — you are done: `status: "merged"`, `merge.result: "MERGED"`.
+  `via preexisting` means another actor or auto-merge already completed it.
+  If `prior_blocker=<reason>` is present, include it as context: that blocker was
+  observed before the refresh found the PR merged. Report the observed merged state.
+- Exit 3 means a transport/GraphQL failure or ambiguous mutation outcome. Refresh the
+  PR before retrying; preserve the exact error if it remains unavailable.
 
-Every `BLOCKED` line carries `automerge=<armed|unavailable>` on the end, whatever the
-reason — read it first, it decides whether *you* must retry the merge after fixing the
+Every `BLOCKED` line carries `automerge=<armed|preexisting|unavailable>` on the end. Head changes
+and blockers requiring new commits (conflict/behind), or incomplete/unresolved review
+state, never arm auto-merge. For other blockers, read it first: it decides whether you
+must retry the merge after fixing the
 blocker:
 
-- `automerge=armed` — GitHub has auto-merge enabled and will merge the moment the
+- `automerge=armed` — this run enabled auto-merge and GitHub will merge the moment the
   blocker clears on its own; no further `merge-pr.sh` call is needed. Fix the blocker
   per the reason below, then report `status: "done"` with
   `merge.automerge_armed: true`.
 - `automerge=unavailable` — auto-merge is off or GitHub declined; after you fix the
   blocker you must run `merge-pr.sh` again yourself.
+- `automerge=preexisting` — an earlier request is active and may merge independently
+  under GitHub's rules. This run did not verify when or on which head it was armed.
+  If review threads are unresolved or the snapshot is truncated, disable that request
+  through the host's GitHub tools before continuing verification.
 
 Then handle the reason:
 
-- `reason=unanswered_threads` — answer the thread (step 4) and run the merge again.
+- `reason=unanswered_threads` — verify the fix or rejection against the current diff,
+  reply with evidence, then use the host's GitHub resolution tool or the bundled
+  curl-backed action below. It resolves only the named thread and never merges:
+  Use a GraphQL node ID from `threads=<id>,<id>` in the blocked result, not a numeric
+  comment ID. Match the findings through the host's review-thread read tool first.
+
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <repo> --pr <number> --resolve-thread <thread-id> --verified-head <full-commit-sha-you-verified>
+  ```
+
+  Refresh the head and rerun relevant verification if it changed. Run merge mode
+  separately only after every finding is settled. Thread resolution has no atomic
+  GitHub head precondition; the helper checks ownership/head immediately before it.
+- `reason=head_changed` — inspect the new head, rerun relevant gates, and retry.
+- `reason=permission_denied` or `reason=validation_failed` — preserve the API error.
+  Correct the permission, repository rule, or invalid request before retrying; do not
+  treat these as transient transport failures. These outcomes never arm auto-merge.
+- `reason=verified_head_changed` or `reason=thread_not_on_pr` — refresh the PR/thread
+  identity and re-verify the finding; do not resolve a different thread by guesswork.
+- `reason=closed` — stop; the PR was closed without merging. Report it as closed.
+- `reason=automerge_already_enabled` — disable the existing request through the host's
+  GitHub tools before continuing an exact-commit flow.
+- `reason=incomplete_review_state` — paginate every review thread and use the host's
+  verified PR merge flow. The helper cannot certify a truncated snapshot.
 - `reason=conflict` — merge `origin/<base-ref>` in your worktree, resolve per step 2,
   re-run the gate, push, and run the merge again.
 - `reason=behind` — the branch fell behind base again and the server-side
@@ -257,6 +291,11 @@ Then handle the reason:
 - `reason=unknown` — every merge method failed and GitHub gave no clearer category.
   Return `blocked` with `blocked_on: "merge:unknown"` and the script's `detail=` in
   `notes`; do not guess at a fix.
+
+The expected-head check on auto-merge applies when arming it. GitHub auto-merge may
+later merge a new eligible head under repository rules; it is not a permanent SHA
+lock. If the operator requires approval of one exact commit, disable any existing
+auto-merge request using the host's GitHub tools and pass `--no-auto` to merge mode.
 
 One retry per reason, not a loop: if the second attempt comes back blocked the same
 way, return `blocked` with the exact `blocked_on`. The orchestrator will not merge for

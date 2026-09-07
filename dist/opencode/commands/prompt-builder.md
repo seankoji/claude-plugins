@@ -59,7 +59,7 @@ If `$ARGUMENTS` contains a task description ("write me a status update", "summar
 
 > "Sounds like you want a reusable prompt for [task type]. Is that right, or do you need a one-off output now?"
 
-If one-off: still produce a prompt they can paste into a fresh chat. The discipline is the same.
+If one-off: hand control back to the caller to execute the task. Do not force a reusable prompt artifact on someone who asked for an answer.
 
 Test yourself before each response: *am I writing the thing, or writing the prompt that will write the thing?*
 
@@ -112,7 +112,7 @@ doc before drafting — a mode's name can misdescribe its real contract (e.g. "c
 mode" reads as an implementation checklist but is actually an audit-first verification
 pass), and inferring behavior from the name alone produces a prompt for the wrong contract.
 
-Batch independent questions. Ask iteratively when each answer shapes the next. Hard cap: **20 questions across the session total**.
+Batch independent questions. Ask iteratively when each answer shapes the next. Hard cap: **5 questions across the session total**. Reuse facts already supplied; a complete brief needs no questions.
 
 If the cap is reached before diagnosis is sufficient, stop asking — proceed on explicitly-flagged assumptions instead of stalling. State each assumption inline (e.g. in the deliverable's Context/Use-when line) so the operator can correct it in one pass.
 
@@ -285,6 +285,62 @@ Confirm the target runtime's actual available tools before naming any.
 
 ---
 
+## Compare before delivery
+
+Before drafting, freeze a minimal baseline prompt and at least three representative
+cases: normal, edge, and adversarial. Define inputs and expected checks from the user's
+success criteria before seeing outputs. Keep one case held out while revising.
+
+Run both prompts on identical inputs in separate fresh contexts using the same target
+model, settings, and tools. Give executors only the prompt and input, never expected
+answers or the other prompt's output. Use isolated fixtures for tools; a test must not
+make real purchases, send messages, merge PRs, or change live settings. Use existing
+runtime tools; do not install a second model client just to run this comparison.
+
+Prefer the host's native evaluation runner when it supports the required paired
+comparison. Verify it runs; advertised help alone is not evidence of availability.
+The bundled evaluator below only replays saved outputs and needs no model client.
+
+Save the suite and actual outputs beside the prompt using these shapes. Include all
+three kinds (`normal`, `edge`, `adversarial`), unique IDs, and nonempty check lists:
+
+```json
+{"cases":[{"id":"normal-1","kind":"normal","input":"actual fixture input","checks":[{"equals":"expected output"}]}]}
+```
+
+Each run file records the exact prompt, model, settings, and all case inputs/outputs:
+
+```json
+{"prompt":"exact prompt text","model":"resolved model id","settings":{},"inputs":{"normal-1":"actual fixture input"},"outputs":{"normal-1":"actual model output"}}
+```
+
+The one-case shapes above illustrate fields; an executable suite needs at least three
+cases, one of each kind. Inputs must match the suite exactly in both run files. A check
+has one predicate: `equals`, `contains`, or `not_contains` with a string value, or
+`json_equals` with a JSON value. Run:
+
+```bash
+python3 "__PLUGIN_ROOT__/scripts/evaluate.py" suite.json baseline.json candidate.json
+```
+
+The evaluator checks exact strings, required/forbidden text, and parsed JSON. It rejects
+missing cases and mismatched model/settings, records input hashes, and prefers a fully
+passing baseline unless the candidate fixes failures or is shorter with the same passes.
+For subjective criteria, also obtain a blind assessment against the frozen rubric and
+record its limits; string checks cannot certify reasoning or writing quality.
+
+Label this a regression check on transcribed outputs. The script checks strings against
+predicates; the author supplies those strings. File hashes identify the supplied files,
+not authenticated execution. Keep any runner transcript or response IDs with the files
+so the operator can inspect the source; never call this script proof that a model ran.
+
+Keep the winning prompt. A candidate that sounds more sophisticated but fails a case is
+not ready. Do at most two revision rounds. If execution is unavailable, save the suite
+with `evaluation: not_run` and the exact blocker; never invent outputs or claim a gain.
+Report case results and prompt bytes, not an unmeasured percentage improvement.
+
+---
+
 ## Final deliverable structure
 
 ```
@@ -302,10 +358,9 @@ Confirm the target runtime's actual available tools before naming any.
 
 ---
 
-**Test cases**
-1. <normal input>
-2. <edge case>
-3. <near-miss / tricky variant>
+**Evaluation:** <winner or not_run, model/settings, suite and output paths>
+**Case results:** <baseline vs candidate passes; failed cases>
+**Prompt bytes:** <baseline vs candidate>
 
 **Known failure modes**
 - <what to watch for>
@@ -313,7 +368,7 @@ Confirm the target runtime's actual available tools before naming any.
 
 **Known failure modes guidance:** list 2–3 concrete, prompt-specific risks — not generic hedges like "may not always work." Ground each one in an actual constraint of this prompt: which instruction is most likely to be dropped under a long or messy input, which input shape breaks the output format, where CoT (if used) might be over- or under-applied. If you can't name a concrete failure mode, treat that as a signal to run another critique pass rather than shipping the section empty.
 
-Present this as the final output. Ask: "Good enough, or shall we refine?" Loop until satisfied.
+Present the selected prompt and evaluation evidence. State any failing or untested criteria explicitly.
 
 ---
 

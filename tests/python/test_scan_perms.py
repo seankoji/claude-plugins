@@ -132,6 +132,62 @@ class FindRecentTranscriptsTest(unittest.TestCase):
 
 
 class IterToolUsesTest(unittest.TestCase):
+    def test_evidence_correlates_results_and_deduplicates_replayed_calls(self):
+        call = {"type": "tool_use", "id": "call-1", "name": "Bash", "input": {"command": "git status"}}
+        def event(kind, block):
+            return json.dumps({"type": kind, "message": {"content": [block]}})
+        with tempfile.TemporaryDirectory() as directory:
+            lines = [event("assistant", call), event("assistant", call),
+                     event("user", {"type": "tool_result", "tool_use_id": "call-1", "is_error": True}),
+                     event("assistant", {**call, "id": "call-2"}),
+                     event("user", {"type": "tool_result", "tool_use_id": "call-2", "content": "ok"}),
+                     event("assistant", {**call, "id": "call-3"})]
+            path = _write_transcript(directory, "a.jsonl", lines)
+            row = scan_perms.evidence_report([scan_perms.Path(path)])["patterns"][0]
+            self.assertEqual(row["count"], 3)
+            self.assertEqual(row["outcomes"], {"completed": 1, "error": 1, "unobserved": 1})
+            self.assertEqual([source["line"] for source in row["sources"]], [1, 4, 6])
+            self.assertEqual([source["result_line"] for source in row["sources"]], [3, 5, None])
+            self.assertNotIn("command", json.dumps(row))
+            self.assertEqual(len(list(scan_perms.iter_tool_uses([scan_perms.Path(path)]))), 4)
+
+    def test_evidence_retains_only_report_fields_and_handles_invalid_ids(self):
+        calls = [
+            {"type": "tool_use", "name": "Write", "input": {"content": "large write payload" * 10000}},
+            {"type": "tool_use", "id": 42, "name": "Bash", "input": {"command": "git status --short"}},
+            {"type": "tool_use", "id": [], "name": "mcp__fixture__read", "input": {"payload": "large MCP payload" * 10000}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_transcript(directory, "a.jsonl", [json.dumps({"type": "assistant", "message": {"content": calls}})])
+            evidence = list(scan_perms.iter_tool_evidence([scan_perms.Path(path)]))
+            self.assertEqual(len(evidence), 2)
+            self.assertLess(len(json.dumps(evidence)), 1000)
+            self.assertTrue(all(e['outcome'] == 'unobserved' for e in evidence))
+            self.assertEqual(evidence[0]['call']['input']['command'], 'git status')
+            self.assertEqual(evidence[1]['call']['input'], {})
+
+    def test_results_do_not_cross_transcript_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a = _write_transcript(directory, "a.jsonl", [json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "shared", "name": "Bash", "input": {"command": "git status"}}]}})])
+            b = _write_transcript(directory, "b.jsonl", [json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "shared", "content": "ok"}]}})])
+            report = scan_perms.evidence_report([scan_perms.Path(a), scan_perms.Path(b)])
+            self.assertEqual(report["patterns"][0]["outcomes"]["unobserved"], 1)
+
+    def test_identical_cross_file_replays_count_once_but_changed_inputs_do_not(self):
+        call = {"type": "tool_use", "id": "shared", "name": "Bash", "input": {"command": "git status --short"}}
+        def event(block):
+            return json.dumps({"type": "assistant", "message": {"content": [block]}})
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [scan_perms.Path(_write_transcript(directory, name, [event(block)])) for name, block in (
+                ('a.jsonl', call), ('fork.jsonl', call),
+                ('different.jsonl', {**call, 'input': {'command': 'git status --porcelain'}}))]
+            report = scan_perms.evidence_report(paths)
+            self.assertEqual(report['patterns'][0]['count'], 2)
+            self.assertEqual([s['transcript'] for s in report['patterns'][0]['sources']], [str(paths[0]), str(paths[2])])
+            self.assertEqual(len(list(scan_perms.iter_tool_uses(paths))), 3)
+
     def test_extracts_bash_tool_use(self):
         with tempfile.TemporaryDirectory() as d:
             path = _write_transcript(d, "a.jsonl", [_tool_use_line("Bash", {"command": "git status"})])
@@ -200,7 +256,7 @@ class MainEndToEndTest(unittest.TestCase):
     def _run_main_capturing_stdout(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            scan_perms.main()
+            scan_perms.main([])
         return buf.getvalue()
 
     def test_safe_read_only_pattern_surfaces_in_bash_table(self):
@@ -211,6 +267,21 @@ class MainEndToEndTest(unittest.TestCase):
                 output = self._run_main_capturing_stdout()
             self.assertIn("git status", output)
             self.assertIn("    3  git status", output)
+
+    def test_ssh_drill_and_json_evidence_together_recover_the_exact_command(self):
+        command = "ssh nas 'ls *'"
+        with tempfile.TemporaryDirectory() as d:
+            transcript = _write_transcript(d, "ssh.jsonl", [_tool_use_line("Bash", {"command": command})])
+            with mock.patch.object(scan_perms, "PROJECTS_DIR", scan_perms.Path(d)):
+                text_output = self._run_main_capturing_stdout()
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    scan_perms.main(["--json"])
+            self.assertIn("ssh nas 'ls", text_output)
+            evidence = json.loads(buf.getvalue())
+            self.assertIn("ssh nas", json.dumps(evidence))
+            self.assertIn(transcript, json.dumps(evidence))
+            self.assertEqual(json.loads(scan_perms.Path(transcript).read_text())['message']['content'][0]['input']['command'], command)
 
     def test_write_capable_pattern_is_reported_as_its_own_distinct_row(self):
         # scan_perms.py itself does not classify safe-vs-unsafe (that
@@ -256,7 +327,7 @@ class MainEndToEndTest(unittest.TestCase):
             with mock.patch.object(scan_perms, "PROJECTS_DIR", scan_perms.Path(empty)):
                 with self.assertRaises(SystemExit) as ctx:
                     with contextlib.redirect_stderr(io.StringIO()):
-                        scan_perms.main()
+                        scan_perms.main([])
             self.assertEqual(ctx.exception.code, 1)
 
     def test_mcp_tool_use_counted(self):

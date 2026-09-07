@@ -3,18 +3,10 @@
 # merge-pr.sh — attempt to actually land one pull request, fixing exactly the
 # merge-blockers that are safe to fix without a human's judgment.
 #
-# The rest of this plugin drives a PR to "mergeable": no conflicts, checks green,
-# every review comment answered. That is not the same thing as "GitHub will accept
-# `gh pr merge` right now" — a PR can be `mergeable: MERGEABLE` with all checks green
-# and still be rejected by branch protection for reasons list-prs.sh's snapshot never
-# looked at: the head branch fell behind the base again after another PR merged
-# (`strict_required_status_checks_policy`), a review thread the agent answered was
-# never actually resolved (`required_review_thread_resolution` keys on GitHub's
-# `isResolved` flag, which a `[babysitter]` *reply* does not set), or an org ruleset
-# this script has no authority to satisfy at all (a required human approval, a
-# code-scanning alert over the org's severity threshold). This script tells those
-# three apart and acts only on the first two — the ones that are "finish the job",
-# not "override a safety rule".
+# Reads current PR state, updates a behind branch, and pins each merge request to
+# the checked head SHA. Review threads must already be explicitly resolved after
+# verification. A comment prefix cannot prove that a finding was addressed.
+# Incomplete snapshots and changed heads stop without arming auto-merge.
 #
 # Every network call goes over curl, not `gh api` / `gh pr merge` — same reason as
 # list-prs.sh (see its header): under the Claude Code sandbox, gh's Go TLS stack
@@ -22,13 +14,18 @@
 # handshake cleanly. `gh` is used only for `gh auth token`, a local credential read.
 #
 # Usage:
-#   merge-pr.sh --repo <owner/name> --pr <N> [--method squash|merge|rebase]
+#   merge-pr.sh --repo <owner/name> --pr <N> [--method squash|merge|rebase] [--no-auto]
+#   merge-pr.sh --repo <owner/name> --pr <N> --resolve-thread <ID> --verified-head <SHA>
+#
+# The resolution mode is a separate, explicit action after the agent verifies the
+# finding and posts its evidence. It checks thread ownership and the verified head,
+# resolves that one thread, and exits without attempting a merge or auto-merge.
 #
 # Without --method, tries squash, then merge, then rebase, stopping at the first the
 # repository accepts — GitHub's own error names any method the repo disallows, which
 # is simpler and more current than caching each repo's `allowed_merge_methods` here.
 #
-# Every BLOCKED outcome also tries arming GitHub's native auto-merge before it
+# Eligible BLOCKED outcomes also try arming GitHub's native auto-merge before it
 # reports — the courtesy costs one extra mutation and means a PR blocked only on
 # something outside this script's authority (a pending required check, a review
 # still needed) finishes on its own the moment that condition clears, with no further
@@ -36,12 +33,12 @@
 # considers the PR blocked; the exit code and reason are unaffected.
 #
 # Exit codes:
-#   0 — merged (stdout: "MERGED <repo>#<pr> via <method>")
+#   0 — merged, or explicit resolution mode printed "RESOLVED <repo>#<pr> ..."
 #   2 — precondition failed (missing gh/curl/jq, bad arguments)
 #   3 — the GitHub query itself failed (network, rate limit, permissions)
 #   4 — blocked on something this script will not act on unasked: a required human
 #       approval, a code-scanning threshold, an unresolved thread with no
-#       `[babysitter]` reply yet, or a merge conflict. Never retried, never
+#       verified resolution yet, or a merge conflict. Never retried, never
 #       overridden with admin/force. (stdout: "BLOCKED <repo>#<pr> reason=<category>
 #       detail=<...> automerge=<armed|unavailable>")
 #
@@ -50,10 +47,8 @@
 #     required reviewer, or an org ruleset exists on purpose; the fix for a PR that
 #     cannot satisfy one is either satisfying it for real or a human's call to waive
 #     it, never a flag this script reaches for on its own.
-#   - Never resolves a review thread that has no `[babysitter]` reply. Resolving a
-#     thread nobody answered would silently drop the reviewer's comment rather than
-#     satisfy it — the whole point of `required_review_thread_resolution` is that
-#     someone looked at it.
+#   - Never resolves review threads as part of merging. Resolution requires the
+#     separate --resolve-thread action and the agent's --verified-head assertion.
 #   - Never rebases or force-pushes the PR branch itself. `--method rebase` is
 #     GitHub's server-side "rebase and merge" against the *base* branch (replays the
 #     PR's commits, then fast-forwards the base) — it never rewrites or force-pushes
@@ -69,6 +64,9 @@ usage() {
 REPO=""
 PR_NUMBER=""
 METHOD=""
+RESOLVE_THREAD=""
+VERIFIED_HEAD=""
+AUTO_MERGE=1
 
 die() {
   echo "merge-pr.sh: $1" >&2
@@ -88,6 +86,18 @@ while [ $# -gt 0 ]; do
   --method)
     METHOD="${2:-}"
     shift 2
+    ;;
+  --resolve-thread)
+    RESOLVE_THREAD="${2:-}"
+    shift 2
+    ;;
+  --verified-head)
+    VERIFIED_HEAD="${2:-}"
+    shift 2
+    ;;
+  --no-auto)
+    AUTO_MERGE=0
+    shift
     ;;
   -h | --help)
     usage
@@ -109,6 +119,11 @@ case "$METHOD" in
 '' | squash | merge | rebase) ;;
 *) die "--method must be squash, merge, or rebase, got: ${METHOD}" ;;
 esac
+if [ -n "$RESOLVE_THREAD" ] || [ -n "$VERIFIED_HEAD" ]; then
+  [ -n "$RESOLVE_THREAD" ] && [ -n "$VERIFIED_HEAD" ] || die "resolution requires both --resolve-thread and --verified-head"
+  [[ "$VERIFIED_HEAD" =~ ^[0-9a-f]{40}$ ]] || die "--verified-head must be a full lowercase commit SHA"
+  [ -z "$METHOD" ] || die "resolution mode cannot also select a merge method"
+fi
 
 OWNER="${REPO%%/*}"
 NAME="${REPO#*/}"
@@ -198,7 +213,7 @@ curl_rest() {
 fetch_state() {
   local query resp
   query=$(jq -n --arg owner "$OWNER" --arg name "$NAME" --argjson number "$PR_NUMBER" '{
-    query: "query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ id mergeable mergeStateStatus baseRefName headRefName autoMergeRequest{ enabledAt } reviewThreads(first:100){ nodes{ id isResolved isOutdated comments(last:100){ nodes{ body } } } } commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } } } } }",
+    query: "query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ id state headRefOid mergeable mergeStateStatus baseRefName headRefName autoMergeRequest{ enabledAt } reviewThreads(first:100){ pageInfo{ hasNextPage } nodes{ id isResolved } } commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } } } } }",
     variables: { owner: $owner, name: $name, number: $number }
   }')
   resp="$(curl_graphql_retry "$query")" || { echo "merge-pr.sh: state query failed: $resp" >&2; return 1; }
@@ -206,24 +221,11 @@ fetch_state() {
     echo "merge-pr.sh: GraphQL returned errors: $(jq -c '.errors' <<<"$resp")" >&2
     return 1
   fi
+  if ! jq -e '.data.repository.pullRequest | if .state == "MERGED" or .state == "CLOSED" then true else .state == "OPEN" and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$")) and (.reviewThreads.nodes | type == "array") and (.reviewThreads.pageInfo.hasNextPage | type == "boolean") end' >/dev/null 2>&1 <<<"$resp"; then
+    echo "merge-pr.sh: missing or invalid PR state" >&2
+    return 1
+  fi
   echo "$resp"
-}
-
-# True if any comment in the thread already carries the plugin's own reply marker —
-# the signal that a babysitter agent looked at this thread and answered it (fixed or
-# rejected), as opposed to a thread nobody has touched yet.
-thread_has_babysitter_reply() {
-  jq -e '[.comments.nodes[]? | select(.body | startswith("[babysitter]"))] | length > 0' >/dev/null 2>&1 <<<"$1"
-}
-
-resolve_thread() {
-  local thread_id="$1" mutation resp
-  mutation=$(jq -n --arg id "$thread_id" '{
-    query: "mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread{ id isResolved } } }",
-    variables: { id: $id }
-  }')
-  resp="$(curl_graphql_retry "$mutation")" || return 1
-  jq -e '.data.resolveReviewThread.thread.isResolved == true' >/dev/null 2>&1 <<<"$resp"
 }
 
 # PUTs the update-branch endpoint (server-side merge of base into head — the same
@@ -261,17 +263,23 @@ sync_behind_branch() {
 # repo settings) or every method is rejected; the caller treats that as informational,
 # never as a reason to change what it reports.
 enable_automerge() {
-  local pr_id already m mutation resp
+  local pr_id already m mutation resp state expected_head
+  # update-branch can succeed before mergeStateStatus catches up. Arm against a
+  # fresh head and complete review state, never the pre-update snapshot.
+  state="$(fetch_state)" || return 1
+  handle_terminal_state "${1:-}"
+  expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
+  jq -e '.data.repository.pullRequest.reviewThreads | .pageInfo.hasNextPage == false and all(.nodes[]; .isResolved == true)' >/dev/null <<<"$state" || return 1
   pr_id="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$state")"
   [ -n "$pr_id" ] || return 1
   already="$(jq -r '.data.repository.pullRequest.autoMergeRequest.enabledAt // empty' <<<"$state")"
-  [ -n "$already" ] && return 0
+  [ -n "$already" ] && return 2
   local methods_upper=(SQUASH MERGE REBASE)
   [ -n "$METHOD" ] && methods_upper=("$(tr '[:lower:]' '[:upper:]' <<<"$METHOD")")
   for m in "${methods_upper[@]}"; do
-    mutation=$(jq -n --arg id "$pr_id" --arg m "$m" '{
-      query: "mutation($id:ID!,$m:PullRequestMergeMethod!){ enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m}){ pullRequest{ autoMergeRequest{ enabledAt } } } }",
-      variables: { id: $id, m: $m }
+    mutation=$(jq -n --arg id "$pr_id" --arg m "$m" --arg sha "$expected_head" '{
+      query: "mutation($id:ID!,$m:PullRequestMergeMethod!,$sha:GitObjectID!){ enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$m, expectedHeadOid:$sha}){ pullRequest{ autoMergeRequest{ enabledAt } } } }",
+      variables: { id: $id, m: $m, sha: $sha }
     }')
     resp="$(curl_graphql_retry "$mutation")" || continue
     if jq -e '.data.enablePullRequestAutoMerge.pullRequest.autoMergeRequest.enabledAt' >/dev/null 2>&1 <<<"$resp"; then
@@ -286,29 +294,71 @@ enable_automerge() {
 # needed — resolves on its own without another call to this script. Exit code and
 # reason are the same whether or not auto-merge could be armed.
 blocked() {
-  local reason="$1" detail="$2" automerge="unavailable"
-  enable_automerge && automerge="armed"
+  local reason="$1" detail="$2" automerge="unavailable" arm_rc
+  if jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null 2>&1 <<<"${state:-}"; then
+    automerge="preexisting"
+  fi
+  if [ "$AUTO_MERGE" = 1 ]; then
+    case "$reason" in
+    head_changed | conflict | behind | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr | permission_denied | validation_failed) ;;
+    *)
+      if enable_automerge "$reason"; then
+        automerge="armed"
+      else
+        arm_rc=$?
+        [ "$arm_rc" != 2 ] || automerge="preexisting"
+      fi
+      ;;
+    esac
+  fi
   echo "BLOCKED ${REPO}#${PR_NUMBER} reason=${reason} detail=${detail} automerge=${automerge}"
   exit 4
 }
 
+handle_terminal_state() {
+  case "$(jq -r '.data.repository.pullRequest.state' <<<"$state")" in
+    MERGED) echo "MERGED ${REPO}#${PR_NUMBER} via preexisting${1:+ prior_blocker=$1}"; exit 0 ;;
+    CLOSED) blocked "closed" "PR was closed without merging; no action taken${1:+; prior_blocker=$1}" ;;
+  esac
+}
+
 try_merge() {
   local method="$1" resp code body
-  resp="$(curl_rest PUT "/repos/${REPO}/pulls/${PR_NUMBER}/merge" "$(jq -n --arg m "$method" '{merge_method:$m}')")" || return 2
+  resp="$(curl_rest PUT "/repos/${REPO}/pulls/${PR_NUMBER}/merge" "$(jq -n --arg m "$method" --arg sha "$expected_head" '{merge_method:$m,sha:$sha}')")" || return 2
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
-  if [ "$code" = "200" ]; then
+  if [ "$code" = "200" ] && jq -e '.merged == true' >/dev/null 2>&1 <<<"$body"; then
     echo "MERGED ${REPO}#${PR_NUMBER} via ${method}"
     return 0
   fi
   # 405: "Pull Request is not mergeable" (or a merge-method the repo disallows) —
-  # the caller tries the next method / classifies the message. 409: sha mismatch,
-  # irrelevant here since no expected head sha is sent. Anything else is a hard stop.
+  # the caller tries the next method / classifies the message. A 409 means the
+  # checked head changed: never retry another method or arm auto-merge for it.
   printf '%s' "$body" >&2
   echo "$code"
 }
 
 state="$(fetch_state)" || die "could not read PR state" 3
+handle_terminal_state
+expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
+if jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null <<<"$state"; then
+  if [ "$AUTO_MERGE" = 0 ] || ! jq -e '.data.repository.pullRequest.reviewThreads | .pageInfo.hasNextPage == false and all(.nodes[]; .isResolved == true)' >/dev/null <<<"$state"; then
+    blocked "automerge_already_enabled" "auto-merge may land independently; disable the existing request before continuing this verification flow"
+  fi
+fi
+if [ -n "$RESOLVE_THREAD" ]; then
+  [ "$VERIFIED_HEAD" = "$expected_head" ] || blocked "verified_head_changed" "re-verify the finding against the new head before resolving"
+  # Query the node directly so resolution works beyond the first 100 threads too.
+  query=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"query($id:ID!){node(id:$id){... on PullRequestReviewThread{id pullRequest{id headRefOid}}}}",variables:{id:$id}}')
+  thread_state="$(curl_graphql_retry "$query")" || die "thread query failed" 3
+  pr_id="$(jq -r '.data.repository.pullRequest.id' <<<"$state")"
+  jq -e --arg id "$pr_id" --arg sha "$VERIFIED_HEAD" '.errors == null and .data.node.pullRequest.id == $id and .data.node.pullRequest.headRefOid == $sha' >/dev/null <<<"$thread_state" || blocked "thread_not_on_pr" "thread is not on this PR at the verified head; refresh its identity and the finding"
+  mutation=$(jq -n --arg id "$RESOLVE_THREAD" '{query:"mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}",variables:{id:$id}}')
+  resolution="$(curl_graphql_retry "$mutation")" || die "thread resolution outcome unknown; refresh before retrying" 3
+  jq -e '.errors == null and .data.resolveReviewThread.thread.isResolved == true' >/dev/null <<<"$resolution" || die "thread resolution failed" 3
+  echo "RESOLVED ${REPO}#${PR_NUMBER} thread=${RESOLVE_THREAD} head=${VERIFIED_HEAD}"
+  exit 0
+fi
 mergeable="$(jq -r '.data.repository.pullRequest.mergeable' <<<"$state")"
 merge_state="$(jq -r '.data.repository.pullRequest.mergeStateStatus' <<<"$state")"
 
@@ -321,27 +371,21 @@ if [ "$merge_state" = "BEHIND" ]; then
     blocked "behind" "update-branch did not clear BEHIND in time"
   fi
   state="$(fetch_state)" || die "could not re-read PR state after update-branch" 3
+  handle_terminal_state
 fi
 
-# required_review_thread_resolution keys on isResolved alone (isOutdated is
-# irrelevant to it — see list-prs.sh). Resolve only threads a babysitter agent
-# already answered; anything else is a real open question for a human, not this
-# script's to close.
-unresolved_json="$(jq -c '[.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false)]' <<<"$state")"
-unanswered_count=0
-while IFS= read -r thread; do
-  [ -z "$thread" ] && continue
-  if thread_has_babysitter_reply "$thread"; then
-    tid="$(jq -r '.id' <<<"$thread")"
-    resolve_thread "$tid" || echo "merge-pr.sh: could not resolve thread ${tid}, leaving it open" >&2
-  else
-    unanswered_count=$((unanswered_count + 1))
-  fi
-done < <(jq -c '.[]' <<<"$unresolved_json")
+# A bounded query must not silently certify a partial review snapshot.
+if jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null <<<"$state"; then
+  blocked "incomplete_review_state" "more than 100 review threads; inspect all pages and merge through the host's verified PR flow"
+fi
+unanswered_count="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved != true)] | length' <<<"$state")"
 
 if [ "$unanswered_count" -gt 0 ]; then
-  blocked "unanswered_threads" "${unanswered_count} review thread(s) have no [babysitter] reply yet — answer them before this PR can merge"
+  thread_ids="$(jq -r '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved != true) | .id] | join(",")' <<<"$state")"
+  blocked "unanswered_threads" "${unanswered_count} unresolved review thread(s); threads=${thread_ids}; verify each finding and explicitly resolve it before merging"
 fi
+
+expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
 
 # Checked here, after fixing what could be fixed, rather than at the very top: base
 # drift or an unanswered thread can be the reason a required check never ran at all
@@ -363,10 +407,22 @@ methods=("$METHOD")
 
 last_code=""
 for m in "${methods[@]}"; do
-  out="$(try_merge "$m")"
+  out="$(try_merge "$m")" || die "merge request failed; outcome unknown, refresh PR state before retrying" 3
   if [[ "$out" == MERGED* ]]; then
     echo "$out"
     exit 0
+  fi
+  if [ "$out" = "409" ]; then
+    blocked "head_changed" "PR head changed after verification; inspect the new commit and rerun"
+  fi
+  if [ "$out" = "403" ]; then
+    blocked "permission_denied" "GitHub rejected the merge (HTTP 403); inspect the API error and repository permissions or rules before retrying"
+  fi
+  if [ "$out" = "422" ]; then
+    blocked "validation_failed" "GitHub rejected the merge input (HTTP 422); inspect the API error and correct the request before retrying"
+  fi
+  if [ "$out" != "405" ]; then
+    die "merge request returned HTTP ${out}; refresh PR state before retrying" 3
   fi
   last_code="$out"
 done
@@ -383,6 +439,7 @@ done
 # fetch. Guard explicitly instead.
 state="$(fetch_state)" || true
 [ -n "$state" ] || state='{}'
+handle_terminal_state
 merge_state="$(jq -r '.data.repository.pullRequest.mergeStateStatus // "UNKNOWN"' <<<"$state")"
 case "$merge_state" in
 BLOCKED)

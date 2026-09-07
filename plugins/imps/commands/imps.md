@@ -657,11 +657,12 @@ concurrent run's PR ends up touching the same unrelated file.
 Read the `## Active rules` section from each file that exists. Merge both sets of rules and apply them to model assignment, task boundaries, and dependency detection throughout planning. Project-scoped rules take precedence over user-scoped rules on any conflict.
 
 **✂️ Step 2 — Decompose.** Call **`EnterPlanMode`**. You are now the opus planner. Ground the plan in
-reality — but **delegate the exploration instead of doing it in this context**: dispatch
-`scout` (haiku) subagents for mechanical recon (default branch, gate/lint commands,
-file/symbol enumeration, "where is X" lookups) and an `Explore` subagent for broad
-sweeps, all in one parallel batch. Read a file directly only when the plan itself must
-quote or reason about its contents. Then:
+reality. First read the dispatch value check in
+`${CLAUDE_PLUGIN_ROOT}/references/task-sizing.md`. Reuse facts already verified in this
+run. For each missing fact, name a bounded question before dispatching a `scout` for
+mechanical recon or an `Explore` agent for a code-structure question. Do not launch a
+second exploration pass over known answers. Read files directly when the plan must
+quote or reason about their contents. Then:
 
 - **Solo-task check, before decomposing:** if the work is genuinely one atomic unit — a
   single file/command/config change, or a task whose plan is already fully specified with

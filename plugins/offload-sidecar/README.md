@@ -18,6 +18,13 @@ Either way, Claude exchanges only a file path and an operation name (a few dozen
 tokens) with this plugin's MCP tool, never the file contents. Only a small status
 payload comes back.
 
+Success receipts include the actual engine, byte counts, and an output SHA-256
+(`output_sha256_by_path` for split files). `validation_scope` distinguishes
+`deterministic_transform` from `format_and_heuristics_only`. The latter means a model's
+output passed structural checks; it does not certify facts, redaction completeness, or
+semantic fidelity. Use the hash to identify the artifact you inspected. Byte counts
+describe files, not measured token or dollar savings.
+
 ---
 
 ## Four LLM tiers, two engines
