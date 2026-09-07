@@ -174,6 +174,19 @@ class IterToolUsesTest(unittest.TestCase):
             report = scan_perms.evidence_report([scan_perms.Path(a), scan_perms.Path(b)])
             self.assertEqual(report["patterns"][0]["outcomes"]["unobserved"], 1)
 
+    def test_identical_cross_file_replays_count_once_but_changed_inputs_do_not(self):
+        call = {"type": "tool_use", "id": "shared", "name": "Bash", "input": {"command": "git status --short"}}
+        def event(block):
+            return json.dumps({"type": "assistant", "message": {"content": [block]}})
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [scan_perms.Path(_write_transcript(directory, name, [event(block)])) for name, block in (
+                ('a.jsonl', call), ('fork.jsonl', call),
+                ('different.jsonl', {**call, 'input': {'command': 'git status --porcelain'}}))]
+            report = scan_perms.evidence_report(paths)
+            self.assertEqual(report['patterns'][0]['count'], 2)
+            self.assertEqual([s['transcript'] for s in report['patterns'][0]['sources']], [str(paths[0]), str(paths[2])])
+            self.assertEqual(len(list(scan_perms.iter_tool_uses(paths))), 3)
+
     def test_extracts_bash_tool_use(self):
         with tempfile.TemporaryDirectory() as d:
             path = _write_transcript(d, "a.jsonl", [_tool_use_line("Bash", {"command": "git status"})])

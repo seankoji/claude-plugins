@@ -13,6 +13,7 @@ invokes it automatically via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.p
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -88,6 +89,7 @@ def find_recent_transcripts(limit):
 
 def iter_tool_evidence(transcripts):
     """Correlate calls/results within each transcript; never infer user approval."""
+    seen_replays = set()
     for path in transcripts:
         calls, outcomes = {}, {}
         try:
@@ -116,7 +118,8 @@ def iter_tool_evidence(transcripts):
                                 key = block.get("id")
                                 if not isinstance(key, str) or not key:
                                     key = (line, index)
-                                calls.setdefault(key, {"call": projected, "transcript": str(path), "line": line})
+                                replay_key = (key, hashlib.sha256(json.dumps([name, inp], sort_keys=True).encode()).hexdigest()) if isinstance(key, str) else None
+                                calls.setdefault(key, {"call": projected, "transcript": str(path), "line": line, "replay_key": replay_key})
                             elif msg.get("type") == "user" and block.get("type") == "tool_result":
                                 key = block.get("tool_use_id")
                                 if isinstance(key, str):
@@ -131,6 +134,11 @@ def iter_tool_evidence(transcripts):
         except (FileNotFoundError, PermissionError):
             continue
         for key, evidence in calls.items():
+            replay_key = evidence.pop("replay_key")
+            if replay_key is not None:
+                if replay_key in seen_replays:
+                    continue
+                seen_replays.add(replay_key)
             yield {**evidence, "outcome": outcomes.get(key, "unobserved")}
 
 

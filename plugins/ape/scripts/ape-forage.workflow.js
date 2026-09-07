@@ -21,7 +21,7 @@
 // (dedupe, rank-cap, retry-once, barrier-before-synthesis) is actual code, not prose
 // trusted to be followed correctly every run.
 //
-// args shape (all required): { pluginRoot, fingerprint, focusArea, workspaceDir, reportsDir }
+// args shape: { pluginRoot, fingerprint, focusArea, workspaceDir, reportsDir, resume? }
 //
 // workspaceDir is expected to be a disambiguated path from init-workspace.sh
 // (remote-origin + basename) — repo subdirectories under repos/ are further
@@ -266,6 +266,18 @@ const reportsPrefix = `${workspaceDir}/reports/run.`
 if (!workspaceDir || typeof args.reportsDir !== 'string' || !args.reportsDir.startsWith(reportsPrefix) || !/^[A-Za-z0-9]+$/.test(args.reportsDir.slice(reportsPrefix.length))) {
   return { status: 'blocked', reason: 'invalid_reports_dir', notes: 'Pass the fresh reports directory from init-workspace.sh.' }
 }
+// Recovery reuses the exact saved run's inputs and report allowlist, then repeats
+// verification before synthesis. It never dispatches discovery, cloning, or analysis.
+if (args.resume != null) {
+  const resume = args.resume
+  const valid = Array.isArray(resume.reports) && resume.reports.length > 0 &&
+    Array.isArray(resume.failedAnalysts) && Array.isArray(resume.rejected) &&
+    resume.reports.every(r => r && typeof r.fullName === 'string' && new RegExp(FULL_NAME_PATTERN).test(r.fullName) &&
+      r.path === `${args.reportsDir}/${r.fullName.replace('/', '__')}.md`) &&
+    new Set(resume.reports.map(r => r.path)).size === resume.reports.length
+  if (!valid) return { status: 'blocked', reason: 'invalid_resume', notes: 'Use the resume object returned by this run, with its original arguments.' }
+  return synthesizeReports(resume.reports, resume.failedAnalysts, resume.rejected)
+}
 phase('Discovery')
 const discoveryResults = await parallel(
   AXES.map((axis) => () =>
@@ -379,51 +391,57 @@ if (expectedReports.length === 0) {
     missing: failedAnalysts,
     notes: 'No analyst completed; cached reports cannot substitute for this run.' }
 }
-let reportCheck = null
-for (let attempt = 0; attempt < 2; attempt++) {
-  try {
-    reportCheck = await agent(
-  `Check whether each of these files exists and is non-empty:\n` +
-    expectedReports.map((r) => r.path).join('\n') +
-    `\n\nReturn the paths that are missing or zero-length, verbatim as given. ` +
-    `Read nothing else and create, modify or delete no file.`,
-  { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
-    )
-  } catch {
-    reportCheck = null
+return synthesizeReports(expectedReports, failedAnalysts, ranking.rejected)
+
+async function synthesizeReports(expectedReports, failedAnalysts, rejected) {
+  const resume = { reports: expectedReports, failedAnalysts, rejected }
+  let reportCheck = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      reportCheck = await agent(
+    `Check whether each of these files exists and is non-empty:\n` +
+      expectedReports.map((r) => r.path).join('\n') +
+      `\n\nReturn the paths that are missing or zero-length, verbatim as given. ` +
+      `Read nothing else and create, modify or delete no file.`,
+    { label: 'verify-reports', phase: 'Analysis', model: 'haiku', schema: REPORT_CHECK_SCHEMA },
+      )
+    } catch {
+      reportCheck = null
+    }
+    if (reportCheck && Array.isArray(reportCheck.missing)) break
+    log(`Report verification attempt ${attempt + 1} failed`)
   }
-  if (reportCheck && Array.isArray(reportCheck.missing)) break
-  log(`Report verification attempt ${attempt + 1} failed`)
-}
-const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
-if (reportsUnverified) {
-  return { status: 'blocked', reason: 'report_verification_failed', reports: expectedReports,
-    notes: 'Report verification failed twice. Keep these artifacts for inspection or a synthesis-only retry after verifying them; no recommendations were produced.' }
-}
-const missingPaths = reportCheck.missing
-const missingReports = expectedReports
-  .filter((r) => missingPaths.includes(r.path))
-  .map((r) => r.fullName)
-if (missingReports.length > 0) {
+  const reportsUnverified = !reportCheck || !Array.isArray(reportCheck.missing)
+  if (reportsUnverified) {
+    return { status: 'blocked', reason: 'report_verification_failed', reports: expectedReports, resume,
+      notes: 'Report verification failed twice. Reinvoke this workflow with the original args plus the returned resume object to retry verification and synthesis without repeating research.' }
+  }
+  const missingPaths = reportCheck.missing
+  const missingReports = expectedReports
+    .filter((r) => missingPaths.includes(r.path))
+    .map((r) => r.fullName)
+  if (missingReports.length > 0) {
+    return {
+      status: 'blocked',
+      reason: 'missing_reports',
+      missing: missingReports,
+      resume,
+      notes: `Analysis completed but reports are missing/empty for: ${missingReports.join(', ')}`,
+    }
+  }
+
+  phase('Synthesis')
+  const synthesis = await agent(synthesisPrompt(args.reportsDir, args.focusArea, args.fingerprint, rejected, expectedReports), {
+    label: 'synthesize',
+    model: 'opus',
+    schema: SYNTHESIS_SCHEMA,
+  })
+
   return {
-    status: 'blocked',
-    reason: 'missing_reports',
-    missing: missingReports,
-    notes: `Analysis completed but reports are missing/empty for: ${missingReports.join(', ')}`,
+    status: 'final',
+    recommendations: synthesis.recommendations,
+    nearMisses: synthesis.nearMisses,
+    stats: { ...synthesis.stats, reposAnalyzed: Math.min(synthesis.stats.reposAnalyzed, expectedReports.length) },
+    failed_analysts: failedAnalysts,
   }
-}
-
-phase('Synthesis')
-const synthesis = await agent(synthesisPrompt(args.reportsDir, args.focusArea, args.fingerprint, ranking.rejected, expectedReports), {
-  label: 'synthesize',
-  model: 'opus',
-  schema: SYNTHESIS_SCHEMA,
-})
-
-return {
-  status: 'final',
-  recommendations: synthesis.recommendations,
-  nearMisses: synthesis.nearMisses,
-  stats: { ...synthesis.stats, reposAnalyzed: Math.min(synthesis.stats.reposAnalyzed, expectedReports.length) },
-  failed_analysts: failedAnalysts,
 }

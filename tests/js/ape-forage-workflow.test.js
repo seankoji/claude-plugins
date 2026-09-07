@@ -239,6 +239,7 @@ test('blocks with reason "missing_reports" when the report-check agent flags a m
     status: 'blocked',
     reason: 'missing_reports',
     missing: ['org/q'],
+    resume: { reports: ['p', 'q'].map(name => ({fullName: `org/${name}`, path: `/workspace/reports/run.fixture/org__${name}.md`})), failedAnalysts: [], rejected: [] },
     notes: 'Analysis completed but reports are missing/empty for: org/q',
   })
 })
@@ -265,6 +266,22 @@ test('retries the verifier then blocks synthesis and preserves report paths', as
   assert.equal(outcome.reason, 'report_verification_failed')
   assert.deepEqual(outcome.reports.map(r => r.path), ['/workspace/reports/run.fixture/org__p.md', '/workspace/reports/run.fixture/org__q.md'])
   assert.equal(logs.filter((m) => m.startsWith('Report verification attempt')).length, 2)
+
+  const resumedLabels = []
+  async function resumedAgent(prompt, opts) {
+    resumedLabels.push(opts.label)
+    if (opts.label === 'verify-reports') return { missing: [] }
+    if (opts.label === 'synthesize') return { recommendations: 'Recovered result', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 1 } }
+    throw new Error(`expensive research was repeated: ${opts.label}`)
+  }
+  const recovered = await runWorkflow({ agent: resumedAgent, parallel, args: baseArgs({ resume: outcome.resume }) })
+  assert.equal(recovered.status, 'final')
+  assert.deepEqual(resumedLabels, ['verify-reports', 'synthesize'])
+  const invalid = await runWorkflow({ agent: resumedAgent, parallel, args: baseArgs({ resume: {
+    ...outcome.resume, reports: [{ fullName: 'org/p', path: '/workspace/reports/old.md' }]
+  } }) })
+  assert.equal(invalid.reason, 'invalid_resume')
+  assert.deepEqual(resumedLabels, ['verify-reports', 'synthesize'])
 })
 
 

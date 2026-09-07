@@ -263,17 +263,17 @@ sync_behind_branch() {
 # repo settings) or every method is rejected; the caller treats that as informational,
 # never as a reason to change what it reports.
 enable_automerge() {
-  local pr_id already m mutation resp
+  local pr_id already m mutation resp state expected_head
   # update-branch can succeed before mergeStateStatus catches up. Arm against a
   # fresh head and complete review state, never the pre-update snapshot.
   state="$(fetch_state)" || return 1
-  handle_terminal_state
+  handle_terminal_state "${1:-}"
   expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
   jq -e '.data.repository.pullRequest.reviewThreads | .pageInfo.hasNextPage == false and all(.nodes[]; .isResolved == true)' >/dev/null <<<"$state" || return 1
   pr_id="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$state")"
   [ -n "$pr_id" ] || return 1
   already="$(jq -r '.data.repository.pullRequest.autoMergeRequest.enabledAt // empty' <<<"$state")"
-  [ -n "$already" ] && return 0
+  [ -n "$already" ] && return 2
   local methods_upper=(SQUASH MERGE REBASE)
   [ -n "$METHOD" ] && methods_upper=("$(tr '[:lower:]' '[:upper:]' <<<"$METHOD")")
   for m in "${methods_upper[@]}"; do
@@ -294,11 +294,21 @@ enable_automerge() {
 # needed — resolves on its own without another call to this script. Exit code and
 # reason are the same whether or not auto-merge could be armed.
 blocked() {
-  local reason="$1" detail="$2" automerge="unavailable"
+  local reason="$1" detail="$2" automerge="unavailable" arm_rc
+  if jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null 2>&1 <<<"${state:-}"; then
+    automerge="preexisting"
+  fi
   if [ "$AUTO_MERGE" = 1 ]; then
     case "$reason" in
     head_changed | incomplete_review_state | unanswered_threads | closed | automerge_already_enabled | verified_head_changed | thread_not_on_pr | permission_denied | validation_failed) ;;
-    *) enable_automerge && automerge="armed" ;;
+    *)
+      if enable_automerge "$reason"; then
+        automerge="armed"
+      else
+        arm_rc=$?
+        [ "$arm_rc" != 2 ] || automerge="preexisting"
+      fi
+      ;;
     esac
   fi
   echo "BLOCKED ${REPO}#${PR_NUMBER} reason=${reason} detail=${detail} automerge=${automerge}"
@@ -307,7 +317,7 @@ blocked() {
 
 handle_terminal_state() {
   case "$(jq -r '.data.repository.pullRequest.state' <<<"$state")" in
-    MERGED) echo "MERGED ${REPO}#${PR_NUMBER} via preexisting"; exit 0 ;;
+    MERGED) echo "MERGED ${REPO}#${PR_NUMBER} via preexisting${1:+ prior_blocker=$1}"; exit 0 ;;
     CLOSED) blocked "closed" "PR was closed without merging; no action taken" ;;
   esac
 }
@@ -331,8 +341,10 @@ try_merge() {
 state="$(fetch_state)" || die "could not read PR state" 3
 handle_terminal_state
 expected_head="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$state")"
-if [ "$AUTO_MERGE" = 0 ] && jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null <<<"$state"; then
-  blocked "automerge_already_enabled" "disable the existing auto-merge request before using --no-auto"
+if jq -e '.data.repository.pullRequest.autoMergeRequest.enabledAt' >/dev/null <<<"$state"; then
+  if [ "$AUTO_MERGE" = 0 ] || ! jq -e '.data.repository.pullRequest.reviewThreads | .pageInfo.hasNextPage == false and all(.nodes[]; .isResolved == true)' >/dev/null <<<"$state"; then
+    blocked "automerge_already_enabled" "auto-merge may land independently; disable the existing request before continuing this verification flow"
+  fi
 fi
 if [ -n "$RESOLVE_THREAD" ]; then
   [ "$VERIFIED_HEAD" = "$expected_head" ] || blocked "verified_head_changed" "re-verify the finding against the new head before resolving"

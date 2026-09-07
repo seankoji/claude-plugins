@@ -34,7 +34,7 @@ if "node(id:" in query:
     payload = {"data":{"node":{"id":"T1", "pullRequest":{"id":"OTHER" if mode=="foreign" else "PR1", "headRefOid":"a"*40}}}}
 elif query.startswith("query"):
     threads = []
-    if mode == "marker" or (mode == "flow" and not state_file.exists()):
+    if mode in ("marker", "preexisting-unresolved") or (mode == "flow" and not state_file.exists()):
         threads = [{"id":"T1", "isResolved":False, "comments":{"nodes":[{"body":"[babysitter] fixed"}]}}]
     pr = {"id":"PR1", "state":"OPEN", "headRefOid":"a"*40, "mergeable":"MERGEABLE",
           "mergeStateStatus":"CLEAN", "autoMergeRequest":None,
@@ -45,8 +45,11 @@ elif query.startswith("query"):
         pr["mergeStateStatus"] = "BEHIND"
         if state_file.exists(): pr["headRefOid"] = "b"*40
     if mode == "null": pr = None
-    if mode == "failing": pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
-    if mode == "already-auto": pr["autoMergeRequest"] = {"enabledAt":"fixture-time"}
+    if mode in ("failing", "preexisting-failing", "merged-after-block"): pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
+    if mode in ("already-auto", "preexisting-unresolved", "preexisting-failing"): pr["autoMergeRequest"] = {"enabledAt":"fixture-time"}
+    if mode == "merged-after-block":
+        if state_file.exists(): pr = {"state":"MERGED"}
+        state_file.write_text("queried")
     payload = {"data":{"repository":{"pullRequest":pr}}}
 elif "resolveReviewThread" in query:
     if mode == "flow": state_file.write_text("resolved")
@@ -167,6 +170,24 @@ print(code, end="")
                 self.assertEqual(result.returncode, 4, result.stderr)
                 self.assertEqual(len(calls), 1)
                 self.assertIn("BLOCKED", result.stdout)
+
+    def test_existing_automerge_is_not_reported_as_unavailable_or_newly_armed(self):
+        result, calls = self.run_helper("preexisting-unresolved")
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertIn("reason=automerge_already_enabled", result.stdout)
+        self.assertIn("automerge=preexisting", result.stdout)
+        self.assertEqual(len(calls), 1)
+        result, calls = self.run_helper("preexisting-failing")
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertIn("automerge=preexisting", result.stdout)
+        self.assertEqual(len(calls), 2)
+
+    def test_merge_observed_during_refresh_reports_truth_and_original_blocker(self):
+        result, calls = self.run_helper("merged-after-block")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MERGED", result.stdout)
+        self.assertIn("prior_blocker=failing_checks", result.stdout)
+        self.assertEqual(len(calls), 2)
 
     def test_explicit_resolution_checks_owner_and_head_without_merging(self):
         args = ["--resolve-thread", "T1", "--verified-head", HEAD]

@@ -230,19 +230,25 @@ A `[babysitter]` reply never authorizes automatic thread resolution. Then:
 
 - `MERGED ...` — you are done: `status: "merged"`, `merge.result: "MERGED"`.
   `via preexisting` means another actor or auto-merge already completed it.
+  If `prior_blocker=<reason>` is present, include it as context: that blocker was
+  observed before the refresh found the PR merged. Report the observed merged state.
 - Exit 3 means a transport/GraphQL failure or ambiguous mutation outcome. Refresh the
   PR before retrying; preserve the exact error if it remains unavailable.
 
-Every `BLOCKED` line carries `automerge=<armed|unavailable>` on the end. Head changes
+Every `BLOCKED` line carries `automerge=<armed|preexisting|unavailable>` on the end. Head changes
 and incomplete or unresolved review state never arm auto-merge; for other blockers — read it first, it decides whether *you* must retry the merge after fixing the
 blocker:
 
-- `automerge=armed` — GitHub has auto-merge enabled and will merge the moment the
+- `automerge=armed` — this run enabled auto-merge and GitHub will merge the moment the
   blocker clears on its own; no further `merge-pr.sh` call is needed. Fix the blocker
   per the reason below, then report `status: "done"` with
   `merge.automerge_armed: true`.
 - `automerge=unavailable` — auto-merge is off or GitHub declined; after you fix the
   blocker you must run `merge-pr.sh` again yourself.
+- `automerge=preexisting` — an earlier request is active and may merge independently
+  under GitHub's rules. This run did not verify when or on which head it was armed.
+  If review threads are unresolved or the snapshot is truncated, disable that request
+  through the host's GitHub tools before continuing verification.
 
 Then handle the reason:
 

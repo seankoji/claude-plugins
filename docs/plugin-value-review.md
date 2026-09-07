@@ -54,8 +54,10 @@ explain away a losing comparison.
 ## Deliberate tradeoffs after adversarial review
 
 Babysitter requires explicit resolution of every review thread, including outdated
-threads, even when GitHub would permit merging without it. Auto-merge also waits for
-that verification. The bundled resolver makes this recoverable; a bot reply or an
+threads, even when GitHub would permit merging without it. It arms auto-merge only after
+that verification and reports pre-existing requests separately; those follow GitHub's
+rules and must be disabled before verifying unresolved threads. The bundled resolver
+makes this recoverable; a bot reply or an
 outdated location does not establish that the finding was fixed. This costs a review
 step on repositories with weaker protection rules.
 

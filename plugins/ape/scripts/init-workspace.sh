@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 0 helper for /ape:forage — creates the workspace and reports whether a
-# fingerprint already exists, as a single preapprovable command (no ad hoc
+# fresh run directory is allocated, as a single preapprovable command (no ad hoc
 # compound bash the permission system can't statically analyze).
 # fail-fast: partial workspace init is worse than none
 set -euo pipefail
@@ -37,7 +37,7 @@ if [ "$old_workspace" != "$workspace" ] && [ -d "$old_workspace" ] && [ ! -d "$w
 fi
 # -- end migration --
 
-mkdir -p "$workspace/repos" "$workspace/reports"
+mkdir -p "$workspace/reports"
 reports_dir="$(mktemp -d "$workspace/reports/run.XXXXXXXX")"
 
 echo "slug=$slug"
@@ -45,10 +45,4 @@ echo "workspace=$workspace"
 echo "reports=$reports_dir"
 ls -la "$workspace"
 
-fingerprint="$workspace/fingerprint.md"
-if [ -f "$fingerprint" ]; then
-  echo "fingerprint=$fingerprint"
-  ls -la "$fingerprint"
-else
-  echo "fingerprint=none"
-fi
+echo "fingerprint=$reports_dir/fingerprint.md"
