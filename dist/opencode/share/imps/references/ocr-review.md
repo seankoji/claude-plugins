@@ -17,7 +17,7 @@ Override any of it:
 | `IMPS_OCR_MODEL` | `deepseek-v4-flash` | Model id sent to the endpoint |
 | `IMPS_OCR_URL` | from `opencode.json` | OpenAI-compatible base URL |
 | `IMPS_OCR_TOKEN` | from `opencode.json` | Credential |
-| `IMPS_OCR_VERSION` | `1.10.1` | Pinned `ocr` release |
+| `IMPS_OCR_VERSION` | `1.11.3` | Pinned `ocr` release |
 | `IMPS_OCR_CONCURRENCY` | `4` | Files reviewed in parallel |
 | `IMPS_OCR_TIMEOUT` | `900` | Wall-clock cap on the whole review |
 | `IMPS_OCR_LLM_TIMEOUT` | `180` | Per-request cap inside OCR |
@@ -46,7 +46,7 @@ The verdict is derived, since OCR has none of its own: any `blocker` or `major` 
 
 `CHANGES_REQUESTED` findings are fixed by Claude, gates rerun, and a fresh OCR run reviews the new diff. After three repair rounds the run blocks with `code_review_red`; an operator may record `override code review: <rationale>` only then.
 
-`provider_config_missing` means neither the environment nor `opencode.json` yielded an endpoint and credential. `ocr_version_mismatch` means the install did not land on the pin. Timeouts and malformed verdicts are blocking failures, not soft warnings — there is no OpenRouter fallback, no Claude diff review, and no Head Imp code-review supplement.
+`provider_config_missing` means neither the environment nor `opencode.json` yielded an endpoint and credential. `ocr_version_mismatch` means the install did not land on the pin. Provider, installation, timeout, and malformed-output failures are recorded as an OCR-unavailable warning and the workflow continues; the authorization result carries the redacted helper contract so this is never represented as an approval. There is no OpenRouter fallback, Claude diff review, or Head Imp code-review supplement.
 
 ## Why OCR
 

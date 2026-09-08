@@ -51,6 +51,6 @@
     "description": "Swarm orchestration with serial tier-routed execution, deterministic gates, whole-repo audits, PR monitoring, and proof-led blast-radius analysis. (The Claude Code build drives the main run from a background Workflow script; here the skill drives it directly.)"
   },
   "source_hash_pins": {
-    "scripts/imps-run.workflow.js": "f0835c2987e7753819a927030e48b278741ce75988147ac6c518b41f0b8fa2c2"
+    "scripts/imps-run.workflow.js": "e77347e2d5cff0a1001d58ca55f6dd898787756a8a2439d7133e61d6983941a0"
   }
 }
