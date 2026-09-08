@@ -118,6 +118,7 @@ jobs:
           import sys
           import time
           import urllib.error
+          import urllib.parse
           import urllib.request
 
           API = "https://api.github.com"
@@ -289,14 +290,13 @@ jobs:
               return batch
 
 
-          def collect(repo: str, sha: str, token: str) -> tuple[list, dict, list]:
-              """Fetch the three payloads. `filter=latest` is pinned explicitly: it is
-              the documented default, but the failure if that ever changes is silent."""
+          def _collect_for_ref(repo: str, ref: str, token: str) -> tuple[list, dict, list]:
+              """Fetch the three payloads for a commit SHA or URL-encoded branch ref."""
               runs: list = []
               page = 1
               while True:
                   payload = _get(
-                      f"/repos/{repo}/commits/{sha}/check-runs"
+                      f"/repos/{repo}/commits/{ref}/check-runs"
                       f"?filter=latest&per_page=100&page={page}",
                       token,
                   )
@@ -309,7 +309,7 @@ jobs:
               statuses = None
               page = 1
               while True:
-                  payload = _get(f"/repos/{repo}/commits/{sha}/status?per_page=100&page={page}", token)
+                  payload = _get(f"/repos/{repo}/commits/{ref}/status?per_page=100&page={page}", token)
                   batch = _batch(payload, "statuses")
                   if not isinstance(payload.get("total_count"), int) or payload["total_count"] < 0:
                       raise ValueError("invalid status count")
@@ -324,7 +324,7 @@ jobs:
               page = 1
               while True:
                   payload = _get(
-                      f"/repos/{repo}/commits/{sha}/check-suites?per_page=100&page={page}", token
+                      f"/repos/{repo}/commits/{ref}/check-suites?per_page=100&page={page}", token
                   )
                   batch = _batch(payload, "check_suites")
                   suites.extend(batch)
@@ -333,6 +333,42 @@ jobs:
                   page += 1
 
               return runs, statuses, suites
+
+
+          def _open_pr_ref(repo: str, sha: str, token: str) -> str | None:
+              """Return the URL-encoded branch ref for an open PR at `sha`, if any."""
+              page = 1
+              while True:
+                  prs = _get(f"/repos/{repo}/pulls?state=open&per_page=100&page={page}", token)
+                  if not isinstance(prs, list):
+                      raise ValueError("invalid open PR response")
+                  for pr in prs:
+                      head = pr.get("head") if isinstance(pr, dict) else None
+                      if not isinstance(head, dict):
+                          raise ValueError("invalid open PR head")
+                      if head.get("sha") == sha and isinstance(head.get("ref"), str):
+                          return urllib.parse.quote(head["ref"], safe="")
+                  if len(prs) < 100:
+                      return None
+                  page += 1
+
+
+          def collect(repo: str, sha: str, token: str) -> tuple[list, dict, list]:
+              """Fetch the three payloads, falling back to the matching open PR ref.
+
+              GitHub occasionally rejects a head SHA on the checks endpoints while it
+              accepts its branch name. The check run remains attached to the exact SHA.
+              """
+              try:
+                  return _collect_for_ref(repo, sha, token)
+              except urllib.error.HTTPError as exc:
+                  if exc.code not in (404, 422):
+                      raise
+                  missing_ref_error = exc
+              ref = _open_pr_ref(repo, sha, token)
+              if ref is None:
+                  raise missing_ref_error
+              return _collect_for_ref(repo, ref, token)
 
 
           def report(repo: str, sha: str, token: str, dry_run: bool = False) -> int:
