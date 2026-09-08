@@ -175,6 +175,13 @@ jobs:
               """
               failing: list[str] = []
               pending: list[str] = []
+              gate_suite_ids = {
+                  suite.get("id")
+                  for run in check_runs
+                  if run.get("name") == GATE_CHECK_NAME
+                  for suite in [run.get("check_suite")]
+                  if isinstance(suite, dict) and suite.get("id") is not None
+              }
 
               for run in dedupe_check_runs(check_runs):
                   name = run.get("name") or "(unnamed check)"
@@ -200,8 +207,11 @@ jobs:
                           failing.append(f"{context} ({state or 'no state'})")
 
               # Quiescence: a suite that has produced no check runs is not a suite that
-              # is going to. Only suites with runs outstanding hold the gate open.
+              # is going to. Only suites with runs outstanding hold the gate open. The
+              # gate's own Actions suite is excluded: otherwise it waits for itself.
               for suite in suites or []:
+                  if suite.get("id") in gate_suite_ids:
+                      continue
                   if int(suite.get("latest_check_runs_count") or 0) <= 0:
                       continue
                   if suite.get("status") != "completed":
