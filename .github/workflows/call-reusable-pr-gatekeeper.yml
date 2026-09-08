@@ -32,6 +32,7 @@ on:
 # run to go red.
 permissions:
   checks: write
+  statuses: read
   pull-requests: read
   contents: read
 
