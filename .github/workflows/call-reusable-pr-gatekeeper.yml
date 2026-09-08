@@ -262,7 +262,11 @@ jobs:
                       "User-Agent": "seankoji-pr-gatekeeper",
                   },
               )
-              return _request_json(req)
+              try:
+                  return _request_json(req)
+              except urllib.error.HTTPError as exc:
+                  exc.request_path = path
+                  raise
 
 
           def _post(path: str, token: str, body: dict) -> object:
@@ -380,7 +384,8 @@ jobs:
                   status, conclusion = "completed", "failure"
                   title = "Could not read check state"
                   summary = f"Gate evaluation failed: {type(exc).__name__}. See the gatekeeper job log and retry."
-                  print(f"::error::{title}: {exc}", file=sys.stderr)
+                  path = getattr(exc, "request_path", "unknown endpoint")
+                  print(f"::error::{title} at {path}: {exc}", file=sys.stderr)
               print(f"{status} / {conclusion or '-'}: {title}")
               if dry_run:
                   return 0
