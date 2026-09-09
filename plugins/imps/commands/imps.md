@@ -187,8 +187,9 @@ node "<codex plugin root>/scripts/codex-companion.mjs" adversarial-review \
 ```
 
 Resolve the codex plugin root at runtime — `IMPS_CODEX_ROOT` if set, otherwise the
-harness's own `installed_plugins.json` under `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
-Never write a resolved path into the repo or into `dist/`.
+harness's own `installed_plugins.json` under the Claude config directory. Never write a
+resolved path into the repo or into `dist/`, and don't glob the plugin cache for a version
+directory: those sort lexically, so `1.0.10` loses to `1.0.6`.
 
 The focus text is load-bearing. Without it codex reviews GOAL.md as a changed file and
 returns findings about the Markdown; with it, it argues against the plan. It is still
