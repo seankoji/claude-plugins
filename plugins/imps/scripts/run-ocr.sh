@@ -51,6 +51,8 @@ REASON="unknown"
 EMITTED=0
 REVIEW_PID=""
 TMP_ROOT=""
+OCR_INSTALL_LOG=""
+NPM_CACHE_RETRY=""
 START_NS="$(date +%s000000000 2>/dev/null || echo 0)"
 
 log() { printf '%s\n' "$*" >&2; }
@@ -88,7 +90,11 @@ emit_contract() {
     '{status:$status, verdict:(if $verdict == "" then null else $verdict end), findings:$findings, model:$model, provider:(if $provider == "" then null else $provider end), session_id:(if $session_id == "" then null else $session_id end), duration_ms:$duration_ms, cost_usd:$cost_usd, reason:(if $reason == "" then null else $reason end)}' >&3
 }
 
-cleanup() { [ -z "$TMP_ROOT" ] || rm -rf "$TMP_ROOT"; }
+cleanup() {
+  [ -z "$TMP_ROOT" ] || rm -rf "$TMP_ROOT"
+  [ -z "$OCR_INSTALL_LOG" ] || rm -f "$OCR_INSTALL_LOG"
+  [ -z "$NPM_CACHE_RETRY" ] || rm -rf "$NPM_CACHE_RETRY"
+}
 on_exit() { cleanup; emit_contract; }
 trap on_exit EXIT
 trap '[ -z "$REVIEW_PID" ] || kill -TERM "$REVIEW_PID" 2>/dev/null; exit 129' HUP
@@ -171,9 +177,16 @@ if ! "$OCR_BIN" version 2>/dev/null | grep -qF "v${OCR_PIN_VERSION} "; then
     || fail tmpdir_failed 'cannot create temporary review directory'
   NPM_PREFIX="$TMP_ROOT/npm-global"
   NPM_CACHE="$TMP_ROOT/npm-cache"
+  # Capture npm's output: a root-owned/corrupt ~/.npm cache or an unwritable system
+  # prefix (npm/cli#4828) makes a global install fail with EPERM/EACCES before any
+  # network call — near-instant, and indistinguishable from a real registry failure
+  # once stderr is thrown away. The isolated --prefix/--cache above sidesteps both
+  # failure modes; the captured log still surfaces the real npm error when an
+  # isolated install fails for an actual reason.
+  OCR_INSTALL_LOG="$TMP_ROOT/npm-install.log"
   if ! npm install --global --prefix "$NPM_PREFIX" --cache "$NPM_CACHE" \
-      --no-audit --no-fund "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" >/dev/null 2>&1; then
-    fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION}"
+      --no-audit --no-fund "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" >"$OCR_INSTALL_LOG" 2>&1; then
+    fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION}: $(tail -n 5 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
   fi
   OCR_BIN="$NPM_PREFIX/bin/ocr"
 fi
