@@ -163,3 +163,7 @@ OpenCode dispatch refuses on any non-Darwin host by design). The bash-gate hang 
 is documented in generated output as prose describing a known unknown, not as a
 generated refusal branch — don't promote it to a coded gate until it's re-measured
 inside a real git repository, the cheap follow-up the matrix names.
+
+## Stable override section IDs
+
+Place `<!-- SECTION-ID: plan-review -->` immediately before a source heading and use `<!-- REPLACE-SECTION: @plan-review -->` in the override. The ID survives display-heading renames. Legacy exact-heading targets remain supported; duplicate/missing IDs and ambiguous target headings fail generation. Regenerate `dist/` in its own commit after source changes.

@@ -13,6 +13,13 @@
 # head, check rollup, review threads and the newest comment/review ids — so a poll
 # loop over dozens of PRs costs one request, not one per PR per field.
 #
+# The GraphQL round trip itself goes over curl, not `gh api graphql`. Under the
+# Claude Code sandbox's network filter, gh's Go TLS stack fails cert verification
+# for this endpoint (x509 errors) while curl completes the same handshake cleanly —
+# observed consistently enough to be a real routing difference, not a flake. `gh`
+# is still required, but only for `gh auth token`, a local credential read with no
+# network round trip of its own.
+#
 # Usage:
 #   list-prs.sh --org <org> [options]            # every eligible open PR in the org
 #   list-prs.sh --repo <owner/name> [options]    # every eligible open PR in one repo
@@ -57,6 +64,84 @@ die() {
   exit "${2:-2}"
 }
 
+# Runs a GraphQL query, retrying a failed one twice with a widening pause.
+#
+# An org-wide sweep asks GitHub for every open PR across every repository in one
+# query, which sits close enough to GitHub's response-time budget that a 504 ("we
+# couldn't respond to your request in time") on the first attempt is ordinary rather
+# than exceptional — observed twice in a row on a ~40-PR org, then succeeding on the
+# third try with no change. Retrying here rather than in the caller matters because
+# pr-events.sh polls through this script: without it, one transient 504 surfaces as an
+# ERROR event in the middle of a watch that was otherwise fine.
+#
+# Bounded at three attempts, so a genuine failure (bad credentials, a repo that is
+# gone) still exits 3 promptly instead of hanging a sweep behind a retry loop.
+# Overridable so the test suite does not spend six real seconds asleep proving that a
+# permanently-failing query still exits 3. Nothing in normal use sets it.
+#
+# Validated rather than interpolated straight into the arithmetic below: this variable
+# exists to be overridden, and a non-integer value there is not a harmless typo. Under
+# `set -e` a fractional value aborts the script with "invalid arithmetic operator", and
+# under `set -u` an alphabetic one aborts with "unbound variable" — either way the sweep
+# dies mid-retry with no snapshot and the wrong exit code, instead of retrying. Fall
+# back to the default and say so.
+RETRY_BASE_SECS="${BABYSITTER_RETRY_BASE_SECS:-2}"
+case "$RETRY_BASE_SECS" in
+'' | *[!0-9]*)
+  echo "list-prs.sh: BABYSITTER_RETRY_BASE_SECS must be a non-negative integer, got '${RETRY_BASE_SECS}' — using 2" >&2
+  RETRY_BASE_SECS=2
+  ;;
+esac
+
+# Cached across retries and across the two call sites below: a local credential
+# read (no network), so nothing is lost by asking once.
+GH_TOKEN=""
+gh_token() {
+  if [ -z "$GH_TOKEN" ]; then
+    if ! GH_TOKEN="$(gh auth token 2>&1)"; then
+      echo "list-prs.sh: gh auth token failed: ${GH_TOKEN}" >&2
+      return 1
+    fi
+  fi
+  printf '%s' "$GH_TOKEN"
+}
+
+# Takes an already-assembled GraphQL request body (query + variables, as JSON) and
+# POSTs it directly — see the header comment above for why curl rather than
+# `gh api graphql`. Mirrors gh_graphql_retry's old contract exactly: prints the
+# response body and returns 0 on success (HTTP 200), or prints the last error and
+# returns 1 after three attempts.
+curl_graphql_retry() {
+  local body="$1" attempt=1 code="" content="" tmp errfile token
+  token="$(gh_token)" || return 1
+  tmp="$(mktemp "${TMPDIR:-/tmp}/babysitter-graphql.XXXXXX")" || {
+    echo "list-prs.sh: mktemp failed for graphql response" >&2
+    return 1
+  }
+  errfile="${tmp}.err"
+  while :; do
+    code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+      -H "Authorization: bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -X POST --data "$body" \
+      https://api.github.com/graphql 2>"$errfile")" || code="000"
+    if [ "$code" = "200" ]; then
+      cat "$tmp"
+      rm -f "$tmp" "$errfile"
+      return 0
+    fi
+    content="$(cat "$tmp" "$errfile" 2>/dev/null)"
+    if [ "$attempt" -ge 3 ]; then
+      printf '%s' "$content"
+      rm -f "$tmp" "$errfile"
+      return 1
+    fi
+    echo "list-prs.sh: GitHub query failed (attempt ${attempt}/3), retrying — ${content}" >&2
+    sleep "$((attempt * RETRY_BASE_SECS))"
+    attempt=$((attempt + 1))
+  done
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
   --org)
@@ -98,6 +183,7 @@ while [ $# -gt 0 ]; do
 done
 
 command -v gh >/dev/null 2>&1 || die "gh CLI not found on PATH"
+command -v curl >/dev/null 2>&1 || die "curl not found on PATH"
 command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
 
 case "$LIMIT" in
@@ -142,6 +228,7 @@ fragment PRState on PullRequest {
   isDraft
   isCrossRepository
   mergeable
+  mergeStateStatus
   author { login }
   headRefName
   baseRefName
@@ -153,7 +240,7 @@ fragment PRState on PullRequest {
   # reply the newest id and re-trigger a COMMENT event on the following poll.
   comments(last: 10) { nodes { databaseId body } }
   reviews(last: 1) { nodes { databaseId state } }
-  reviewThreads(first: 100) {
+  reviewThreads(first: 20) {
     nodes {
       isResolved
       isOutdated
@@ -166,7 +253,7 @@ fragment PRState on PullRequest {
         oid
         statusCheckRollup {
           state
-          contexts(first: 100) {
+          contexts(first: 30) {
             nodes {
               __typename
               ... on CheckRun { name conclusion }
@@ -194,22 +281,27 @@ if [ -z "$PR_NUMBER" ]; then
     }
   }
   ${PR_FRAGMENT}"
-  RAW=$(gh api graphql \
-    -f query="$QUERY" \
-    -f q="${SCOPE_QUALIFIER} is:pr is:open" \
-    -F limit="$LIMIT" 2>&1) || die "GitHub query failed: ${RAW}" 3
+  BODY=$(jq -n --arg query "$QUERY" --arg q "${SCOPE_QUALIFIER} is:pr is:open" --argjson limit "$LIMIT" \
+    '{query: $query, variables: {q: $q, limit: $limit}}')
+  RAW=$(curl_graphql_retry "$BODY") || die "GitHub query failed after 3 attempts: ${RAW}" 3
   NODES_PATH='.data.search.nodes'
 
   # GitHub caps a search page at 100 and this script does not paginate. Silently
   # returning the first page would make the sweep look complete while leaving PRs
   # unbabysat, and the watch would then report each missing one as NEW only if it
   # happened to surface later. Say so instead.
+  #
+  # issueCount is GitHub's count *before* this script's author/draft/fork filters run,
+  # so it is always >= the number of lines emitted below and usually much larger. An
+  # earlier phrasing ("has N open PRs") was read as the size of the roster about to be
+  # worked, which made a correct 42-PR roster look like it had lost 33 PRs. The wording
+  # below names the population explicitly for that reason — do not shorten it back.
   TOTAL=$(printf '%s' "$RAW" | jq -r '.data.search.issueCount // 0' 2>/dev/null || echo 0)
   case "$TOTAL" in
   '' | *[!0-9]*) TOTAL=0 ;;
   esac
   if [ "$TOTAL" -gt "$LIMIT" ]; then
-    echo "list-prs.sh: ${SCOPE_QUALIFIER} has ${TOTAL} open PRs but only the first ${LIMIT} were fetched — narrow the scope or raise --limit (max 100)" >&2
+    echo "list-prs.sh: ${SCOPE_QUALIFIER} has ${TOTAL} open PRs before this script's author/draft/fork filters, and only the first ${LIMIT} were fetched — the snapshot below is drawn from a partial page. Raise --limit (max 100) or narrow the scope. ${TOTAL} is not the size of the eligible roster; the line count below is." >&2
   fi
 else
   OWNER="${REPO%%/*}"
@@ -221,11 +313,9 @@ else
     }
   }
   ${PR_FRAGMENT}"
-  RAW=$(gh api graphql \
-    -f query="$QUERY" \
-    -f owner="$OWNER" \
-    -f name="$NAME" \
-    -F number="$PR_NUMBER" 2>&1) || die "GitHub query failed: ${RAW}" 3
+  BODY=$(jq -n --arg query "$QUERY" --arg owner "$OWNER" --arg name "$NAME" --argjson number "$PR_NUMBER" \
+    '{query: $query, variables: {owner: $owner, name: $name, number: $number}}')
+  RAW=$(curl_graphql_retry "$BODY") || die "GitHub query failed after 3 attempts: ${RAW}" 3
   NODES_PATH='[.data.repository.pullRequest]'
 fi
 
@@ -311,10 +401,33 @@ printf '%s' "$RAW" | jq -c \
           base_oid: (.baseRef.target.oid // null),
           head_oid: ($head.oid // null),
           mergeable: .mergeable,
+          # GitHub-computed merge-readiness state (CLEAN, BEHIND, BLOCKED, DIRTY, DRAFT,
+          # HAS_HOOKS, UNKNOWN, UNSTABLE) — distinct from `mergeable`, which only
+          # says whether the diff applies cleanly (no conflicts). A PR can be
+          # `mergeable: MERGEABLE` and still be BLOCKED by branch protection: an
+          # unresolved conversation, a required reviewer, a code-scanning alert
+          # threshold, or an org ruleset like "extra approval for unattributed
+          # changes". Callers that only checked `mergeable` + checks_state +
+          # unresolved_threads have reported a PR "clean" and had the actual `gh pr
+          # merge` reject it for reasons this snapshot said nothing about.
+          merge_state_status: .mergeStateStatus,
           checks_state: ($head.statusCheckRollup.state // null),
           failing: ($head.statusCheckRollup.contexts.nodes // [] | failing_contexts),
+          # Counts every thread that the required_review_thread_resolution
+          # branch-protection rule blocks a merge on. That rule keys on
+          # `isResolved` alone — an `isOutdated` thread (its diff line moved under
+          # a later commit) still blocks merge if nobody resolved it. Excluding
+          # isOutdated here used to undercount: a PR could show
+          # `unresolved_threads: 0` and still hard-fail `gh pr merge` with "A
+          # conversation must be resolved before this pull request can be merged."
+          # `isOutdated` is exposed separately below so a caller can tell still
+          # open from resolved-but-not-yet-marked-outdated-clear if it matters,
+          # without reintroducing the undercount here.
           unresolved_threads: (
-            [.reviewThreads.nodes[]? | select(.isResolved == false and .isOutdated == false)]
+            [.reviewThreads.nodes[]? | select(.isResolved == false)] | length
+          ),
+          unresolved_outdated_threads: (
+            [.reviewThreads.nodes[]? | select(.isResolved == false and .isOutdated == true)]
             | length
           ),
           last_thread_comment_id: (

@@ -60,13 +60,12 @@ grading notes. Save to `thinking/<topic-slug>/spec.md`.
 and the **full verbatim text** of discovery.md and spec.md. Do not summarise either one; the
 fresh session downstream has nothing else to go on.
 
-Save to `thinking/<topic-slug>/handoff.md`.
+Use the bundled `scripts/render_handoff.py <topic-slug>` to assemble `handoff.md` and `handoff.manifest.json` deterministically. Run the same command with `--check` to verify input/output hashes. Do not regenerate the input documents through a model.
 
 ## Step 6: Stop — do not run step 3
 
 State plainly that you are not going to produce the deliverable in this conversation, and why:
-the whole point is that a session with no memory of this negotiation produces better work than
-the one that argued its way to the brief.
+the whole point is that a fresh session can assess the brief without the negotiation history; preserve constraints and rejected options in the handoff and measure whether the separation improves results.
 
 Offer the paths:
 

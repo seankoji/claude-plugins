@@ -3,6 +3,15 @@
 Shared by the planner (`commands/imps.md` Step 1) and the Head Imp's plan-review
 checklist (`agents/head-imp.md`) — cite this file from both instead of restating it.
 
+Before creating workers, compare the proposed run with one agent doing the task.
+Record the distinct unknown or independent output each extra agent will resolve and
+its verification command. If there is no useful work the parent can do concurrently,
+use a single worker. Do not spawn recon for facts already present in the brief or
+verified in this run, and do not repeat the same exploration through another role.
+In the final report, include workers launched, integration conflicts, repair rounds,
+and elapsed time if recorded. These describe overhead; do not claim a speedup without
+a measured serial baseline. The success measure is the verified outcome delivered.
+
 **One task = one independently verifiable output.** Prefer a narrow vertical slice that
 delivers observable behavior through every layer it needs; a task that edits only schema,
 only implementation, or only tests leaves its own behavior unverifiable. Parallel tasks

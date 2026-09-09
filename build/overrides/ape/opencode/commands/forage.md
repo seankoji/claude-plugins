@@ -7,10 +7,12 @@
 ```bash
 slug="$(basename "$(pwd)")"
 mkdir -p ~/tmp/repo-research/"$slug"/repos ~/tmp/repo-research/"$slug"/reports
+reports_dir="$(mktemp -d ~/tmp/repo-research/"$slug"/reports/run.XXXXXXXX)"
+echo "$reports_dir"
 ls -la ~/tmp/repo-research/"$slug"
 ```
 
-3. `~/tmp/repo-research/<slug>/` is the workspace for every later phase. If it already holds a `fingerprint.md` whose timestamp is under 30 days old, reuse it. Otherwise write it (≤150 words): stack, domain, architecture, notable existing patterns, 3–5 current weaknesses relevant to the focus area, and an explicit **already-in-use** list of techniques and tooling. Nothing on the already-in-use list may be recommended later.
+3. `~/tmp/repo-research/<slug>/` is the workspace. Keep the freshly emitted report directory for this run; never reuse an old directory. Inspect the current project and write `<fresh-report-directory>/fingerprint.md` every run (≤150 words): stack, domain, architecture, notable patterns, 3–5 current weaknesses relevant to the focus, and an explicit **already-in-use** list. Include the current commit and focus, and inspect dirty changes. An old fingerprint is only a checklist to recheck. Nothing already in use may be recommended later.
 4. Show the fingerprint to the user before dispatching anything. It gates every downstream token — a wrong fingerprint produces convergent garbage at scale.
 
 None of the bundled `gh` helpers ship either (same directory, same exclusion), so the searches below are ordinary `gh` calls rather than one pre-approvable script per phase. OpenCode gates shell through `opencode.json`'s `permission.bash` map, so a user running this unattended needs allow-rules for the `gh` calls they intend to permit — add them deliberately, never silently.
@@ -74,7 +76,7 @@ rejection — including anything cut purely for the cap — a one-line reason. *
 
 ### 3. Clone
 
-Clone each selection into `<workspace>/repos/<owner>__<repo>` (shallow; shallower still
+Clone each selection into `<fresh-report-directory>/repos/<owner>__<repo>` (shallow; shallower still
 for anything over ~300 MB), then verify every directory exists and is non-empty — a clone
 step that reports success without a non-empty directory has failed. Retry the failures
 **once**. If fewer than 2 repos verify after that retry, stop with `clone_failed` and the
@@ -82,7 +84,7 @@ failed list.
 
 ### 4. Analysis — one pass per cloned repo
 
-Extract 1–3 techniques per repo, each grounded in a GitHub blob permalink pinned to the
+Extract 0–3 techniques per repo; zero is valid when no approach beats the local alternative. Ground each finding in a GitHub blob permalink pinned to the
 cloned repo's exact commit SHA and line range.
 "They use CI / linting / tests" is not a finding; an abstraction, a testing strategy, a
 build or orchestration trick, an architectural seam is. Read in this order and stop as soon
@@ -97,21 +99,21 @@ Judge applicability against the fingerprint **including its already-in-use list*
 recommending something the host already has is a failure. "Impressive, but doesn't transfer
 because X" is a valid and useful verdict; say it. Flag copyleft licences (GPL/AGPL): the
 idea transfers freely, verbatim code does not. Write each report to
-`<workspace>/reports/<owner>__<repo>.md` (≤600 words) — per technique: name, immutable
+`<fresh-report-directory>/<owner>__<repo>.md` (≤600 words) — per technique: name, immutable
 permalink, the problem it solves, which fingerprint weakness it addresses and where it would
 land here, effort (S/M/L), its main tradeoff, and the strongest evidence against transfer.
 
 ### 5. Synthesis — only once every analysis has returned
 
-Read every `<workspace>/reports/*.md`. Cross-check each technique against the already-in-use
+Read only the explicit report paths written by successful analysts in this run. Exclude failed analysts, list them in a partial result, and block if none succeeded. A missing/empty expected report blocks synthesis; never substitute cached reports. Maintain that path list during analysis. Cross-check each technique against the already-in-use
 list and against the other reports; dedupe convergent findings and name the conflicts. Kill
 anything already in use, anything incompatible with an existing pattern, and anything an
 analyst honestly flagged as not transferring — that rejection is signal, not noise to
 override. Rank the survivors by expected value against the fingerprint's weaknesses, not by
-how confidently they were written up. Write `<workspace>/RECOMMENDATIONS.md`: per technique,
+how confidently they were written up. Write `<fresh-report-directory>/RECOMMENDATIONS.md`: per technique,
 ranked — what it is, immutable source permalink, the specific modules **here** it would
 land in, effort (S/M/L), tradeoffs and risks (mandatory, not just upside), and the strongest
-evidence against adopting it.
+evidence against adopting it. Include the simpler local alternative and a proposed experiment with a baseline, measurable pass condition, and abandon condition; do not report proposed gains as measured results.
 <!-- END-SECTION -->
 
 <!-- REPLACE-SECTION: ## Phase 2 — Run the expedition -->
@@ -119,7 +121,7 @@ evidence against adopting it.
 
 Report whichever outcome the expedition actually reached:
 
-- **Completed** — present the top 2–3 recommendations to the user directly, each as one
+- **Completed** — present up to 3 justified recommendations, or state that no adoption is justified. Never pad the result. Present any recommendations to the user directly, each as one
   finished paragraph (~400 words in total), reading like a pitch rather than a summary of a
   report. Add a short note on notable near-miss rejections and a stats line (repos analysed,
   techniques surfaced). Do not make the user open `RECOMMENDATIONS.md` to learn what you
@@ -127,6 +129,5 @@ Report whichever outcome the expedition actually reached:
 - **`no_candidates`** — nothing survived discovery or ranking. Say so and stop; a fresh run,
   probably with a different focus area, is the only way forward.
 - **`clone_failed`** — surface the failed list. Once the user has addressed the cause (auth,
-  rate limit, disk space), re-running `/ape-forage` costs only discovery through clone
-  again: the fingerprint is reused from the workspace.
+  rate limit, disk space), re-run `/ape-forage` with a refreshed fingerprint and a fresh report directory.
 <!-- END-SECTION -->

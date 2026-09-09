@@ -207,3 +207,7 @@ Exit codes: `0` = all judges READY · `10` = any judge NOT READY · `2` = any ju
 ## License
 
 MIT
+
+## Acceptance provenance
+
+Give each requirement a stable ID and verification method. The deterministic handoff renderer preserves discovery/spec text and writes `handoff.manifest.json` with their hashes, output hash and requirement IDs. Compare the manifest before implementation; a mismatched file requires re-rendering. A fresh session is a choice to evaluate, not proof of better judgment. Preserve constraints and rejected alternatives in the handoff.

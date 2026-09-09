@@ -25,6 +25,7 @@ function baseArgs(overrides = {}) {
     fingerprint: 'fingerprint text',
     focusArea: 'test coverage',
     workspaceDir: '/workspace',
+    reportsDir: '/workspace/reports/run.fixture',
     ...overrides,
   }
 }
@@ -228,7 +229,7 @@ test('blocks with reason "missing_reports" when the report-check agent flags a m
     }
     if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
     if (opts.label.startsWith('analyze:')) return {}
-    if (opts.label === 'verify-reports') return { missing: ['/workspace/reports/org__q.md'] }
+    if (opts.label === 'verify-reports') return { missing: ['/workspace/reports/run.fixture/org__q.md'] }
     throw new Error(`unexpected agent call: ${opts.label}`)
   }
 
@@ -242,7 +243,7 @@ test('blocks with reason "missing_reports" when the report-check agent flags a m
   })
 })
 
-test('logs an explicit warning and proceeds unverified when the verify-reports agent dies', async () => {
+test('retries the verifier then blocks synthesis and preserves report paths', async () => {
   const logs = []
   async function agent(prompt, opts) {
     if (opts.label === 'discover:A') return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
@@ -255,17 +256,165 @@ test('logs an explicit warning and proceeds unverified when the verify-reports a
     if (opts.label.startsWith('analyze:')) return {}
     // Mirrors parallel()'s own contract: a dead agent call resolves to null, not a throw.
     if (opts.label === 'verify-reports') return null
-    if (opts.label === 'synthesize') {
-      return { recommendations: 'do the thing', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 1 } }
-    }
     throw new Error(`unexpected agent call: ${opts.label}`)
   }
 
   const outcome = await runWorkflow({ agent, parallel, log: (m) => logs.push(m) })
 
-  assert.ok(
-    logs.some((m) => m.includes('verify-reports agent returned no usable result')),
-    `expected an explicit fail-open warning distinguishing "checker died" from "verified clean", got: ${JSON.stringify(logs)}`
-  )
-  assert.equal(outcome.status, 'final', 'a dead verifier must not block the run — it proceeds unverified')
+  assert.equal(outcome.status, 'blocked')
+  assert.equal(outcome.reason, 'report_verification_failed')
+  assert.deepEqual(outcome.reports.map(r => r.path), ['/workspace/reports/run.fixture/org__p.md', '/workspace/reports/run.fixture/org__q.md'])
+  assert.equal(logs.filter((m) => m.startsWith('Report verification attempt')).length, 2)
+
+  const resumedLabels = []
+  async function resumedAgent(prompt, opts) {
+    resumedLabels.push(opts.label)
+    if (opts.label === 'verify-reports') return { missing: [] }
+    if (opts.label === 'synthesize') return { recommendations: 'Recovered result', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 1 } }
+    throw new Error(`expensive research was repeated: ${opts.label}`)
+  }
+  const recovered = await runWorkflow({ agent: resumedAgent, parallel, args: baseArgs({ resume: outcome.resume }) })
+  assert.equal(recovered.status, 'final')
+  assert.deepEqual(resumedLabels, ['verify-reports', 'synthesize'])
+  const invalid = await runWorkflow({ agent: resumedAgent, parallel, args: baseArgs({ resume: {
+    ...outcome.resume, reports: [{ fullName: 'org/p', path: '/workspace/reports/old.md' }]
+  } }) })
+  assert.equal(invalid.reason, 'invalid_resume')
+  assert.deepEqual(resumedLabels, ['verify-reports', 'synthesize'])
+})
+
+test('unknown paths in a verifier response cannot certify the expected reports', async () => {
+  let attempts = 0
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) return {}
+    if (opts.label === 'verify-reports') { attempts++; return { missing: ['/outside/this/run.md'] } }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(attempts, 2)
+  assert.equal(outcome.reason, 'report_verification_failed')
+})
+
+
+test('synthesis reads only this run reports and may recommend nothing', async () => {
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') {
+      assert.ok(prompt.includes("'/workspace/reports/run.fixture'"))
+      return { cloned: ['org/p', 'org/q'], failed: [] }
+    }
+    if (opts.label.startsWith('analyze:')) {
+      assert.ok(prompt.includes('/workspace/reports/run.fixture/repos/'))
+      assert.ok(!prompt.includes('/workspace/repos/'))
+      return {}
+    }
+    if (opts.label === 'verify-reports') return { missing: [] }
+    if (opts.label === 'synthesize') {
+      assert.ok(prompt.includes('/workspace/reports/run.fixture/org__p.md'))
+      assert.ok(prompt.includes('/workspace/reports/run.fixture/org__q.md'))
+      assert.ok(!prompt.includes('/workspace/reports/org__p.md'))
+      assert.ok(!prompt.includes('reports/*.md'))
+      assert.ok(prompt.includes('Write /workspace/reports/run.fixture/RECOMMENDATIONS.md'))
+      return { recommendations: 'No adoption justified.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 0 } }
+    }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel, args: baseArgs({ workspaceDir: '/workspace/' }) })
+  assert.equal(outcome.status, 'final')
+  assert.equal(outcome.stats.techniquesSurfaced, 0)
+})
+
+test('no successful analysts blocks synthesis without reading cached reports', async () => {
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) throw new Error('analyst failed')
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(outcome.status, 'blocked')
+  assert.equal(outcome.reason, 'missing_reports')
+  assert.deepEqual(outcome.missing, ['org/p', 'org/q'])
+})
+
+test('a legacy report cannot satisfy verification after an analyst silently skips writing', async () => {
+  const os = require('node:os')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ape-report-test-'))
+  try {
+    const reportsDir = path.join(directory, 'reports', 'run.fixture')
+    fs.mkdirSync(reportsDir, { recursive: true })
+    fs.writeFileSync(path.join(directory, 'reports', 'org__p.md'), 'stale recommendation')
+    const expected = ['org__p.md', 'org__q.md'].map(name => path.join(reportsDir, name))
+    async function agent(prompt, opts) {
+      if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+      if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+      if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+      if (opts.label.startsWith('analyze:')) return { summary: 'claimed success without a write' }
+      if (opts.label === 'verify-reports') {
+        for (const file of expected) assert.ok(prompt.includes(file))
+        return { missing: expected.filter(file => !fs.existsSync(file)) }
+      }
+      throw new Error(`unexpected agent call: ${opts.label}`)
+    }
+    const outcome = await runWorkflow({ agent, parallel, args: baseArgs({ workspaceDir: directory, reportsDir }) })
+    assert.equal(outcome.status, 'blocked')
+    assert.deepEqual(outcome.missing, ['org/p', 'org/q'])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('missing or non-run report directories are rejected before dispatch', async () => {
+  for (const reportsDir of [undefined, '/workspace/reports', '/workspace/reports/run.x/../../old']) {
+    const outcome = await runWorkflow({ agent: () => { throw new Error('must not dispatch') }, parallel, args: baseArgs({ reportsDir }) })
+    assert.equal(outcome.reason, 'invalid_reports_dir')
+  }
+})
+
+test('partial synthesis excludes the failed analyst cached report', async () => {
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label === 'analyze:org__p') throw new Error('analyst failed')
+    if (opts.label === 'analyze:org__q') return {}
+    if (opts.label === 'verify-reports') return { missing: [] }
+    if (opts.label === 'synthesize') {
+      assert.ok(!prompt.includes('/workspace/reports/run.fixture/org__p.md'))
+      assert.ok(prompt.includes('/workspace/reports/run.fixture/org__q.md'))
+      return { recommendations: 'Partial result.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 1 } }
+    }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(outcome.status, 'final')
+  assert.deepEqual(outcome.failed_analysts, ['org/p'])
+  assert.equal(outcome.stats.reposAnalyzed, 1)
+})
+
+
+test('a transient verifier failure recovers on the one allowed retry', async () => {
+  let attempts = 0
+  async function agent(prompt, opts) {
+    if (opts.label.startsWith('discover:')) return { candidates: [candidate('org/p'), candidate('org/q')], tooFew: false }
+    if (opts.label === 'rank') return { selected: [candidate('org/p'), candidate('org/q')], rejected: [] }
+    if (opts.label === 'clone') return { cloned: ['org/p', 'org/q'], failed: [] }
+    if (opts.label.startsWith('analyze:')) return {}
+    if (opts.label === 'verify-reports') {
+      attempts += 1
+      if (attempts === 1) throw new Error('temporary outage')
+      return { missing: [] }
+    }
+    if (opts.label === 'synthesize') return { recommendations: 'No adoption justified.', nearMisses: '', stats: { reposAnalyzed: 2, techniquesSurfaced: 0 } }
+    throw new Error(`unexpected agent call: ${opts.label}`)
+  }
+  const outcome = await runWorkflow({ agent, parallel })
+  assert.equal(attempts, 2)
+  assert.equal(outcome.status, 'final')
+  assert.equal('reports_unverified' in outcome, false)
 })

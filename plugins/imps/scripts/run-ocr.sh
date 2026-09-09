@@ -111,6 +111,9 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --repo|--base|--head|--goal|--model|--timeout|--concurrency) [ "$#" -ge 2 ] && [ -n "$2" ] || fail bad_arguments "missing value for $1" ;;
+  esac
+  case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
     --base) BASE="${2:-}"; shift 2 ;;
     --head) HEAD="${2:-}"; shift 2 ;;
@@ -130,7 +133,7 @@ case "$CONCURRENCY" in ''|0|*[!0-9]*) fail bad_arguments "--concurrency must be 
 
 command -v jq >/dev/null 2>&1 || fail jq_missing "jq is required"
 command -v git >/dev/null 2>&1 || fail git_missing "git is required"
-command -v perl >/dev/null 2>&1 || fail timeout_unsupported 'perl is required for the portable timeout guard'
+command -v python3 >/dev/null 2>&1 || fail timeout_unsupported 'python3 is required for process-group timeouts'
 [ -f "$RULE_PATH" ] || fail rule_missing "review rule file is missing: $RULE_PATH"
 
 # ---- Endpoint credentials --------------------------------------------------------
@@ -205,6 +208,9 @@ MERGE_BASE="$(git -C "$REPO" merge-base "$BASE" "$HEAD" 2>/dev/null)" || fail ba
 [ -n "$MERGE_BASE" ] || fail bad_arguments 'cannot compute merge-base'
 HEAD_SHA="$(git -C "$REPO" rev-parse "$HEAD")"
 
+if [ -z "$TMP_ROOT" ]; then
+  TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-review.XXXXXX")" || fail tmpdir_failed 'cannot create temporary review directory'
+fi
 mkdir -p "$TMP_ROOT/home" || fail tmpdir_failed 'cannot initialize temporary review directory'
 
 # ---- Background: the acceptance criteria the diff is judged against ---------------
@@ -215,35 +221,50 @@ BACKGROUND_FILE="$TMP_ROOT/background.md"
 {
   printf '%s\n' 'This diff is judged against the acceptance criteria below. A finding must name a'
   printf '%s\n\n' 'concrete breaking scenario and a concrete fix. Do not manufacture findings.'
-  cat "$GOAL"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/review-context.py" "$GOAL"
 } > "$BACKGROUND_FILE" || fail snapshot_failed 'cannot capture GOAL.md as review background'
+CONTEXT_NOTE=""
+if grep -q '^Non-contract GOAL narrative omitted' "$BACKGROUND_FILE"; then CONTEXT_NOTE="non_contract_narrative_omitted"; fi
 BG_CHARS="$(wc -c < "$BACKGROUND_FILE" | tr -d ' ')"
 if [ "$BG_CHARS" -gt 7800 ]; then
-  log "background is ${BG_CHARS} chars; truncating to 7500"
-  head -c 7500 "$BACKGROUND_FILE" > "$BACKGROUND_FILE.trunc" \
-    && printf '\n...(truncated)\n' >> "$BACKGROUND_FILE.trunc" \
-    && mv "$BACKGROUND_FILE.trunc" "$BACKGROUND_FILE"
+  fail context_too_large 'acceptance context exceeds OCR limit; shorten the reviewed contract without dropping requirements'
 fi
 
 # ---- Run ---------------------------------------------------------------------------
 export HOME="$TMP_ROOT/home"          # keep `ocr config set` out of the real HOME
-export OCR_LLM_URL="$OCR_URL"
-export OCR_LLM_TOKEN="$OCR_TOKEN"
-export OCR_LLM_MODEL="$MODEL"
 export OCR_LLM_TIMEOUT="${IMPS_OCR_LLM_TIMEOUT:-180}"
 
+# The OCR_LLM_URL/TOKEN/MODEL env-var path silently defaults to the Anthropic Messages
+# protocol regardless of the endpoint, producing a doubled "/v1/v1/messages" 404 against
+# an OpenAI-compatible proxy like this one — every file review fails with no LLM-side
+# error. `ocr config set custom_providers.imps-litellm.url` + `provider imps-litellm`
+# goes through the same custom-provider entry the operator already uses, which declares
+# protocol "openai" — verified directly against the real endpoint (`ocr llm test` ->
+# "Connection test successful") before this was written. HOME points at TMP_ROOT/home
+# here, so none of this touches the operator's real OCR config.
+"$OCR_BIN" config set provider imps-litellm >/dev/null 2>&1 \
+  || fail ocr_config_failed 'cannot set ocr provider'
+"$OCR_BIN" config set model "$MODEL" >/dev/null 2>&1 \
+  || fail ocr_config_failed 'cannot set ocr model'
+"$OCR_BIN" config set custom_providers.imps-litellm.url "$OCR_URL" >/dev/null 2>&1 \
+  || fail ocr_config_failed 'cannot set ocr provider url'
+"$OCR_BIN" config set custom_providers.imps-litellm.protocol openai >/dev/null 2>&1 \
+  || fail ocr_config_failed 'cannot set ocr provider protocol'
+
 "$OCR_BIN" config set language English >/dev/null 2>&1 || true
-"$OCR_BIN" config set provider imps-litellm >/dev/null 2>&1 || fail provider_config_failed 'cannot configure OCR provider'
-"$OCR_BIN" config set model "$MODEL" >/dev/null 2>&1 || fail provider_config_failed 'cannot configure OCR model'
-"$OCR_BIN" config set custom_providers.imps-litellm.url "$OCR_URL" >/dev/null 2>&1 || fail provider_config_failed 'cannot configure OCR provider URL'
-"$OCR_BIN" config set custom_providers.imps-litellm.protocol openai >/dev/null 2>&1 || fail provider_config_failed 'cannot configure OCR provider protocol'
-"$OCR_BIN" config set custom_providers.imps-litellm.api_key "$OCR_TOKEN" >/dev/null 2>&1 || fail provider_config_failed 'cannot configure OCR provider credential'
+
+# The credential is written straight into OCR's config file under the isolated HOME
+# rather than passed as a `config set ... api_key` argv, so it never shows up in
+# process listings. The `config set` calls above created/updated that file.
+OCR_CFG="$HOME/.opencodereview/config.json"
+[ -f "$OCR_CFG" ] || fail provider_config_failed 'cannot locate OCR config file for credential'
+jq --arg k "$OCR_TOKEN" '.custom_providers["imps-litellm"].api_key = $k' "$OCR_CFG" >"$OCR_CFG.tmp" 2>/dev/null &&
+  mv "$OCR_CFG.tmp" "$OCR_CFG" ||
+  fail provider_config_failed 'cannot write OCR provider credential to config'
 
 RESULT_PATH="$TMP_ROOT/result.json"
 run_with_timeout() {
-  # `exec` means Perl becomes OCR, so the alarm kills the reviewed process itself and
-  # cannot leave a watchdog child behind. macOS ships Perl; see the preflight.
-  perl -e '$SIG{ALRM} = sub { exit 124 }; alarm shift @ARGV; exec @ARGV or exit 127' \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/run-bounded.py" \
     "$TIMEOUT_SECONDS" "$@" >"$RESULT_PATH" 2>"$TMP_ROOT/ocr.err" &
   REVIEW_PID=$!
   wait "$REVIEW_PID"
@@ -313,7 +334,7 @@ else
   else
     VERDICT="APPROVE"
   fi
-  STATUS="ok"; REASON=""
+  STATUS="ok"; REASON="${CONTEXT_NOTE:-}"
 fi
 
 AFTER_HEAD="$(git -C "$REPO" rev-parse HEAD)"

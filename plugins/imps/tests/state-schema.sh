@@ -11,7 +11,7 @@
 #
 # Asserts:
 #   - STATE_SCHEMA.properties.tasks.items.additionalProperties === true  (the landmine)
-#   - the OCR review-discipline fields are TOP-LEVEL and correctly shaped
+#   - the six schema-4 review-discipline fields are TOP-LEVEL and correctly shaped
 #   - a schema-4 state object validates, AND a hand-written schema-3 one still does
 #     (the schema-4 fields are additive; none of them joined `required`)
 #   - negative controls: bad enum / missing required / wrong item type all FAIL to validate
@@ -91,9 +91,9 @@ assert(
 )
 
 // --- Schema 4: the review-discipline fields ------------------------------------------
-// They are TOP-LEVEL for the same reason escalated_tasks is: patchState() merges
+// All six are TOP-LEVEL for the same reason escalated_tasks is: patchState() merges
 // top-level keys only, so a field on the task item is writable at plan time and never
-// again. They are additive and OPTIONAL — a schema-3 state file must still load, which
+// again. All six are additive and OPTIONAL — a schema-3 state file must still load, which
 // the legacy assertion below proves.
 const SCHEMA4 = {
   parked_findings: (s) =>
@@ -108,7 +108,9 @@ const SCHEMA4 = {
     Array.isArray(s.type) && s.type.indexOf('number') !== -1 && s.type.indexOf('null') !== -1,
   fix_cycles: (s) =>
     Array.isArray(s.type) && s.type.indexOf('number') !== -1 && s.type.indexOf('null') !== -1,
-  posting_mode: (s) =>
+  endstate: (s) =>
+    Array.isArray(s.type) && s.type.indexOf('string') !== -1 && s.type.indexOf('null') !== -1,
+  learnings_policy: (s) =>
     Array.isArray(s.type) && s.type.indexOf('string') !== -1 && s.type.indexOf('null') !== -1,
   review_engine: (s) => Array.isArray(s.type) && s.type.indexOf('string') !== -1 && s.type.indexOf('null') !== -1,
   review_model: (s) => Array.isArray(s.type) && s.type.indexOf('string') !== -1 && s.type.indexOf('null') !== -1,
@@ -116,7 +118,6 @@ const SCHEMA4 = {
   code_review_findings: (s) => Array.isArray(s.type) && s.type.indexOf('array') !== -1 && s.type.indexOf('null') !== -1,
   code_review_sessions: (s) => Array.isArray(s.type) && s.type.indexOf('array') !== -1 && s.type.indexOf('null') !== -1,
   code_review_override: (s) => Array.isArray(s.type) && s.type.indexOf('string') !== -1 && s.type.indexOf('null') !== -1,
-  code_review_warning: (s) => Array.isArray(s.type) && s.type.indexOf('object') !== -1 && s.type.indexOf('null') !== -1 && s.additionalProperties === true,
 }
 const topRequired = S.required || []
 for (const k of Object.keys(SCHEMA4)) {
@@ -128,27 +129,6 @@ for (const k of Object.keys(SCHEMA4)) {
     '`' + k + '` is ' + JSON.stringify(P[k]) + ' (and must stay OUT of top-level required)'
   )
 }
-
-// The helper still returns a blocked contract for an unavailable provider; it is the
-// workflow policy that must turn that operational result into a disclosed warning. These
-// source-level assertions protect both halves of that boundary without a live Workflow
-// agent call.
-const workflowSource = src.join('\n')
-assert(
-  'ocr-operational-failures-do-not-block',
-  !workflowSource.includes("{ status: 'blocked', reason: 'code_review_unavailable'"),
-  'OCR unavailability still returns a blocked workflow result'
-)
-assert(
-  'ocr-warning-is-persisted',
-  (workflowSource.match(/code_review_warning/g) || []).length >= 4 && workflowSource.includes('warning: codeReviewWarning') && workflowSource.includes('verdict: codeReviewWarning ? null'),
-  'OCR warning is not carried from preflight through the authorization result'
-)
-assert(
-  'ocr-major-findings-remain-blocking',
-  workflowSource.includes("reason: 'code_review_red'"),
-  'CHANGES_REQUESTED findings no longer have a blocking path'
-)
 
 // --- Minimal validator (type/enum/properties/required/items/additionalProperties) -----
 function validate(schema, value, path, errs) {
@@ -212,9 +192,10 @@ function sample() {
     verdicts_pending: { 'grumpy-engineer': { verdict: 'CHANGES_REQUESTED', posted: true, findings: ['still open'] } },
     fix_rounds_done: 3,
     fix_cycles: 1,
-    posting_mode: 'live',
+    posting_mode: 'live', // legacy; personas no longer post — must still validate
+    endstate: 'pr', learnings_policy: 'ask',
     review_engine: 'ocr', review_model: 'openai/gpt-5.4', code_review_rounds: 1,
-    code_review_findings: [], code_review_sessions: ['ses_test'], code_review_override: null, code_review_warning: { status: 'blocked', reason: 'ocr_failed' },
+    code_review_findings: [], code_review_sessions: ['ses_test'], code_review_override: null,
   }
 }
 
@@ -239,17 +220,17 @@ const missingTop = sample()
 delete missingTop.phase
 assert('negative/missing-top-level-required', validate(S, missingTop).length > 0, 'validator accepted a state file with no phase')
 
-// Proves the schema-4 shapes above are actually enforced, not just declared: without this,
-// a `posting_mode: {}` or `posting_mode: 7` typed by a patchState() round-trip would slip
-// through and the six positive assertions would be vacuous.
-const badPostingMode = sample()
-badPostingMode.posting_mode = 7
-assert('negative/posting_mode-wrong-type', validate(S, badPostingMode).length > 0, 'validator accepted posting_mode: 7')
+// `posting_mode` was removed from the schema when persona posting was deleted. It stays in
+// the sample above deliberately: a state file written by an older run still carries it, and
+// additionalProperties:true must keep accepting it rather than failing the resume.
+assert('posting_mode-removed-from-schema', S.properties.posting_mode === undefined,
+  'posting_mode is still declared — persona posting was deleted')
+assert('legacy-posting_mode-still-validates', validate(S, sample()).length === 0,
+  'a legacy state file carrying posting_mode no longer validates')
 
-// The other three schema-4 fields carry the free text the whole review-discipline feature
-// depends on (persona findings, ruling rationales) and, unlike posting_mode, had no
-// wrong-type control of their own — a truncated patchState() round-trip that turned one of
-// them into a string or a bare object would slip through unnoticed.
+// These schema-4 fields carry the free text the whole review-discipline feature depends on
+// (persona findings, ruling rationales) — a truncated patchState() round-trip that turned
+// one of them into a string or a bare object would slip through unnoticed.
 const badParkedFindings = sample()
 badParkedFindings.parked_findings = 'not an array'
 assert('negative/parked_findings-wrong-type', validate(S, badParkedFindings).length > 0, 'validator accepted parked_findings: "not an array"')
@@ -263,7 +244,7 @@ badVerdictsPending.verdicts_pending = 'not an object'
 assert('negative/verdicts_pending-wrong-type', validate(S, badVerdictsPending).length > 0, 'validator accepted verdicts_pending: "not an object"')
 
 // A truncated run must not pass silently.
-const EXPECTED_ASSERTS = 55
+const EXPECTED_ASSERTS = 53
 if (asserts !== EXPECTED_ASSERTS) {
   console.log('FAIL state-schema/assertion-count')
   console.log('     ran ' + asserts + ' assertions, expected ' + EXPECTED_ASSERTS)

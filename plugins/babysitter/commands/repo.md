@@ -36,6 +36,58 @@ base or default branch, never force-pushed. The roster gate is where you approve
 
 ---
 
+## Status table
+
+End every turn — the roster gate, the end of a dispatch round, each batch of events
+handled in the watch — with a table covering every PR currently on the roster. Drop a
+PR entirely the turn it merges or closes rather than keeping a row for it:
+
+| PR | mergeStateStatus | Blocker |
+| --- | --- | --- |
+| `#123` | `CLEAN` \| `BEHIND` \| `BLOCKED` \| `DIRTY` \| `DRAFT` \| `UNSTABLE` \| `UNKNOWN` | `—` \| one line naming the actual cause |
+
+`mergeStateStatus` is GitHub's own live state (`list-prs.sh`'s `merge_state_status`, or
+`merge-pr.sh`'s fresher read right after acting), not this run's tracking, so a merged
+PR is simply absent — nothing to update by hand. `CLEAN` needs no `Blocker` entry;
+everything else names the actual cause (`merge-pr.sh`'s `reason=`/`detail=`, or "N
+unresolved review threads" / "failing check: `<name>`" from a raw snapshot), and if
+`automerge=armed` was reported, say so in the same cell — that is the difference
+between "still needs a push" and "will finish on its own."
+
+Refresh a row from whatever just fired for that PR rather than re-running
+`list-prs.sh` for the whole table every time.
+
+---
+
+## Step 0 — Load what previous runs learned
+
+Read `~/.claude/babysitter/learnings.md` if it exists — `$BABYSITTER_HOME/learnings.md`
+when that variable is set. `Read` is a tool call, not Bash: it does not expand `~`, so
+resolve `$HOME` yourself and pass the absolute path.
+
+Apply the `## Active rules` section to the whole run, and the `## Per-repo notes` line
+for this repository — passing it into the agent prompt in Step 5, since agents
+cannot read this file. Apply both silently; a missing file is the normal first run.
+
+The file sits outside every repository being babysat on purpose. What this command
+learns is about the machine, the remote, and the runbook — none of which belong in the
+repository whose PRs it is fixing.
+
+## Taking notes while it runs
+
+Same mechanism and the same five kinds as `/babysitter:org` (*Taking notes while the
+sweep runs*), with this command's own name:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/run-note.sh \
+  --command /babysitter:repo --kind <env|github|process|repo|policy> \
+  --scope "<owner/repo, or owner/repo#N>" --note "<what happened, and what to do about it>"
+```
+
+Notes land in `~/.claude/babysitter/run-notes/<date>-babysitter-repo.md`. Write one when the
+machine, the remote, this runbook, this repository, or a gate did something a future run
+would want to know about. Routine progress is not a note.
+
 ## Step 1 — Preflight and resolve the repository
 
 ```bash
@@ -90,11 +142,35 @@ this PR already contains those commits needs a merge-base, which the agent compu
 its worktree for free. Every dispatched agent checks and merges base drift as its first
 step, so a PR that is behind is handled whether or not the roster could see it.
 
-A PR with none of these is `clean` — it stays on the watch roster, but no agent is
-dispatched for it now.
+A PR with none of these is `clean` — no agent is dispatched for it, but it is not left
+untouched: Step 3.5 still attempts to land it immediately.
 
-Ask for confirmation, naming how many PRs will receive pushes. Wait for a clear yes. If
-the user narrows the list, honour exactly that subset.
+Ask for confirmation, naming how many PRs will receive pushes and the total on the
+roster (Step 3.5 runs against all of them, clean ones included). Wait for a clear yes.
+If the user narrows the list, honour exactly that subset for both.
+
+## Step 3.5 — Merge or arm auto-merge for the whole roster
+
+Before any worktree or agent, give every approved PR — `clean` ones included — an
+immediate landing attempt:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/merge-pr.sh --repo <owner/repo> --pr <number>
+```
+
+One call per PR, same one-invocation-per-call discipline as `pr-workspace.sh` below.
+
+`MERGED ...` — done. Drop it from the roster entirely — no worktree, no dispatch.
+
+`BLOCKED ... reason=<x> detail=<y> automerge=armed` — still blocked on `<x>` (handled
+normally from Step 4 onward if it needs a push), but GitHub will merge it the moment
+`<x>` clears on its own, with no further call to this script needed.
+
+`BLOCKED ... automerge=unavailable` — either this repository has auto-merge turned off
+in its settings, or arming it failed for a GitHub-side reason. Treat `reason=`/`detail=`
+exactly as Step 4 onward already does; this only means the eventual unblock will need
+an explicit merge afterward instead of happening on its own. A repository with
+auto-merge off is the owner's choice, not a workaround to look for.
 
 ## Step 4 — Prepare worktrees
 
@@ -110,6 +186,14 @@ Serial matters more here than anywhere else: every PR in this command shares one
 clone, and two concurrent `git worktree add` calls on one clone corrupt its index. The
 first PR pays for the clone; the rest are fast.
 
+**One `pr-workspace.sh` call per Bash tool invocation**, and dispatch each PR's agent
+(Step 5) as soon as *its* worktree is ready rather than waiting for the whole roster.
+Two reasons, both learned the hard way: a `while read` loop running many of these inside
+one Bash call has been seen failing from the second iteration on with `command not
+found` on plain coreutils; and finishing all setup before any dispatch leaves every
+agent slot idle behind the slowest clone. Only the `pr-workspace.sh` calls need to be
+serial — separate worktrees cut from one clone are safe to work in concurrently.
+
 Exit 4 means a previous run left uncommitted changes in that worktree — report the path
 and skip that PR rather than resetting over the work.
 
@@ -120,6 +204,13 @@ per-PR worktree the path above names, and two PRs would end up sharing one.
 ## Step 5 — Dispatch
 
 One `babysitter:🍼` agent per PR, `model: "haiku"`, concurrently, at most 8 in flight.
+
+**The agent owns its PR end-to-end — blockers, push, and the merge itself (its contract's
+step 5).** This orchestrator's only `merge-pr.sh` touch is the Step 3.5 landing pass up
+front; after dispatch it never edits a PR's branch, never polls its checks, never retries
+a merge — fan-out ends when a PR is merged or comes back definitively blocked. If per-PR
+work keeps landing back here, that is a prompt gap — the fix is a better dispatch, not
+doing the work in this context.
 
 Each prompt carries the worktree path, `repo`, `number`, `url`, `head_ref`, `base_ref`,
 the failing check names, and the unresolved review threads:
@@ -133,14 +224,55 @@ gh api "repos/<owner/repo>/pulls/<number>/comments" \
 The `[babysitter]` filter drops the plugin's own replies; without it an agent answers
 itself on the next pass.
 
-## Step 6 — Escalate what came back blocked
+## Step 6 — Deal with what came back blocked
 
-For every agent returning `blocked`, or `partial` with a non-null `blocked_on`,
-re-dispatch **that PR once** at `model: "sonnet"`, passing `blocked_on` and `notes`
-through verbatim.
+**First, read what it was blocked on — a stronger model does not fix every blocker.**
+
+If `blocked_on` is about pushing or the environment rather than the code — an auth or
+signing failure, a network or proxy error, a gate that could not run — escalating burns
+a sonnet dispatch to rediscover the same wall. The agent's work is already committed in
+its worktree; the cheaper move is to finish it yourself:
+
+```bash
+git -C <worktree> push origin HEAD:<head_ref>
+```
+
+The orchestrator has options a dispatched agent does not (a sandbox bypass among them),
+and in one sweep this cleared three of three push failures that had presented as three
+different errors, on the first retry, with no code change. If the retry also fails, then
+report it — do not escalate a wall to a bigger model.
+
+For a blocker in the code or the judgment — a design decision, an ambiguous review
+comment, two incompatible sides of a conflict — re-dispatch **that PR once** at
+`model: "sonnet"`, passing `blocked_on` and `notes` through verbatim.
 
 Once. Then report rather than retrying:
 `⚠ <repo>#<number> still blocked after escalation: <reason>`
+
+## Step 6.5 — The agent already merged it
+
+The dispatched agent drives its PR through `merge-pr.sh` itself (its contract's step 5)
+and returns the outcome — this orchestrator never runs the merge. Handle what came back:
+
+| agent `status` | what it means | what to do |
+| --- | --- | --- |
+| `merged` | `merge-pr.sh` reported `MERGED` | drop it from the roster; remove the worktree now if you like rather than waiting for `GONE` |
+| `done` | blockers cleared; `merge.result` says how the merge attempt went | if `merge.automerge_armed` is `true`, GitHub lands it on its own — watch and report; otherwise re-dispatch once so the agent completes the merge (contract step 5) |
+| `blocked`, `blocked_on` starting `merge:` | the merge was refused on live state | map to a Step 8 event below — an event, not a retry target |
+| `partial` / `blocked` on code or judgment | cleared some blockers; needs a human or a stronger model | Step 6's escalation rules |
+
+`merge:` reasons map to Step 8 events exactly:
+
+- `merge:unanswered_threads` — a thread nobody actually answered; treat as a `THREADS` event.
+- `merge:branch_protection` — outside this plugin's authority: a required human reviewer,
+  a code-scanning alert at or above the org's threshold, a ruleset requiring approval from
+  someone other than the author. **Never chase this with `--admin` or any other override** —
+  report it by number and move on.
+- `merge:conflict` — stale state; treat as a fresh `CONFLICT` event.
+- `merge:failing_checks` — a required check went red; treat as a fresh `CHECKS-FAILED` event.
+
+There is no orchestrator-side `merge-pr.sh` in this command. A merge that needs a retry
+is a re-dispatch (Step 8), never a call from here.
 
 ## Step 7 — Arm the watch
 
@@ -168,7 +300,7 @@ Each line is `<KIND> <repo>#<number> [detail] [url]`.
 | `CONFLICT`, `BASE-MOVED` | re-dispatch that PR, blocker = conflict / base moved (the agent checks whether it is actually behind) |
 | `CHECKS-FAILED` | re-dispatch, blocker = the named checks |
 | `REVIEW`, `COMMENT`, `THREADS` | re-fetch that PR's comments (Step 5) and re-dispatch |
-| `CHECKS-GREEN` | report it; nothing to do |
+| `CHECKS-GREEN` | if this PR has been dispatched at least once this run and has no agent in flight, re-dispatch it so its agent can run the merge (contract step 5); an agent already in flight will see the green and merge itself — fold, don't stack. A PR still `clean` from Step 3 that never needed a dispatch is unaffected — report either way |
 | `DRAFT` | drop from the active roster; a draft is not ready |
 | `GONE` | `pr-workspace.sh --repo <owner/repo> --pr <n> --remove`, drop from the roster |
 | `ERROR` | report it; the monitor is still polling |
@@ -196,7 +328,8 @@ When the user stops the watch, or on `END`:
 2. Summarize: PRs handled, pushes made, still blocked and why.
 3. Leave the worktrees as a warm cache. Remove them only if asked:
    `pr-workspace.sh --repo <owner/repo> --pr <n> --remove`
-4. Append one audit line:
+4. Distil the run into `learnings.md` — see *Distilling the run into learnings* below.
+5. Append one audit line:
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh \
@@ -208,3 +341,13 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/audit-log.sh \
 
 Scope is `project` here, unlike `/babysitter:org` — this run really does belong to one
 repository.
+
+## Distilling the run into learnings
+
+Exactly as in `/babysitter:org` (*Distilling the run into learnings*): read today's
+ledger under `~/.claude/babysitter/run-notes/` plus the `learnings` array from every
+agent that returned one, append a `## Run log` entry to
+`~/.claude/babysitter/learnings.md` headed
+`### <YYYY-MM-DD> — /babysitter:repo <owner/repo>`, promote anything now seen twice into
+`## Active rules` (cap 10), fold `repo`-kind notes into `## Per-repo notes`, and report
+it in one line. No confirmation gate.
