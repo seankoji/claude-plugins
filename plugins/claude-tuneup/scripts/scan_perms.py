@@ -12,6 +12,8 @@ Companion to the /claude-tuneup slash command, which bundles this script and
 invokes it automatically via `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/scan_perms.py`.
 """
 
+import argparse
+import hashlib
 import json
 import re
 import sys
@@ -85,7 +87,63 @@ def find_recent_transcripts(limit):
     return [p for _, p in files[:limit]]
 
 
+def iter_tool_evidence(transcripts):
+    """Correlate calls/results within each transcript; never infer user approval."""
+    seen_replays = set()
+    for path in transcripts:
+        calls, outcomes = {}, {}
+        try:
+            with open(path, "r") as f:
+                for line, raw in enumerate(f, 1):
+                    try:
+                        msg = json.loads(raw)
+                        content = msg.get("message", {}).get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for index, block in enumerate(content):
+                            if not isinstance(block, dict):
+                                continue
+                            if msg.get("type") == "assistant" and block.get("type") == "tool_use":
+                                name, inp = block.get("name"), block.get("input") or {}
+                                if not isinstance(name, str) or not isinstance(inp, dict):
+                                    continue
+                                if name == "Bash" and isinstance(inp.get("command"), str):
+                                    leaders, head, sub = first_real_token(first_segment(inp["command"]))
+                                    command = " ".join(leaders + [head] + ([sub] if sub else []))
+                                    projected = {"name": name, "input": {"command": command}}
+                                elif name.startswith("mcp__"):
+                                    projected = {"name": name, "input": {}}
+                                else:
+                                    continue
+                                key = block.get("id")
+                                if not isinstance(key, str) or not key:
+                                    key = (line, index)
+                                replay_key = (key, hashlib.sha256(json.dumps([name, inp], sort_keys=True).encode()).hexdigest()) if isinstance(key, str) else None
+                                calls.setdefault(key, {"call": projected, "transcript": str(path), "line": line, "replay_key": replay_key})
+                            elif msg.get("type") == "user" and block.get("type") == "tool_result":
+                                key = block.get("tool_use_id")
+                                if isinstance(key, str):
+                                    outcome = "error" if block.get("is_error") else "completed"
+                                    if outcomes.get(key, {}).get("outcome") != "error":
+                                        outcomes[key] = {"outcome": outcome, "result_line": line}
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        # A single malformed-but-valid-JSON line (e.g. an
+                        # aborted turn with "message": null) shouldn't abort
+                        # the scan of every remaining transcript.
+                        continue
+        except (FileNotFoundError, PermissionError):
+            continue
+        for key, evidence in calls.items():
+            replay_key = evidence.pop("replay_key")
+            if replay_key is not None:
+                if replay_key in seen_replays:
+                    continue
+                seen_replays.add(replay_key)
+            yield {**evidence, **outcomes.get(key, {"outcome": "unobserved", "result_line": None})}
+
+
 def iter_tool_uses(transcripts):
+    """Keep the legacy text report streaming, with raw occurrence counts."""
     for path in transcripts:
         try:
             with open(path, "r") as f:
@@ -101,19 +159,53 @@ def iter_tool_uses(transcripts):
                             if isinstance(block, dict) and block.get("type") == "tool_use":
                                 yield block
                     except (json.JSONDecodeError, AttributeError, TypeError):
-                        # A single malformed-but-valid-JSON line (e.g. an
-                        # aborted turn with "message": null) shouldn't abort
-                        # the scan of every remaining transcript.
                         continue
         except (FileNotFoundError, PermissionError):
             continue
 
 
-def main():
+def evidence_report(transcripts):
+    patterns = {}
+    for evidence in iter_tool_evidence(transcripts):
+        block = evidence["call"]
+        name, inp = block.get("name", ""), block.get("input") or {}
+        if not isinstance(name, str) or not isinstance(inp, dict):
+            continue
+        if name == "Bash":
+            cmd = inp.get("command")
+            if not isinstance(cmd, str):
+                continue
+            leaders, head, sub = first_real_token(first_segment(cmd))
+            if not head:
+                continue
+            pattern = " ".join(leaders + [head] + ([sub] if sub else []))
+        elif name.startswith("mcp__"):
+            pattern = name
+        else:
+            continue
+        row = patterns.setdefault((name, pattern), {"tool": name, "pattern": pattern, "count": 0,
+            "outcomes": {"completed": 0, "error": 0, "unobserved": 0}, "sources": []})
+        row["count"] += 1
+        row["outcomes"][evidence["outcome"]] += 1
+        if len(row["sources"]) < 3:
+            row["sources"].append({k: evidence[k] for k in ("transcript", "line", "result_line", "outcome")})
+    return {"transcripts_scanned": len(transcripts),
+            "scope": "observed calls and tool results; frequency and completion do not prove permission prompts or approval",
+            "patterns": sorted(patterns.values(), key=lambda row: (-row["count"], row["tool"], row["pattern"]))}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="include source locations and correlated result counts")
+    args = parser.parse_args(argv)
     transcripts = find_recent_transcripts(SCAN_LIMIT)
     if not transcripts:
         print(f"No transcripts found under {PROJECTS_DIR}", file=sys.stderr)
         sys.exit(1)
+
+    if args.json:
+        print(json.dumps(evidence_report(transcripts), indent=2))
+        return
 
     bash_patterns = Counter()
     mcp_calls = Counter()
@@ -124,6 +216,8 @@ def main():
     for block in iter_tool_uses(transcripts):
         name = block.get("name", "")
         inp = block.get("input", {}) or {}
+        if not isinstance(name, str) or not isinstance(inp, dict):
+            continue
         if name == "Bash":
             cmd = inp.get("command", "")
             if not isinstance(cmd, str) or not cmd.strip():

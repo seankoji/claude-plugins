@@ -1,8 +1,6 @@
-# OCR diff review
+# OCR fallback review
 
-`/imps:imps` uses `scripts/run-ocr.sh` after the merged diff passes its deterministic gates. This is the only code-review gate: do not invoke Head Imp or another same-lineage subagent on the code or diff.
-
-The engine is **OpenCodeReview** — the `ocr` CLI from `@alibaba-group/open-code-review`. It is **not** the OpenCode agent, despite the names. This gate used to run OpenCode and was named for it; see [Why OCR](#why-ocr).
+`/imps:imps` calls `scripts/run-code-review.sh`: a bounded isolated Codex attempt followed by OCR only when no usable Codex verdict exists. An adverse verdict remains authoritative. The runtime applies the revision/acceptance rules in [workflow-contract.md](workflow-contract.md). Reviewer lineage is recorded, not treated as proof of independence.
 
 ## Setup
 

@@ -267,3 +267,15 @@ class TestGraphQLErrorHandling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHandoffManifest(unittest.TestCase):
+    def test_inputs_and_output_are_bound_by_hash(self):
+        for changed in ('spec.md', 'discovery.md', 'handoff.md'):
+            with self.subTest(changed=changed), topic(output_type='implementation', spec='[REQ-ONE] outcome'):
+                self.assertEqual(run(['t'])[0], 0)
+                self.assertEqual(run(['t', '--check'])[0], 0)
+                manifest = json.loads(read('thinking/t/handoff.manifest.json'))
+                self.assertEqual(manifest['requirement_ids'], ['REQ-ONE'])
+                write('thinking/t/' + changed, 'changed content')
+                self.assertNotEqual(run(['t', '--check'])[0], 0)

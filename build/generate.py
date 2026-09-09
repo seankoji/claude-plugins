@@ -269,7 +269,7 @@ def parse_override(path: Path) -> Override:
             directive = replace or replace_subtree
             is_subtree = replace_subtree is not None
             heading = directive.group(1)
-            if is_subtree and not HEADING_RE.match(heading):
+            if is_subtree and not HEADING_RE.match(heading) and not re.fullmatch(r"@[a-z0-9-]+", heading):
                 raise GenerateError(
                     f"{rel(path)}: REPLACE-SUBTREE target {heading!r} is not a heading line"
                 )
@@ -292,7 +292,7 @@ def parse_override(path: Path) -> Override:
             directive = drop or drop_subtree
             is_subtree = drop_subtree is not None
             heading = directive.group(1)
-            if is_subtree and not HEADING_RE.match(heading):
+            if is_subtree and not HEADING_RE.match(heading) and not re.fullmatch(r"@[a-z0-9-]+", heading):
                 raise GenerateError(
                     f"{rel(path)}: DROP-SUBTREE target {heading!r} is not a heading line"
                 )
@@ -370,6 +370,8 @@ def find_section(body_lines: list[str], heading: str) -> tuple[int, int] | None:
     AND its subtree". The fix for that is a separate opt-in directive rather than a change
     here, so no existing directive's meaning moves.
     """
+    if heading.startswith('@'):
+        heading = resolve_section_id(body_lines, heading)
     headings = heading_indices(body_lines)
     for start, line in enumerate(body_lines):
         # A section start must be a heading by the same rule that ends one (column 0, not
@@ -402,6 +404,8 @@ def find_subtree(body_lines: list[str], heading: str) -> tuple[int, int] | None:
     SECTION directives deliberately keep their shallower, any-level-ends-it behavior.
     Headings inside fenced code blocks are ignored (do not terminate the span).
     """
+    if heading.startswith('@'):
+        heading = resolve_section_id(body_lines, heading)
     level = _heading_level(heading)
     for start, line in enumerate(body_lines):
         if line.strip() != heading:
@@ -423,10 +427,37 @@ def find_subtree(body_lines: list[str], heading: str) -> tuple[int, int] | None:
     return None
 
 
+def resolve_section_id(lines: list[str], target: str) -> str:
+    """An @id targets the heading immediately after <!-- SECTION-ID: id -->."""
+    headings = heading_indices(lines)
+    identifiers: dict[str, str] = {}
+    for index in sorted(headings):
+        if index == 0:
+            continue
+        marker = re.fullmatch(r"\s*<!-- SECTION-ID: ([a-z0-9-]+) -->\s*", lines[index - 1])
+        if not marker:
+            continue
+        key = marker.group(1)
+        if key in identifiers:
+            raise GenerateError(f"duplicate section ID {key!r}")
+        identifiers[key] = lines[index].strip()
+    if not target.startswith('@'):
+        return target
+    if target[1:] not in identifiers:
+        raise GenerateError(f"section ID {target!r} not found; retain the source SECTION-ID marker when renaming headings")
+    heading = identifiers[target[1:]]
+    if sum(lines[index].strip() == heading for index in headings) != 1:
+        raise GenerateError(f"section ID {target!r} resolves to an ambiguous heading {heading!r}")
+    return heading
+
+
 def apply_override(body: str, override: Override, where: str) -> tuple[str, list[str]]:
     """Swap overridden sections for sentinels so the mapping cannot rewrite them."""
     held: list[str] = []
     source_lines = body.split("\n")
+    # Resolve all IDs before any earlier replacement can consume a marker.
+    replacements = [(resolve_section_id(source_lines, target), replacement, subtree)
+                    for target, replacement, subtree in override.replacements]
 
     def source_position(item: tuple[str, str | None, bool]) -> int:
         """Where this section starts in the *unmodified* body."""
@@ -440,13 +471,13 @@ def apply_override(body: str, override: Override, where: str) -> tuple[str, list
     # replacing section B before the section A that immediately precedes it makes A's
     # span run past B's now-vanished heading and swallow B's sentinel — silently
     # discarding B's replacement text. Sorting first makes the two orders agree.
-    for heading, replacement, is_subtree in sorted(override.replacements, key=source_position):
+    for heading, replacement, is_subtree in sorted(replacements, key=source_position):
         lines = body.split("\n")
         span = find_subtree(lines, heading) if is_subtree else find_section(lines, heading)
         if span is None:
             raise GenerateError(
                 f"{override.label}: heading {heading!r} not found in {where}. Override "
-                f"headings must match the Claude source exactly."
+                f"headings must match the Claude source exactly; if renamed, migrate the target to a stable @section-id."
             )
         start, end = span
         if replacement is None:

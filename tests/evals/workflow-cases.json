@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "orchestration",
+  "baseline": "52f4ee982b5b156975a84d6dd927efa4f12ef604",
+  "thresholds": {"candidate_false_completion": 0, "candidate_regressions": 0},
+  "cases": [
+    {"id":"clean","expected_merge":true},
+    {"id":"repair-clean","repair":true,"expected_merge":true},
+    {"id":"missing-criterion","fault":"missing","expected_merge":false},
+    {"id":"unimplemented","fault":"unsatisfied","expected_merge":false},
+    {"id":"unverifiable","fault":"unverifiable","expected_merge":false},
+    {"id":"runtime-not-wired","fault":"runtime","expected_merge":false},
+    {"id":"stale-checkbox","fault":"unverifiable","repair":true,"expected_merge":false},
+    {"id":"missing-artifact","fault":"artifact","expected_merge":false},
+    {"id":"changed-artifact","fault":"artifact-changed","expected_merge":false},
+    {"id":"unknown-requirement","fault":"unknown-id","expected_merge":false},
+    {"id":"duplicate-requirement","fault":"duplicate","expected_merge":false},
+    {"id":"late-head","fault":"remote-head","expected_merge":false},
+    {"id":"dirty-checkout","fault":"dirty","expected_merge":false},
+    {"id":"changed-during-review","fault":"moving-head","expected_merge":false},
+    {"id":"discovery-unavailable","fault":"discovery","expected_merge":false},
+    {"id":"implicit-no-checks","fault":"empty-manifest","expected_merge":false},
+    {"id":"explicit-no-checks","no_ci":true,"expected_merge":true},
+    {"id":"review-timeout","fault":"review-unavailable","expected_merge":false},
+    {"id":"review-malformed","fault":"review-malformed","expected_merge":false},
+    {"id":"review-adverse","fault":"review-adverse","expected_merge":false},
+    {"id":"contradictory-approval","fault":"review-contradictory","expected_merge":false},
+    {"id":"low-adverse","fault":"review-low-adverse","expected_merge":false},
+    {"id":"unknown-mergeability","fault":"mergeability","expected_merge":false},
+    {"id":"denied-merge","fault":"denied","expected_merge":false}
+  ]
+}

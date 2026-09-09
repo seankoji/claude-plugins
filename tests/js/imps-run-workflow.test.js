@@ -25,7 +25,7 @@ function loadWorkflowFunctions({ agent, parallel, phase, args, log }) {
     'phase',
     'args',
     'log',
-    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun }`
+    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, sameRevision, acceptanceFailures, validManifest, reviewPassed, verifyForPublish, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun, runGate, runGatesWithRetry }`
   )
   return factory(agent, parallel, phase || (() => {}), args || {}, log || (() => {}))
 }
@@ -254,7 +254,7 @@ test('parseGateDecision parses valid retry and skip decisions', () => {
     gate: 'lint',
     guidance: 'fix the eslint config',
   })
-  assert.deepEqual(parseGateDecision('skip lint'), { kind: 'skip', gate: 'lint' })
+  assert.deepEqual(parseGateDecision('skip lint'), { kind: 'skip', gate: 'lint', rationale: 'Operator explicitly requested: skip lint' })
 })
 
 test('parseGateDecision is case-insensitive on the retry/skip keyword', () => {
@@ -265,7 +265,7 @@ test('parseGateDecision is case-insensitive on the retry/skip keyword', () => {
     gate: 'TEST',
     guidance: 'bump the timeout',
   })
-  assert.deepEqual(parseGateDecision('SKIP BUILD'), { kind: 'skip', gate: 'BUILD' })
+  assert.deepEqual(parseGateDecision('SKIP BUILD'), { kind: 'skip', gate: 'BUILD', rationale: 'Operator explicitly requested: SKIP BUILD' })
 })
 
 test('parseGateDecision tolerates whitespace around the guidance text', () => {
@@ -291,7 +291,7 @@ test('parseGateDecision accepts gate names that are not bare \\w+', () => {
     gate: 'test-fail',
     guidance: 'guidance',
   })
-  assert.deepEqual(parseGateDecision('skip type-check'), { kind: 'skip', gate: 'type-check' })
+  assert.deepEqual(parseGateDecision('skip type-check'), { kind: 'skip', gate: 'type-check', rationale: 'Operator explicitly requested: skip type-check' })
   // The gate name itself is trimmed, not just the guidance.
   assert.deepEqual(parseGateDecision('retry   spaced gate  : do the thing'), {
     kind: 'retry',
@@ -407,7 +407,7 @@ test('OCR review is a mechanical wrapper and code fixes carry constraints', asyn
 
   const wrapper = calls.find((c) => c.opts.label === 'ocr-review')
   assert.ok(wrapper.prompt.includes('Do not read, summarize, review, edit'), 'wrapper must not receive review work')
-  assert.ok(wrapper.prompt.includes('run-ocr.sh'), 'wrapper must invoke the dedicated harness')
+  assert.ok(wrapper.prompt.includes('run-code-review.sh'), 'wrapper must invoke the dedicated harness')
   assert.ok(wrapper.prompt.includes(GOAL_ARGS.goalFilePath), 'wrapper must pass GOAL.md by path')
 })
 
@@ -513,7 +513,7 @@ test('a throwing nowIso never costs the heartbeat its dispatch bookkeeping', asy
     if (opts.label === 'now') throw new Error('clock agent died')
     if (opts.label === 'imp-1') return { status: 'done', branch: 'br-1', artifacts: [{ url: 'x' }] }
     if (opts.label === 'heartbeat') {
-      patches.push(JSON.parse(prompt.match(/leaving every other existing field untouched: (\{.*\})\. Write/s)[1]))
+      patches.push(JSON.parse(prompt.match(/'--patch' '(.*?)'/s)[1]))
       return {}
     }
     return {}
@@ -541,7 +541,7 @@ test('a working nowIso puts a real ISO value in the heartbeat', async () => {
     if (opts.label === 'now') return { iso: '2026-08-07T11:22:33Z' }
     if (opts.label === 'imp-1') return { status: 'done', branch: 'br-1', artifacts: [] }
     if (opts.label === 'heartbeat') {
-      patches.push(JSON.parse(prompt.match(/leaving every other existing field untouched: (\{.*\})\. Write/s)[1]))
+      patches.push(JSON.parse(prompt.match(/'--patch' '(.*?)'/s)[1]))
       return {}
     }
     return {}
@@ -555,19 +555,104 @@ test('a working nowIso puts a real ISO value in the heartbeat', async () => {
 
 // ---- Phase 5: drive-to-green and close ----
 
+const SHA = 'a'.repeat(40)
+const PROOF = { path: '/tmp/test-evidence.log', sha256: 'd'.repeat(64) }
+const SNAPSHOT = { schema: 1, repo: '/repo', head: SHA, base: 'b'.repeat(40), merge_base: 'b'.repeat(40), spec_hash: 'c'.repeat(64), policy_hash: '9'.repeat(64), clean: true, requirements: [{ id: 'REQ-1', text: 'it works' }] }
+const COVERAGE = { criteria: [{ id: 'REQ-1', text: 'it works', status: 'satisfied', evidence: 'checked implementation', verification: { kind: 'inspection', artifacts: [PROOF] } }] }
+const REVIEW = { status: 'ok', verdict: 'APPROVE', findings: [], model: 'fixture-model', provider: 'fixture' }
+const MANIFEST = { gates: [], discovery_error: null, no_checks_reason: 'fixture explicitly has no CI' }
+const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green', head: SHA, merged: false, merge_commit: null }
 function prAgent(script) {
   const calls = []
+  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {}, 'refresh-remote-manifest': {}, 'save-remote-mapping': {} }
   async function agent(prompt, opts) {
     calls.push(opts.label)
     const key = Object.keys(script).find((k) => opts.label.startsWith(k))
-    const v = script[key]
-    return typeof v === 'function' ? v(calls) : v
+    const v = key ? script[key] : defaults[opts.label]
+    return typeof v === 'function' ? v(calls, prompt) : v
   }
   return { agent, calls }
 }
 
-const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green' }
 const PR = { number: 7, url: 'https://example.test/pr/7' }
+
+test('a PR repair is reviewed and accepted before merge', async () => {
+  let repaired = false
+  const { agent, calls } = prAgent({
+    'pr-status': () => ({ ...GREEN, checks: repaired ? 'passing' : 'failing' }),
+    'pr-fix': () => { repaired = true; return {} },
+    'merge-pr': { done: true, refused: false },
+  })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+  assert.equal(out.merged, true)
+  assert.ok(calls.indexOf('ocr-review') > calls.indexOf('pr-fix-7'))
+  assert.ok(calls.indexOf('dod-coverage') < calls.indexOf('merge-pr-7'))
+})
+
+for (const [name, response] of [
+  ['unimplemented requirement', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], status: 'unsatisfied' }] }],
+  ['runtime criterion with no proof', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], verification: { kind: 'runtime', artifacts: [] } }] }],
+  ['missing requirement', { criteria: [] }],
+  ['stale checked criterion', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], status: 'unverifiable' }] }],
+  ['unknown requirement ID', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], id: 'invented' }] }],
+  ['duplicate requirement ID', { criteria: [...COVERAGE.criteria, ...COVERAGE.criteria] }],
+]) {
+  test(`acceptance blocks ${name}`, async () => {
+    const { agent, calls } = prAgent({ 'pr-status': GREEN, 'dod-coverage': response })
+    const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+    const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+    assert.equal(out.green, false)
+    assert.equal(out.merged, false)
+    assert.ok(!calls.includes('merge-pr-7'))
+  })
+}
+
+test('late external PR head movement blocks merge', async () => {
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, head: 'f'.repeat(40) } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+  assert.match(out.detail, /head differs/)
+  assert.ok(!calls.includes('merge-pr-7'))
+})
+
+test('evidence artifact drift blocks completion', async () => {
+  const { agent } = prAgent({ 'verify-artifact': { ...PROOF, sha256: 'f'.repeat(64) } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'evidence_artifact_changed')
+})
+
+test('model inspection cannot satisfy an explicit runtime method', () => {
+  const { acceptanceFailures } = loadWorkflowFunctions({ agent: async () => {}, parallel })
+  assert.deepEqual(acceptanceFailures({ ...SNAPSHOT, requirements: [{ ...SNAPSHOT.requirements[0], method: 'runtime' }] }, COVERAGE.criteria), ['REQ-1'])
+})
+
+test('changed requirement contract invalidates prior passing evidence', async () => {
+  const { agent, calls } = prAgent({})
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  const old = { schema: 1, status: 'passed', snapshot: { ...SNAPSHOT, spec_hash: 'e'.repeat(64) } }
+  await verifyForPublish('main', old)
+  assert.ok(calls.includes('dod-coverage'))
+  assert.ok(calls.includes('ocr-review'))
+})
+
+test('missing check discovery cannot masquerade as a no-checks project', async () => {
+  const { agent } = prAgent({ 'discover-gates': { gates: [], discovery_error: 'unreadable CI', no_checks_reason: null } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'verification_manifest_invalid')
+})
+
+test('contradictory approval with a major finding is rejected', async () => {
+  const { agent } = prAgent({ 'ocr-review': { ...REVIEW, findings: [{ severity: 'major' }] } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'blocked')
+})
+
+test('different base and dirty checkout invalidate evidence', () => {
+  const { sameRevision } = loadWorkflowFunctions({ agent: async () => {}, parallel })
+  assert.equal(sameRevision(SNAPSHOT, { ...SNAPSHOT, base: 'e'.repeat(40) }), false)
+  assert.equal(sameRevision(SNAPSHOT, { ...SNAPSHOT, clean: false }), false)
+})
 
 test('a green PR with endstate "pr" is never merged', async () => {
   const { agent, calls } = prAgent({ 'pr-status': GREEN })
@@ -609,7 +694,7 @@ test('a merge that is refused never proceeds to a release', async () => {
 })
 
 test('the green loop is bounded and hands off rather than looping forever', async () => {
-  const RED = { checks: 'failing', mergeable: 'clean', unresolved_comments: [], detail: 'tests red' }
+  const RED = { ...GREEN, checks: 'failing', mergeable: 'clean', unresolved_comments: [], detail: 'tests red' }
   const { agent, calls } = prAgent({ 'pr-status': RED, 'pr-fix': {} })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
@@ -623,7 +708,7 @@ test('the green loop is bounded and hands off rather than looping forever', asyn
 })
 
 test('an already-merged PR is not merged again on a resume', async () => {
-  const { agent, calls } = prAgent({ 'pr-status': GREEN })
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
   const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', true)
@@ -638,7 +723,7 @@ test('unresolved review comments block green just as a failing check does', asyn
     'pr-status': () => {
       round += 1
       return round === 1
-        ? { checks: 'passing', mergeable: 'clean', unresolved_comments: ['rename the helper'], detail: '1 comment' }
+        ? { ...GREEN, checks: 'passing', mergeable: 'clean', unresolved_comments: ['rename the helper'], detail: '1 comment' }
         : GREEN
     },
     'pr-fix': {},
@@ -654,7 +739,7 @@ test('unresolved review comments block green just as a failing check does', asyn
 test('an unknown mergeability is not green — the check fails closed', async () => {
   // GitHub computes mergeability asynchronously and reports unknown while it does.
   // Treating that as green would merge on the absence of the fact the check establishes.
-  const UNKNOWN = { checks: 'passing', mergeable: 'unknown', unresolved_comments: [], detail: 'mergeability not computed' }
+  const UNKNOWN = { ...GREEN, checks: 'passing', mergeable: 'unknown', unresolved_comments: [], detail: 'mergeability not computed' }
   const { agent, calls } = prAgent({ 'pr-status': UNKNOWN, 'pr-fix': {} })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
@@ -669,12 +754,12 @@ test('a resume after a merge can still cut the release it never got to', async (
   // The failure this guards: merge lands, the run dies, and the resume returns early
   // because the PR is already merged — so the authorized release never happens.
   const { agent, calls } = prAgent({
-    'pr-status': GREEN,
+    'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) },
     'cut-release': { done: true, refused: false, url: 'https://example.test/releases/v1', detail: 'cut' },
   })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
-  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false)
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false, { schema: 1, status: 'passed', snapshot: { head: GREEN.head }, manifest: { gates: [] } })
 
   assert.ok(!calls.some((c) => c.startsWith('merge-pr')), 'an already-merged PR must not be re-merged')
   assert.equal(out.released, true, 'the release must still be reachable on resume')
@@ -682,7 +767,7 @@ test('a resume after a merge can still cut the release it never got to', async (
 })
 
 test('an already-released run re-cuts nothing', async () => {
-  const { agent, calls } = prAgent({ 'pr-status': GREEN })
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
   const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, true)
@@ -700,4 +785,249 @@ test('a run with no PR reports that rather than treating it as an error', async 
   assert.equal(out.merged, false)
   assert.match(out.detail, /no PR/)
   assert.equal(calls.length, 0)
+})
+
+
+test('merged resume without evidence cannot release', async () => {
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false)
+  assert.equal(out.released, false)
+  assert.ok(!calls.some(c => c.startsWith('cut-release')))
+})
+
+
+async function executeWorkflow(state, overrides = {}) {
+  const calls = []
+  const phases = []
+  const source = fs.readFileSync(SCRIPT_PATH, 'utf8').replace('export const meta', 'const meta')
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const invoke = new AsyncFunction('agent', 'parallel', 'phase', 'args', 'log', source)
+  const result = await invoke(async (prompt, options) => {
+    calls.push({ label: options.label, prompt })
+    if (Object.hasOwn(overrides, options.label)) return typeof overrides[options.label] === 'function' ? overrides[options.label](prompt, calls) : overrides[options.label]
+    if (options.label === 'claim-run') return { token: 'a'.repeat(32) }
+    if (options.label === 'read-state') return state
+    if (options.label === 'count-state-tasks') return { raw_task_count: state.tasks.length, raw_phase: state.phase, raw_spec_lengths: state.tasks.map(t => (t.spec || '').length) }
+    if (options.label === 'release-run') return { released: true }
+    return {}
+  }, parallel, name => phases.push(name), { stateFilePath: '/fixture/run.json', pluginRoot: '/fixture/plugin' }, () => {})
+  return { result, calls, phases }
+}
+
+test('full entrypoint abort preserves resume metadata and releases ownership', async () => {
+  const { result, calls } = await executeWorkflow({ tasks: [], branch: 'test', phase: 'ready', operator_decision: 'abort', last_result: { default_branch: 'master', dispatch: { artifacts: ['kept'] } } })
+  assert.equal(result.status, 'aborted')
+  const saved = calls.find(c => c.label === 'save-result').prompt
+  assert.match(saved, /"default_branch":"master"/)
+  assert.match(saved, /"artifacts":\["kept"\]/)
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('full entrypoint rejects a mismapped read while releasing ownership', async () => {
+  const { result, calls } = await executeWorkflow({ tasks: [], branch: 'test', phase: 'ready' }, { 'count-state-tasks': { raw_task_count: 1, raw_phase: 'ready', raw_spec_lengths: [10] } })
+  assert.equal(result.reason, 'state_read_mismatch')
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('full entrypoint never reads or mutates state without ownership', async () => {
+  const { result, calls } = await executeWorkflow({}, { 'claim-run': { error: 'already owned' } })
+  assert.equal(result.reason, 'run_owned_or_claim_failed')
+  assert.deepEqual(calls.map(c => c.label), ['claim-run'])
+})
+
+
+test('verification pins the fetched base for inner snapshots', async () => {
+  const snapshots = []
+  const { agent } = prAgent({ 'revision-snapshot': (_calls, prompt) => { snapshots.push(prompt); return SNAPSHOT } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'passed')
+  assert.match(snapshots[0], /--refresh/)
+  for (const prompt of snapshots.slice(1)) {
+    assert.doesNotMatch(prompt, /--refresh/)
+    assert.ok(prompt.includes(SNAPSHOT.base))
+  }
+})
+
+test('legacy process-only contracts receive an actionable reason', async () => {
+  const { agent } = prAgent({ 'revision-snapshot': { error: 'no_functional_criteria: add observable outcomes' } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'no_functional_criteria')
+})
+
+test('inspection evidence can complete a zero-diff research outcome', async () => {
+  const { agent } = prAgent({ 'revision-snapshot': { ...SNAPSHOT, base: SNAPSHOT.head, merge_base: SNAPSHOT.head } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'passed')
+})
+
+
+const COMPLETE_RUN_RESPONSES = {
+  'check-contract': { requirements: SNAPSHOT.requirements },
+  'check-budget': { ok: true },
+  'get-default-branch': { default_branch: 'master' },
+  'sync-default': { conflict: null },
+  'revision-snapshot': SNAPSHOT,
+  'discover-gates': MANIFEST,
+  'ocr-review': REVIEW,
+  'dod-coverage': COVERAGE,
+  'verify-artifact': PROOF,
+  'diff-stat': { diff_stat: 'artifact-only outcome; no code diff' },
+}
+const INTEGRATE_STATE = { tasks: [], branch: 'test', phase: 'integrate', dispatched_at: '2026-09-09T00:00:00Z' }
+
+test('complete main integration reaches awaiting authorization and saves evidence', async () => {
+  const { result, calls } = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+  assert.equal(result.status, 'awaiting_authorization')
+  assert.equal(result.verification.status, 'passed')
+  assert.match(result.diff_stat, /artifact-only/)
+  assert.ok(calls.find(c => c.label === 'save-result').prompt.includes('awaiting_authorization'))
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('main integration preserves an explicit gate skip for the failed revision', async () => {
+  const gate = { name: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], cwd: '.', timeout_seconds: 60, source: 'package.json', remote_only: false, required: true }
+  const { result, calls } = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint: accepted known debt', verification: { snapshot: SNAPSHOT } }, { ...COMPLETE_RUN_RESPONSES, 'discover-gates': { gates: [gate], discovery_error: null } })
+  assert.equal(result.status, 'awaiting_authorization')
+  assert.equal(result.verification.gate_waiver.rationale, 'accepted known debt')
+  assert.equal(result.verification.gates[0].skipped, true)
+  assert.equal(result.verification.gates[0].pass, false)
+  assert.ok(!calls.some(c => c.label === 'gate-lint'))
+})
+
+test('cosmetic reviewer text changes are replaced with the canonical requirement', async () => {
+  const { agent } = prAgent({ 'dod-coverage': { criteria: [{ ...COVERAGE.criteria[0], text: 'cosmetic model rewrite' }] } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  const result = await verifyForPublish('main')
+  assert.equal(result.status, 'passed')
+  assert.equal(result.criteria[0].text, SNAPSHOT.requirements[0].text)
+})
+
+
+test('complete publish path returns a verified final PR result', async () => {
+  const integrated = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+  const state = { ...INTEGRATE_STATE, pr: PR, endstate: 'pr', operator_decision: 'PR: yes', last_result: integrated.result, verification: integrated.result.verification }
+  const { result, calls } = await executeWorkflow(state, { ...COMPLETE_RUN_RESPONSES, 'pr-status': GREEN, 'finalize': { pr_ready: true, run_stats: {}, learnings_candidates: [], discussion_comment_url: null, prs_monitor: null } })
+  assert.equal(result.status, 'final')
+  assert.equal(result.pr_outcome.green, true)
+  assert.equal(result.pr_outcome.merged, false)
+  assert.equal(result.verification.status, 'passed')
+  assert.ok(calls.some(c => c.label === 'publish-evidence'))
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+
+const GATE_PLAN = { gate: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], source_sha256: '8'.repeat(64), plan_id: '7'.repeat(32), plan_path: '/tmp/plan.json', log_path: '/tmp/plan.json.log', cwd: '/repo', timeout_seconds: 60 }
+const GATE_RECEIPT = { ...GATE_PLAN, artifact: { path: GATE_PLAN.log_path, sha256: '6'.repeat(64) } }
+const LOCAL_LINT = { name: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], cwd: '.', timeout_seconds: 60, source: 'package.json', remote_only: false, required: true }
+
+test('a failed gate records the post-repair head so an operator skip can bind', async () => {
+  let head = SNAPSHOT.head
+  let fixes = 0
+  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, head }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-plan-lint': GATE_PLAN, 'gate-lint': { ...GATE_RECEIPT, pass: false, status: 'failed', exit_code: 1, tail: 'known debt' }, 'fix-lint': () => { fixes++; head = (fixes === 1 ? 'e' : 'f').repeat(40); return {} } }
+  const failed = await executeWorkflow(INTEGRATE_STATE, responses)
+  assert.equal(failed.result.reason, 'gate_red')
+  assert.equal(failed.result.detail.snapshot.head, 'f'.repeat(40))
+  assert.equal(failed.result.handover.head, head)
+  const resumed = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint: accepted debt', verification: failed.result.detail }, responses)
+  assert.equal(resumed.result.status, 'awaiting_authorization')
+  assert.ok(!resumed.calls.some(call => call.label === 'gate-lint'))
+})
+
+for (const reason of ['run_budget_exhausted', 'invalid_concurrency', 'gate_red', 'gate_evidence_invalid', 'verification_manifest_invalid', 'acceptance_incomplete', 'publish_incomplete']) {
+  test(`publish resume for ${reason} retains authorization and segment`, async () => {
+    const integrated = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+    const state = { ...INTEGRATE_STATE, segment: 'publish_finalize', pr: PR, endstate: 'pr', operator_decision: 'resolved, continue', last_result: { ...integrated.result, status: 'blocked', reason }, verification: integrated.result.verification }
+    const { result, phases } = await executeWorkflow(state, { ...COMPLETE_RUN_RESPONSES, 'pr-status': GREEN, 'finalize': { pr_ready: true, run_stats: {}, learnings_candidates: [] } })
+    assert.equal(result.status, 'final')
+    assert.equal(result.pr_outcome.green, true)
+    assert.ok(!phases.includes('Dispatch'))
+  })
+}
+
+test('remote checks use explicit rendered names instead of friendly gate labels', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, name: 'friendly-label', check_name: 'caller / test (22)' }
+  const { agent } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'caller / test (22)', status: 'passing' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)).green, true)
+})
+
+test('missing remote mapping exposes observed names while preserving passed local evidence', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, check_name: 'wrong' }
+  const { agent } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'actual-check', status: 'passing' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const result = await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)
+  assert.equal(result.green, false)
+  assert.equal(result.verification.status, 'passed')
+  assert.equal(result.remote_check_observation.reason, 'remote_checks_unverified')
+  assert.match(result.detail, /actual-check/)
+})
+
+
+test('gate receipt must match the separately observed plan and quoted helper path', async () => {
+  const prompts = []
+  const { runGate } = loadWorkflowFunctions({ args: { pluginRoot: "/plugin with spaces" }, agent: async (prompt, opts) => {
+    prompts.push(prompt)
+    return opts.label === 'gate-plan-lint' ? GATE_PLAN : { ...GATE_RECEIPT, pass: true, exit_code: 0, status: 'passed', plan_id: '0'.repeat(32) }
+  }, parallel })
+  const result = await runGate(LOCAL_LINT)
+  assert.equal(result.status, 'unavailable')
+  assert.match(result.tail, /does not match/)
+  assert.ok(prompts[1].includes("'python3' '/plugin with spaces/scripts/workflow-evidence.py' 'gate-record'"))
+})
+
+test('one transient timeout retries without a speculative code repair', async () => {
+  let executions = 0
+  const calls = []
+  const { runGatesWithRetry } = loadWorkflowFunctions({ agent: async (prompt, opts) => {
+    calls.push(opts.label)
+    if (opts.label === 'gate-plan-lint') return GATE_PLAN
+    executions++
+    return { ...GATE_RECEIPT, pass: false, status: 'unavailable', exit_code: 124, tail: 'timeout' }
+  }, parallel })
+  const result = await runGatesWithRetry([LOCAL_LINT])
+  assert.equal(executions, 2)
+  assert.equal(result.results[0].attempts, 2)
+  assert.ok(!calls.includes('fix-lint'))
+})
+
+test('dirty repair preserves gate diagnostics without issuing a stale waiver snapshot', async () => {
+  let dirty = false
+  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, clean: !dirty }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-plan-lint': GATE_PLAN, 'gate-lint': { ...GATE_RECEIPT, pass: false, status: 'failed', exit_code: 1, tail: 'specific gate failure' }, 'fix-lint': () => { dirty = true; return {} } }
+  const { result } = await executeWorkflow(INTEGRATE_STATE, responses)
+  assert.equal(result.reason, 'gate_red')
+  assert.equal(result.detail.gates[0].tail, 'specific gate failure')
+  assert.equal(result.detail.snapshot, null)
+  assert.match(result.detail.snapshot_error, /dirty/)
+  assert.equal(result.detail.last_verified_snapshot.head, SNAPSHOT.head)
+})
+
+test('unknown operator gate name lists the applicable names', async () => {
+  const { result } = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint-typo: accepted debt', verification: { snapshot: SNAPSHOT } }, { ...COMPLETE_RUN_RESPONSES, 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null } })
+  assert.equal(result.reason, 'gate_decision_unmatched')
+  assert.deepEqual(result.detail.local_gates, ['lint'])
+})
+
+test('local manifest cannot silently exceed the native foreground timeout', () => {
+  const { validManifest } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  assert.equal(validManifest({ gates: [{ ...LOCAL_LINT, timeout_seconds: 1800 }], discovery_error: null }), false)
+})
+
+
+test('remote name reconciliation retains local evidence without rerunning verification', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, check_name: 'unexpanded-name' }
+  const { agent, calls } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'caller / lint (22)', status: 'passing' }] }, 'reconcile-remote-checks': { mappings: [{ gate: 'lint', source: gate.source, check_name: 'caller / lint (22)', evidence: 'fixture CI job lint expands node matrix 22 under caller' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const result = await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)
+  assert.equal(result.green, true)
+  assert.equal(result.verification.status, 'passed')
+  assert.equal(calls.filter(label => label === 'ocr-review').length, 1)
+  assert.equal(calls.filter(label => label === 'dod-coverage').length, 1)
+})
+
+test('a matching native receipt passes the gate orchestration', async () => {
+  const { runGatesWithRetry } = loadWorkflowFunctions({ agent: async (prompt, opts) => opts.label === 'gate-plan-lint' ? GATE_PLAN : { ...GATE_RECEIPT, pass: true, status: 'passed', exit_code: 0 }, parallel })
+  const result = await runGatesWithRetry([LOCAL_LINT])
+  assert.equal(result.blockedOn, null)
+  assert.equal(result.results[0].pass, true)
 })

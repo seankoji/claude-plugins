@@ -78,3 +78,7 @@ anchored to the specific file path and line number. May include
 
 Single markdown comment in the conversation thread. One concrete point per
 comment.
+
+## Browser compatibility
+
+For changed Web APIs or CSS features, apply this plugin's `references/web-verification.md`. Check actual project targets, transpilation and polyfills. Test the unsupported path; a guard or try/catch is insufficient evidence. Coordinate with the rendered UX review and avoid browser checks for unrelated non-UI changes.

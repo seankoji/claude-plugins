@@ -78,7 +78,7 @@ one-shot clone retry are actual code now, not prose trusted to be followed corre
 | Command | `commands/study.md` | `/ape:study <GitHub URL> [focus]` — synchronous depth-first comparison of one named repository or subdirectory |
 | Command | `commands/clean.md` | `/ape:clean [--all]` — sanctioned deletion of clones (keeps reports) |
 | Workflow script | `scripts/ape-forage.workflow.js` | The canonical orchestration — discovery, dedupe, ranking, clone+retry, analysis, synthesis. Synced into `~/.claude/workflows/ape-forage.js` before each run. |
-| Script | `scripts/init-workspace.sh` | Phase 0 helper — creates the workspace and reports whether a fingerprint already exists, as one command. |
+| Script | `scripts/init-workspace.sh` | Phase 0 helper — creates the workspace and a fresh report directory for each expedition, preserving earlier research. |
 | Script | `scripts/clone-candidates.sh` | Clone helper, called from inside the Workflow script — clones the selected candidates in the background and returns only a log tail. |
 | Script | `scripts/search-repos.sh` | Discovery helper — runs several `gh search` queries as one command. |
 | Script | `scripts/triage-repos.sh` | Discovery helper — runs several `gh repo view` metadata checks as one command instead of a shell for-loop. |
@@ -102,12 +102,18 @@ Drop this directory into your plugin marketplace repo and add an entry:
 /ape:study https://github.com/owner/repo/tree/main/plugins/example
 /ape:clean                 # delete forage clones, keep fingerprint + reports
 /ape:clean --all           # full wipe
+/ape:clean --run <path>    # delete one saved expedition, including its evidence
 ```
 
-All artifacts land in `~/tmp/repo-research/<project-dir-name>/`. Forage uses
-`fingerprint.md`, `repos/`, `reports/*.md`, and `RECOMMENDATIONS.md`. Study uses
+All artifacts land in `~/tmp/repo-research/<project-dir-name>/`. Each forage expedition
+uses a fresh `reports/run.<random>/` containing its fingerprint, clones under `repos/`,
+analyst reports, and `RECOMMENDATIONS.md`. Study uses
 `studies/<owner>__<repo>/` for the pinned clone, source fingerprint, and comparison report.
-Reports persist so a later run can detect source or host-project drift before re-analysis.
+Runs are retained without automatic expiry so failures remain inspectable. `/ape:clean`
+removes their clones while keeping evidence; `--run <path>` deletes one named run and
+`--all` removes the full workspace when explicitly requested. Retained runs consume
+disk until cleaned. Authentication runs before the directory is allocated; an abandoned
+run can still leave an empty directory, which the named-run cleanup also removes.
 
 Use `/ape:forage` when the source is unknown and coverage matters. Use `/ape:study` when
 the user has already named the source and needs line-level transfer judgment. Study is
