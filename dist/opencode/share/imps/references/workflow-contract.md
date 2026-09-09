@@ -20,7 +20,10 @@ Methods are `inspection`, `command`, `runtime` or `manual`. Use runtime for user
 journeys and integration outcomes, command for executable checks, and inspection
 for claims that source/artifact inspection can establish. Legacy criteria receive
 stable IDs derived from their exact text. Process boxes do not count as requirements.
-Required unimplemented or unverifiable outcomes block completion. Preserve research
+Required unimplemented or unverifiable outcomes block completion. A legacy process-only
+contract returns `no_functional_criteria`: add agreed observable outcomes before
+resuming. For a zero-diff research run, retain the produced document or a fetched
+GitHub artifact as inspection evidence; no code diff is required. Preserve research
 and other non-code requirements; a run with no new code is not exempt from acceptance.
 
 Each result contains the original ID/text, status, a concrete explanation, and
@@ -41,7 +44,10 @@ issue text, findings or JSON into executable shell syntax.
 Resolve checks from repository policy, scripts and CI, including reusable workflows,
 toolchains, frozen installs, services, generation, security and product journeys.
 Order prerequisites by dependencies. Each check records `name`, `cmd`, `cwd`,
-`timeout_seconds` (1..3600), `source`, `remote_only` and `required`. Run applicable
+`argv` (literal executable/arguments), `timeout_seconds` (1..3600), `source`, `remote_only` and `required`. The source is the repository-relative file declaring the literal command or the
+package.json script. The helper checks this declaration and executes argv directly,
+without a shell. Inline interpreter code and indirect env commands are rejected;
+use repository scripts for compound checks. Never broadly allowlist the helper. Run applicable
 machine checks before model review. Retain remote-only checks as pending obligations;
 never run deployment jobs to simulate CI. Empty discovery requires an explicit
 repository no-checks policy; a failed query is not that policy.
@@ -51,7 +57,8 @@ independently bundled helpers are checked for drift, not refactored into an unav
 cross-plugin dependency. Do not promote every complexity/duplication candidate into
 a blocker without a concrete defect or agreed policy violation.
 
-After any repair, rerun checks, independent review and acceptance for the new revision.
+Fetch the base once on entry to verification, then pin its SHA for the round. A new
+verification entry checks base freshness again before publish. After any repair, rerun checks, independent review and acceptance for the new revision.
 That includes persona fixes, PR comments, CI repairs, conflict resolution and external
 head changes. Compare current PR head with verified head before merging and use a
 head-conditional merge. Verify the release's commit/artifact independently. Reconcile
@@ -77,9 +84,12 @@ atomic, fsynced replacement. A crashed invocation leaves its claim intact. After
 confirming it has stopped, `recover --state <path> --token <old-token>
 --confirmed-dead` permits a new invocation. Heartbeat age alone is never proof of death.
 
-Default run budget is four hours, persisted across resume; `budget_seconds` in the
-authorised run configuration can set 1..86400 seconds. `budget_started_at` is not
-reset by resume. Dispatch checks it between waves; verification checks it between
+Default run budget is four hours of active invocation time, accumulated across resume; `budget_seconds` in the
+authorised run configuration can set 1..86400 seconds. `budget_spent_seconds` records charged execution time on release. Time waiting for
+operator input between invocations is free. Recovery of a crashed invocation charges
+its outstanding time up to its deadline. An exhausted budget requires an explicit
+operator-authorized increase to `budget_seconds` while the run is unowned; resume
+does not silently grant more effort. Dispatch checks it between waves; verification checks it between
 repair rounds. `max_concurrency` defaults to 4 and accepts 1..10. Preserve completed
 work and emit a handover when a limit is reached.
 
