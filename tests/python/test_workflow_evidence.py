@@ -153,18 +153,34 @@ class EvidenceTest(unittest.TestCase):
         time.sleep(0.5)
         self.assertFalse(marker.exists())
 
-    def test_gate_retains_actual_exit_and_hashed_log(self):
-        (self.repo / 'check.sh').write_text('echo evidence; exit 7\n')
+    def test_gate_plan_is_nonexecuting_and_native_result_is_recorded(self):
+        (self.repo / 'check.sh').write_text('echo evidence; touch marker; exit 7\n')
         (self.repo / 'Makefile').write_text('check:\n\tbash check.sh\n')
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'make check', '--argv-json', '["make","check"]', '--source', 'Makefile', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
-        value = json.loads(result.stdout)
-        self.addCleanup(Path(value['artifact']['path']).unlink)
+        plan = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'fixture', '--cmd', 'make check', '--argv-json', '["make","check"]', '--source', 'Makefile', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(plan.stdout)['execution'], 'native_host_tool_required')
+        self.assertFalse((self.repo / 'marker').exists())
+        native = subprocess.run(['make', 'check'], cwd=self.repo, capture_output=True, text=True)
+        log = self.root / 'gate.log'
+        log.write_text(native.stdout + native.stderr)
+        value = evidence.gate_record('fixture', 'make check', native.returncode, log, 1)
         self.assertFalse(value['pass'])
-        self.assertEqual(value['exit_code'], 2) # make propagates a recipe failure as exit 2
-        self.assertEqual(evidence.artifact(value['artifact']['path']), value['artifact'])
+        self.assertEqual(value['exit_code'], 2)
+        self.assertEqual(evidence.artifact(log), value['artifact'])
+
+    def test_publish_workflow_cannot_declare_a_local_gate(self):
+        directory = self.repo / '.github/workflows'
+        directory.mkdir(parents=True)
+        (directory / 'release.yml').write_text('on: release\njobs:\n  release:\n    steps:\n      - run: npm publish\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'lint', '--cmd', 'npm publish', '--argv-json', '["npm","publish"]', '--source', '.github/workflows/release.yml', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_package_flags_cannot_weaken_the_declared_script(self):
+        (self.repo / 'package.json').write_text(json.dumps({'scripts': {'test': 'jest'}}))
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'test', '--cmd', 'npm run test -- --passWithNoTests', '--argv-json', '["npm","run","test","--","--passWithNoTests"]', '--source', 'package.json', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_gate_cannot_change_directory_outside_checkout(self):
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'true', '--argv-json', '["true"]', '--source', 'checks.txt', '--cwd', '..', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'fixture', '--cmd', 'true', '--argv-json', '["true"]', '--source', 'checks.txt', '--cwd', '..', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
 
     def test_shared_helpers_are_identical(self):
@@ -185,7 +201,7 @@ class EvidenceTest(unittest.TestCase):
     def test_shell_code_is_rejected_before_execution(self):
         command = "sh -c 'touch escaped'"
         (self.repo / 'checks.txt').write_text(command)
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', command,
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'unsafe', '--cmd', command,
                                  '--argv-json', json.dumps(['sh', '-c', 'touch escaped']), '--source', 'checks.txt', '--timeout', '5'],
                                 cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -193,7 +209,7 @@ class EvidenceTest(unittest.TestCase):
 
     def test_invented_gate_is_rejected(self):
         (self.repo / 'checks.txt').write_text('npm run test')
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', 'touch escaped',
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'unsafe', '--cmd', 'touch escaped',
                                  '--argv-json', json.dumps(['touch', 'escaped']), '--source', 'checks.txt', '--timeout', '5'],
                                 cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -212,7 +228,7 @@ class EvidenceTest(unittest.TestCase):
 
     def test_package_metadata_cannot_authorize_an_arbitrary_command(self):
         (self.repo / 'package.json').write_text(json.dumps({'description': 'touch escaped', 'scripts': {}}))
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', 'touch escaped',
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'unsafe', '--cmd', 'touch escaped',
                                  '--argv-json', json.dumps(['touch', 'escaped']), '--source', 'package.json', '--timeout', '5'],
                                 cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

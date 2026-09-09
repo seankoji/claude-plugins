@@ -811,7 +811,6 @@ discussion body. Never a paraphrase; this section exists to be checked against.>
 ## Definition of Done
 - [ ] <acceptance criterion 1>
 - [ ] <acceptance criterion 2 — one line each from discovery>
-- [ ] Gates green (build · lint · test · type — per GATE_CMDS)
 - [ ] Plan adversarially reviewed (codex, else Head Imp); OCR reviewed the merged diff; all blocker/major findings addressed
 - [ ] No merge conflicts with the default branch
 
@@ -1356,48 +1355,22 @@ reconciles against the state file and git ground truth exactly as the old `resum
 wrangler did (worktree branches, GOAL.md checkboxes, published artifacts) — see the
 design note for what the script must implement to preserve this.
 
-**`blocked` results** — surface the problem, agree the next step with the user, persist
-the decision, re-invoke:
-- `state_read_mismatch` — readState()'s task count/phase disagree with a raw `jq` check
-  of the state file (the readState() mismapping failure mode, #87) — everything else in
-  `state`, including `operator_decision` itself, is untrustworthy this invocation, so the
-  script refuses to route on it. Inspect the raw file (`jq . <state file>`); if it looks
-  fine, this was likely a one-off read blip — persist `resolved, continue` to retry. If
-  the file itself is actually garbled, fix it by hand or persist `abort`.
-- `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
-  the tree (or decides); persist `resolved, continue` or `abort`.
-- `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
-  those tasks / integrate without any of the unresolved ones / abort) and persist
-  `retry tasks #N: ...`, `skip tasks #N`, `integrate partial`, or `abort`.
-- `merge_conflict` — the conflict is live in the shared working tree. List the branch +
-  files; let the user resolve (or resolve trivial conflicts yourself), then persist
-  `resolved, continue`.
-- `gate_red` — surface the gate name + log tail; agree retry guidance, skip, or abort.
-- `uncommitted_changes` — the working tree had uncommitted work at a point where
-  everything downstream reads commits: the code review reads `MERGE_BASE..HEAD`,
-  `diff_stat` and `dod_coverage` read `origin/<default>..HEAD`, and `git push` sends
-  commits. Proceeding would review around the change and then drop it, with every gate
-  still green. `detail.porcelain` names the files and `detail.where` says which point
-  tripped. Establish whose the changes are first — a shared checkout can be in use by an
-  unrelated concurrent session — then either commit them or, if they are not this run's,
-  hand them back to their owner. Never stash: the stash stack is shared across every
-  worktree on the machine. Persist `resolved, continue` once the tree is clean.
-- `code_review_red` — OCR reviewed the merged diff, returned CHANGES_REQUESTED, and three
-  fix rounds did not clear it. `detail.findings` carries what survived, with the model and
-  provider that produced them. Agree a path: fix the findings and persist
-  `resolved, continue`, or accept them on the record with
-  `override code review: <rationale>`. Treat a *clean* pass on a large diff with less
-  confidence than it invites — repeated OCR runs over one large diff have produced
-  different finding sets each time, so absence of a finding on one pass is not evidence it
-  was addressed, only that it wasn't sampled.
-- `code_review_unavailable` — the review could not run *at all*: a setup/endpoint failure,
-  or a diff too large for the pinned model to finish. This is not a red verdict, it is no
-  verdict, and it can arrive from the pre-dispatch preflight as well as from the review
-  itself. Fix the cause and persist `resolved, continue`, or — when the review genuinely
-  cannot complete for this diff — persist `skip code review: <rationale>`. That verb
-  records the review as *never run*, distinct from `override code review:`, which accepts
-  one that ran and returned findings. Both reach the PR body and the audit trail; neither
-  is ever rendered as an approval.
+**`blocked` results** — report the actual reason and evidence. Preserve prior authorization; use the saved segment to resume. Read `references/workflow-contract.md` for the helper protocol.
+
+- `run_owned_or_claim_failed` — inspect the returned owner-file path. Confirm the prior invocation has stopped, read its token, then use the returned `recover --confirmed-dead` command. Never recover from heartbeat age alone. An unreadable state is repaired before claiming again.
+- `state_read_mismatch` — compare the raw state with the reported task count and phase. Correct the read or malformed file, then `resolved, continue`.
+- `dispatch_failed`, `invalid_concurrency` — resolve dispatch/dependency errors or set `max_concurrency` in 1..10, then resume.
+- `imps_failed` — use `retry tasks #N: <guidance>`, `skip tasks #N`, `integrate partial`, or `abort` according to the authorized scope. Required missing outcomes still block completion.
+- `merge_conflict` — resolve the named conflict while preserving unrelated work, then `resolved, continue`.
+- `gate_red` — inspect the native tool log and the recorded post-repair head. Environment/toolchain failures are unavailable and must not trigger speculative code edits. Use `retry <gate>: <guidance>`, `skip <gate>: <rationale>`, or `abort`.
+- `gate_waiver_stale` — the skip targeted another head. Confirm the decision against the returned current head or retry; it is never silently carried forward.
+- `gate_evidence_invalid`, `evidence_artifact_changed` — regenerate the actual command/runtime evidence; do not manufacture a receipt or hash.
+- `gates_changed_revision`, `revision_changed_during_verification` — finish the concurrent change and rerun verification for the stable committed revision.
+- `verification_manifest_invalid`, `verification_unavailable`, `verification_retry_limit` — inspect the underlying error, declarations and bounded retry history. Repair configuration or unavailable prerequisites, then resume. A failed discovery is not a no-checks policy.
+- `no_functional_criteria`, `acceptance_incomplete` — add agreed observable criteria to a legacy process-only plan, or implement/verify the named outcomes. Preserve original scope; non-code deliverables can use inspection artifacts.
+- `code_review_unavailable`, `code_review_unavailable_or_adverse` — distinguish an unavailable engine from a completed adverse verdict in the detail. Fix findings or setup, then resume. Explicit `skip code review: <rationale>` records no review; `override code review: <rationale>` accepts an adverse review. Neither is approval.
+- `run_budget_exhausted` — while unowned, increase `budget_seconds` only with operator authorization, up to 86400 active seconds, then resume the saved segment. Idle authorization waits consume no budget.
+- `remote_checks_unverified`, `publish_incomplete` — reconcile the exact observed check names, pending checks, PR head and actual merge/release outcome. Resume the existing publish segment; do not create another PR or re-ask for granted authorization. Missing remote checks cannot be silently waived.
 - `branch_mismatch` — reconcile branch state with the user, then persist
   `reconciled, continue`. Don't take an agent's self-reported `id` or `branch` at face
   value here — agents can collide on the same self-reported id or report the base
@@ -1406,7 +1379,7 @@ the decision, re-invoke:
   worktree list` for the actual branch names.
 - `unresolved_findings` — the persona panel's fix loop hit its 3-round cap with findings
   still standing, an opus adjudicator ruled on each survivor, and at least one ruling came
-  back `load-bearing`. This is the only blocked reason that arrives *after* the PR exists.
+  back `load-bearing`. This reason can arrive after the PR exists.
   The result's `detail` carries the rulings; `parked_findings` and `wontfix_rulings` are
   also in the state file and in the final result object. Surface every `load-bearing`
   finding with its rationale, then agree one of: `retry findings` (another capped fix

@@ -564,7 +564,7 @@ const MANIFEST = { gates: [], discovery_error: null, no_checks_reason: 'fixture 
 const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green', head: SHA, merged: false, merge_commit: null }
 function prAgent(script) {
   const calls = []
-  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {} }
+  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {}, 'refresh-remote-manifest': {} }
   async function agent(prompt, opts) {
     calls.push(opts.label)
     const key = Object.keys(script).find((k) => opts.label.startsWith(k))
@@ -799,6 +799,7 @@ test('merged resume without evidence cannot release', async () => {
 
 async function executeWorkflow(state, overrides = {}) {
   const calls = []
+  const phases = []
   const source = fs.readFileSync(SCRIPT_PATH, 'utf8').replace('export const meta', 'const meta')
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
   const invoke = new AsyncFunction('agent', 'parallel', 'phase', 'args', 'log', source)
@@ -810,8 +811,8 @@ async function executeWorkflow(state, overrides = {}) {
     if (options.label === 'count-state-tasks') return { raw_task_count: state.tasks.length, raw_phase: state.phase, raw_spec_lengths: state.tasks.map(t => (t.spec || '').length) }
     if (options.label === 'release-run') return { released: true }
     return {}
-  }, parallel, () => {}, { stateFilePath: '/fixture/run.json', pluginRoot: '/fixture/plugin' }, () => {})
-  return { result, calls }
+  }, parallel, name => phases.push(name), { stateFilePath: '/fixture/run.json', pluginRoot: '/fixture/plugin' }, () => {})
+  return { result, calls, phases }
 }
 
 test('full entrypoint abort preserves resume metadata and releases ownership', async () => {
@@ -913,4 +914,48 @@ test('complete publish path returns a verified final PR result', async () => {
   assert.equal(result.verification.status, 'passed')
   assert.ok(calls.some(c => c.label === 'publish-evidence'))
   assert.equal(calls.at(-1).label, 'release-run')
+})
+
+
+const LOCAL_LINT = { name: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], cwd: '.', timeout_seconds: 60, source: 'package.json', remote_only: false, required: true }
+
+test('a failed gate records the post-repair head so an operator skip can bind', async () => {
+  let head = SNAPSHOT.head
+  let fixes = 0
+  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, head }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-lint': { gate: 'lint', cmd: LOCAL_LINT.cmd, pass: false, status: 'failed', exit_code: 1, tail: 'known debt', artifact: PROOF }, 'fix-lint': () => { fixes++; head = (fixes === 1 ? 'e' : 'f').repeat(40); return {} } }
+  const failed = await executeWorkflow(INTEGRATE_STATE, responses)
+  assert.equal(failed.result.reason, 'gate_red')
+  assert.equal(failed.result.detail.snapshot.head, 'f'.repeat(40))
+  assert.equal(failed.result.handover.head, head)
+  const resumed = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint: accepted debt', verification: failed.result.detail }, responses)
+  assert.equal(resumed.result.status, 'awaiting_authorization')
+  assert.ok(!resumed.calls.some(call => call.label === 'gate-lint'))
+})
+
+for (const reason of ['run_budget_exhausted', 'invalid_concurrency', 'gate_red', 'gate_evidence_invalid', 'verification_manifest_invalid', 'acceptance_incomplete', 'publish_incomplete']) {
+  test(`publish resume for ${reason} retains authorization and segment`, async () => {
+    const integrated = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+    const state = { ...INTEGRATE_STATE, segment: 'publish_finalize', pr: PR, endstate: 'pr', operator_decision: 'resolved, continue', last_result: { ...integrated.result, status: 'blocked', reason }, verification: integrated.result.verification }
+    const { result, phases } = await executeWorkflow(state, { ...COMPLETE_RUN_RESPONSES, 'pr-status': GREEN, 'finalize': { pr_ready: true, run_stats: {}, learnings_candidates: [] } })
+    assert.equal(result.status, 'final')
+    assert.equal(result.pr_outcome.green, true)
+    assert.ok(!phases.includes('Dispatch'))
+  })
+}
+
+test('remote checks use explicit rendered names instead of friendly gate labels', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, name: 'friendly-label', check_name: 'caller / test (22)' }
+  const { agent } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'caller / test (22)', status: 'passing' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)).green, true)
+})
+
+test('missing remote mapping exposes observed names and invalidates cached discovery', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, check_name: 'wrong' }
+  const { agent } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'actual-check', status: 'passing' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const result = await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)
+  assert.equal(result.green, false)
+  assert.equal(result.verification.status, 'blocked')
+  assert.match(result.detail, /actual-check/)
 })

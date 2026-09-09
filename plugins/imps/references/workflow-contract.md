@@ -44,15 +44,22 @@ issue text, findings or JSON into executable shell syntax.
 Resolve checks from repository policy, scripts and CI, including reusable workflows,
 toolchains, frozen installs, services, generation, security and product journeys.
 Order prerequisites by dependencies. Each check records `name`, `cmd`, `cwd`,
-`argv` (literal executable/arguments), `timeout_seconds` (1..3600), `source`, `remote_only` and `required`. Supported declarations are package.json scripts, literal Makefile targets and
-single-line `.github/workflows` run steps. Other sources and compound commands need
-a declared wrapper or an explicit remote-only check. Markdown and arbitrary fixture
-text cannot declare executable gates. Child processes receive a minimal environment
-without inherited service tokens. The helper checks this declaration and executes argv directly,
-without a shell. Inline interpreter code and indirect env commands are rejected;
-use repository scripts for compound checks. Never broadly allowlist the helper. Run applicable
-machine checks before model review. Retain remote-only checks as pending obligations;
-never run deployment jobs to simulate CI. Empty discovery requires an explicit
+`argv` (literal executable/arguments), `timeout_seconds` (1..3600), `source`, `remote_only` and `required`. Supported local declarations are exact check package scripts, literal Makefile targets
+and checked-in check scripts. Extra package-manager flags and local execution of CI
+`run:` snippets are rejected; keep CI-only jobs as remote obligations with an exact
+`check_name` from GitHub, including matrix/reusable-workflow suffixes. A failed mapping
+reports observed names and invalidates the manifest so it can be rediscovered.
+
+`gate-plan` validates provenance and returns a plan; it executes nothing and grants
+no permission. Run the actual command directly through the host's native foreground
+command tool so its permission, environment, sandbox and timeout controls see the
+real invocation. Do not wrap local gates in Python or a blanket helper allow rule.
+Retain the native output/exit code and use `gate-record` to hash the log and record
+that result. Infrastructure failures retain their diagnostics as unavailable and
+must not trigger speculative product edits. If native bounded execution is absent,
+report the host capability as unavailable. Run applicable machine checks before model
+review. Remote checks remain pending obligations; never execute deployment jobs to
+simulate CI. Empty discovery requires an explicit
 repository no-checks policy; a failed query is not that policy.
 
 Use existing configured analyzers and baselines before adding tools. Intentional
