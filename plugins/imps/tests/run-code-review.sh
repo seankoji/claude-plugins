@@ -43,14 +43,20 @@ esac
 STUB
 chmod +x "$ROOT/bin/node"
 
-# Stub `ocr` CLI for the fallback path — same shape as tests/run-ocr.sh's stub, kept
-# minimal since only the approve case is exercised here.
+# Stub `ocr` CLI for the fallback path — same shape as tests/run-ocr.sh's stub. The
+# version it reports must track the harness's OCR pin, and `config set` lazily creates
+# the config file under the redirected HOME that the credential write targets.
 cat > "$ROOT/bin/ocr" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 case "${1:-}" in
-  version) printf 'open-code-review v%s (deadbeef) darwin/arm64\n' "${STUB_VERSION:-1.10.1}"; exit 0 ;;
-  config) exit 0 ;;
+  version) printf 'open-code-review v%s (deadbeef) darwin/arm64\n' "${STUB_VERSION:-1.11.3}"; exit 0 ;;
+  config)
+    if [ "${2:-}" = "set" ]; then
+      mkdir -p "$HOME/.opencodereview"
+      [ -f "$HOME/.opencodereview/config.json" ] || printf '{}' > "$HOME/.opencodereview/config.json"
+    fi
+    exit 0 ;;
   review)
     if [ "${2:-}" = "--help" ]; then printf '%s\n' '--from --to --format json --concurrency --rule --background-file'; exit 0; fi
     case "${OCR_STUB_CASE:-approve}" in
@@ -84,7 +90,7 @@ run_dispatch() {
   local codex_root=""
   [ "$codex_installed" = 1 ] && codex_root="$ROOT/codex-plugin"
   env STUB_CODEX_CASE="${STUB_CODEX_CASE:-approve}" \
-    OCR_STUB_CASE="${OCR_STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.10.1}" \
+    OCR_STUB_CASE="${OCR_STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.11.3}" \
     STUB_URL_SINK="$ROOT/url-sink" \
     HOME="$ROOT/realhome" TMPDIR="$ROOT/tmp" PATH="$ROOT/bin:$PATH" \
     IMPS_OCR_BIN=ocr IMPS_OPENCODE_CONFIG_PATH="$CONFIG" \

@@ -18,14 +18,20 @@ mkdir -p "$ROOT/bin" "$ROOT/tmp" "$ROOT/realhome"
 # `ocr` stub. STUB_CASE selects the review payload; STUB_VERSION exercises the version
 # gate. The harness configures the endpoint through `ocr config set`, so the stub records
 # every config-set key/value pair; the URL normalisation, model plumbing and credential
-# handling are asserted from that record without printing the secret.
+# handling are asserted from that record without printing the secret. `config set` also
+# lazily creates ~/.opencodereview/config.json under the redirected HOME — exactly what
+# the real CLI does — so the harness's fail-closed credential write has a file to update.
 cat > "$ROOT/bin/ocr" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 case "${1:-}" in
-  version) printf 'open-code-review v%s (deadbeef) darwin/arm64\n' "${STUB_VERSION:-1.10.1}"; exit 0 ;;
+  version) printf 'open-code-review v%s (deadbeef) darwin/arm64\n' "${STUB_VERSION:-1.11.3}"; exit 0 ;;
   config)
-    if [ "${2:-}" = "set" ]; then printf '%s=%s\n' "${3:-}" "${4:-}" >> "$STUB_CONFIG_SINK"; fi
+    if [ "${2:-}" = "set" ]; then
+      printf '%s=%s\n' "${3:-}" "${4:-}" >> "$STUB_CONFIG_SINK"
+      mkdir -p "$HOME/.opencodereview"
+      [ -f "$HOME/.opencodereview/config.json" ] || printf '{}' > "$HOME/.opencodereview/config.json"
+    fi
     exit 0 ;;
   review)
     if [ "${2:-}" = "--help" ]; then printf '%s\n' '--from --to --format json --concurrency --rule --background-file'; exit 0; fi
@@ -46,6 +52,39 @@ esac
 STUB
 chmod +x "$ROOT/bin/ocr"
 
+# The installer stub creates a pinned binary in the requested isolated prefix. This
+# proves the harness does not depend on the operator's global npm prefix or cache.
+cat > "$ROOT/bin/npm" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+if [ "${STUB_NPM_FAIL:-0}" = 1 ]; then exit 1; fi
+prefix=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = --prefix ]; then prefix="$arg"; fi
+  previous="$arg"
+done
+[ -n "$prefix" ] || exit 2
+mkdir -p "$prefix/bin"
+printf '#!/usr/bin/env bash\nSTUB_VERSION=1.11.3 exec %q "$@"\n' "$STUB_OCR_SOURCE" > "$prefix/bin/ocr"
+chmod +x "$prefix/bin/ocr"
+STUB
+chmod +x "$ROOT/bin/npm"
+export STUB_OCR_SOURCE="$ROOT/bin/ocr"
+
+# The credential write reaches the config file through `jq --rawfile k /dev/stdin`, never
+# through a `jq --arg` flag. Intercept jq too: record every invocation's argv, then exec
+# the real binary. The sentinel-key assertions below then prove no external command ever
+# received the credential in its arguments — a property stdout/stderr checks cannot see.
+REAL_JQ="$(command -v jq)"
+: > "$ROOT/jq-argv-sink"
+cat > "$ROOT/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JQ_ARGV_SINK"
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$ROOT/bin/jq"
+
 git init -q "$ROOT/repo"
 git -C "$ROOT/repo" config user.email test@example.invalid
 git -C "$ROOT/repo" config user.name test
@@ -64,16 +103,18 @@ write_config() { printf '%s\n' "$1" > "$CONFIG"; }
 GOOD_CONFIG='{"provider":{"litellm":{"options":{"baseURL":"http://endpoint.invalid:4000","apiKey":"secret-litellm-key"}}}}'
 write_config "$GOOD_CONFIG"
 
-# Last value the harness configured for a given `ocr config set` key, or empty.
-configured() { grep "^$1=" "$ROOT/config-sink" 2>/dev/null | tail -n 1 | cut -d= -f2-; }
-
 run_review() {
-  env STUB_CASE="${STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.10.1}" \
+  env STUB_CASE="${STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.11.3}" \
+    STUB_NPM_FAIL="${STUB_NPM_FAIL:-0}" \
     STUB_CONFIG_SINK="$ROOT/config-sink" \
+    JQ_ARGV_SINK="$ROOT/jq-argv-sink" REAL_JQ="$REAL_JQ" \
     HOME="$ROOT/realhome" TMPDIR="$ROOT/tmp" PATH="$ROOT/bin:$PATH" \
-    IMPS_OCR_BIN=ocr IMPS_OPENCODE_CONFIG_PATH="$CONFIG" \
+    IMPS_OCR_BIN=ocr IMPS_OCR_VERSION=1.11.3 IMPS_OPENCODE_CONFIG_PATH="$CONFIG" \
     "$REVIEW" --repo "$ROOT/repo" --base "$BASE" --goal "$ROOT/GOAL.md" --timeout 3 "$@"
 }
+
+# Last value the harness configured for a given `ocr config set` key, or empty.
+configured() { grep "^$1=" "$ROOT/config-sink" 2>/dev/null | tail -n 1 | cut -d= -f2-; }
 
 check_contract() { jq -e 'has("status") and has("verdict") and has("findings") and has("reason") and has("model") and has("provider")' "$1" >/dev/null; }
 
@@ -82,11 +123,13 @@ out="$ROOT/out" err="$ROOT/err"
 STUB_CASE=approve run_review >"$out" 2>"$err"; rc=$?
 if [ "$rc" = 0 ] && check_contract "$out" && jq -e '.status == "ok" and .verdict == "APPROVE" and (.findings | length) == 0' "$out" >/dev/null; then ok 'clean diff approves'; else bad 'clean diff approves' "rc=$rc"; fi
 if ! grep -q 'secret-litellm-key' "$out" "$err"; then ok 'credential never reaches stdout or stderr'; else bad 'credential never reaches stdout or stderr' 'secret leaked'; fi
+if ! grep -q 'secret-litellm-key' "$ROOT/config-sink" 2>/dev/null; then ok 'credential never reaches `config set` argv'; else bad 'credential never reaches `config set` argv' 'api_key was passed as a config-set argument'; fi
+if ! grep -q 'secret-litellm-key' "$ROOT/jq-argv-sink" 2>/dev/null; then ok 'credential never reaches jq argv'; else bad 'credential never reaches jq argv' 'api_key reached jq as an argument'; fi
 if [ -z "$(find "$ROOT/tmp" -mindepth 1 -maxdepth 1 -name 'imps-ocr-review.*' -print 2>/dev/null)" ]; then ok 'cleanup after success'; else bad 'cleanup after success' 'temporary review directory remained'; fi
 
 # OpenCode stores the endpoint as a bare root; OCR needs the OpenAI-compatible base.
 # Getting this wrong 404s every request, so assert the normalisation directly.
-if [ "$(configured providers.litellm.url)" = "http://endpoint.invalid:4000/v1" ]; then ok 'base URL normalised to /v1'; else bad 'base URL normalised to /v1' "got $(configured providers.litellm.url)"; fi
+if [ "$(configured custom_providers.imps-litellm.url)" = "http://endpoint.invalid:4000/v1" ]; then ok 'base URL normalised to /v1'; else bad 'base URL normalised to /v1' "got $(configured custom_providers.imps-litellm.url)"; fi
 if [ "$(configured model)" = "deepseek-v4-flash" ]; then ok 'default model reaches OCR'; else bad 'default model reaches OCR' "got $(configured model)"; fi
 
 STUB_CASE=major run_review >"$out" 2>"$err"; rc=$?
@@ -115,10 +158,13 @@ STUB_CASE=timeout run_review --timeout 1 >"$out" 2>"$err"; rc=$?
 if [ "$rc" != 0 ] && jq -e '.reason == "timeout"' "$out" >/dev/null; then ok 'timeout blocks'; else bad 'timeout blocks' "rc=$rc"; fi
 
 # Presence is not enough: a stale global install is exactly what a `command -v` check
-# would wave through, so the harness pins the version and must reject a mismatch. npm is
-# absent from the stub PATH, so the reinstall attempt fails rather than succeeding.
+# would wave through, so the harness pins the version and replaces it in an isolated
+# prefix. The npm stub also proves the install uses the requested prefix.
 STUB_VERSION=1.9.0 STUB_CASE=approve run_review >"$out" 2>"$err"; rc=$?
-if [ "$rc" != 0 ] && jq -e '.reason | test("ocr_version_mismatch|ocr_missing|ocr_install_failed")' "$out" >/dev/null; then ok 'version mismatch blocks'; else bad 'version mismatch blocks' "rc=$rc $(cat "$out")"; fi
+if [ "$rc" = 0 ] && jq -e '.status == "ok" and .verdict == "APPROVE"' "$out" >/dev/null; then ok 'version mismatch installs pinned OCR in an isolated prefix'; else bad 'version mismatch installs pinned OCR in an isolated prefix' "rc=$rc $(cat "$out")"; fi
+
+STUB_VERSION=1.9.0 STUB_NPM_FAIL=1 STUB_CASE=approve run_review >"$out" 2>"$err"; rc=$?
+if [ "$rc" != 0 ] && jq -e '.reason == "ocr_install_failed"' "$out" >/dev/null; then ok 'failed OCR install blocks'; else bad 'failed OCR install blocks' "rc=$rc $(cat "$out")"; fi
 
 write_config '{"provider":{}}'
 STUB_CASE=approve run_review >"$out" 2>"$err"; rc=$?
@@ -128,7 +174,7 @@ write_config "$GOOD_CONFIG"
 # Explicit env overrides must win over the config file, including an endpoint that
 # already carries /v1 — normalising that twice would produce /v1/v1.
 STUB_CASE=approve IMPS_OCR_URL="http://override.invalid:8080/v1" IMPS_OCR_TOKEN=tok IMPS_OCR_MODEL=other-model run_review >"$out" 2>"$err"; rc=$?
-if [ "$rc" = 0 ] && [ "$(configured providers.litellm.url)" = "http://override.invalid:8080/v1" ] && jq -e '.model == "other-model"' "$out" >/dev/null; then ok 'env overrides win and /v1 is not doubled'; else bad 'env overrides win and /v1 is not doubled' "rc=$rc got $(configured providers.litellm.url)"; fi
+if [ "$rc" = 0 ] && [ "$(configured custom_providers.imps-litellm.url)" = "http://override.invalid:8080/v1" ] && jq -e '.model == "other-model"' "$out" >/dev/null; then ok 'env overrides win and /v1 is not doubled'; else bad 'env overrides win and /v1 is not doubled' "rc=$rc got $(configured custom_providers.imps-litellm.url)"; fi
 
 STUB_CASE=approve run_review --concurrency 0 >"$out" 2>"$err"; rc=$?
 if [ "$rc" != 0 ] && jq -e '.reason == "bad_arguments"' "$out" >/dev/null; then ok 'rejects non-positive --concurrency'; else bad 'rejects non-positive --concurrency' "rc=$rc"; fi

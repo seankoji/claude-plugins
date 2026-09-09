@@ -28,7 +28,7 @@ exec 1>&2
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 OCR_BIN="${IMPS_OCR_BIN:-ocr}"
-OCR_PIN_VERSION="${IMPS_OCR_VERSION:-1.10.1}"
+OCR_PIN_VERSION="${IMPS_OCR_VERSION:-1.11.3}"
 OPENCODE_CONFIG_PATH="${IMPS_OPENCODE_CONFIG_PATH:-$HOME/.config/opencode/opencode.json}"
 RULE_PATH="${IMPS_OCR_RULE:-$PLUGIN_ROOT/references/ocr-review-rule.json}"
 
@@ -167,27 +167,36 @@ esac
 # global install in place forever, and `command -v` alone can find a launcher whose
 # platform binary never finished downloading — that dies at the review call with exit
 # 127, after every setup step has already run.
+# Keep npm's cache and prefix inside the review's temporary directory. Local `/imps`
+# runs can inherit a root-owned `~/.npm` cache, and a system npm prefix can be
+# unwritable; neither should block a read-only review before it starts.
 export OCR_NO_UPDATE=1  # else bin/ocr.js detaches an updater that reinstalls mid-run
 if ! "$OCR_BIN" version 2>/dev/null | grep -qF "v${OCR_PIN_VERSION} "; then
   command -v npm >/dev/null 2>&1 || fail ocr_missing "npm is required to install @alibaba-group/open-code-review@${OCR_PIN_VERSION}"
-  OCR_INSTALL_LOG="$(mktemp "${TMPDIR:-/tmp}/imps-ocr-install.XXXXXX")" || fail tmpdir_failed 'cannot create ocr install log'
-  if ! npm install -g "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" >"$OCR_INSTALL_LOG" 2>&1; then
-    # A root-owned/corrupt npm cache (npm/cli#4828) makes `npm install -g` fail with
-    # EPERM before any network call — near-instant, unlike a real registry failure, and
-    # indistinguishable from one once stderr is thrown away. Retry once against a
-    # throwaway cache so a single bad machine state doesn't need a manual `sudo chown`
-    # before this gate can run; surface the real npm error either way instead of the
-    # unhelpful generic failure that made this bug look like a PATH/fnm problem.
-    if grep -qE 'code EPERM|code EACCES|cache folder contains root-owned files' "$OCR_INSTALL_LOG"; then
-      NPM_CACHE_RETRY="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-npm-cache.XXXXXX")" || fail tmpdir_failed 'cannot create fallback npm cache'
-      npm install -g "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" --cache "$NPM_CACHE_RETRY" >>"$OCR_INSTALL_LOG" 2>&1 \
-        || fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION} — retry with a fresh npm cache also failed: $(tail -n 6 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
-    else
-      fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION}: $(tail -n 5 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
-    fi
+  TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-review.XXXXXX")" \
+    || fail tmpdir_failed 'cannot create temporary review directory'
+  NPM_PREFIX="$TMP_ROOT/npm-global"
+  NPM_CACHE="$TMP_ROOT/npm-cache"
+  # Capture npm's output: a root-owned/corrupt ~/.npm cache or an unwritable system
+  # prefix (npm/cli#4828) makes a global install fail with EPERM/EACCES before any
+  # network call — near-instant, and indistinguishable from a real registry failure
+  # once stderr is thrown away. The isolated --prefix/--cache above sidesteps both
+  # failure modes; the captured log still surfaces the real npm error when an
+  # isolated install fails for an actual reason.
+  OCR_INSTALL_LOG="$TMP_ROOT/npm-install.log"
+  if ! npm install --global --prefix "$NPM_PREFIX" --cache "$NPM_CACHE" \
+      --no-audit --no-fund "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" >"$OCR_INSTALL_LOG" 2>&1; then
+    fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION}: $(tail -n 5 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
   fi
+  OCR_BIN="$NPM_PREFIX/bin/ocr"
 fi
-command -v "$OCR_BIN" >/dev/null 2>&1 || fail ocr_missing 'ocr is not on PATH'
+if [ -z "$TMP_ROOT" ]; then
+  TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-review.XXXXXX")" \
+    || fail tmpdir_failed 'cannot create temporary review directory'
+fi
+if [ ! -x "$OCR_BIN" ] && ! command -v "$OCR_BIN" >/dev/null 2>&1; then
+  fail ocr_missing 'ocr is not on PATH'
+fi
 "$OCR_BIN" version 2>/dev/null | grep -qF "v${OCR_PIN_VERSION} " \
   || fail ocr_version_mismatch "ocr is not pinned version ${OCR_PIN_VERSION}"
 "$OCR_BIN" review --help 2>&1 | grep -q -- '--format' || fail flags_unsupported 'ocr review lacks --format'
@@ -212,7 +221,9 @@ MERGE_BASE="$(git -C "$REPO" merge-base "$BASE" "$HEAD" 2>/dev/null)" || fail ba
 [ -n "$MERGE_BASE" ] || fail bad_arguments 'cannot compute merge-base'
 HEAD_SHA="$(git -C "$REPO" rev-parse "$HEAD")"
 
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-review.XXXXXX")" || fail tmpdir_failed 'cannot create temporary review directory'
+if [ -z "$TMP_ROOT" ]; then
+  TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-review.XXXXXX")" || fail tmpdir_failed 'cannot create temporary review directory'
+fi
 mkdir -p "$TMP_ROOT/home" || fail tmpdir_failed 'cannot initialize temporary review directory'
 
 # ---- Background: the acceptance criteria the diff is judged against ---------------
@@ -239,20 +250,33 @@ export OCR_LLM_TIMEOUT="${IMPS_OCR_LLM_TIMEOUT:-180}"
 # The OCR_LLM_URL/TOKEN/MODEL env-var path silently defaults to the Anthropic Messages
 # protocol regardless of the endpoint, producing a doubled "/v1/v1/messages" 404 against
 # an OpenAI-compatible proxy like this one — every file review fails with no LLM-side
-# error. `ocr config set provider litellm` + `providers.litellm.*` goes through the same
-# built-in "litellm" provider entry OpenCode itself uses, which already declares
+# error. `ocr config set custom_providers.imps-litellm.url` + `provider imps-litellm`
+# goes through the same custom-provider entry the operator already uses, which declares
 # protocol "openai" — verified directly against the real endpoint (`ocr llm test` ->
-# "Connection test successful") before this was written.
-"$OCR_BIN" config set provider litellm >/dev/null 2>&1 \
+# "Connection test successful") before this was written. HOME points at TMP_ROOT/home
+# here, so none of this touches the operator's real OCR config.
+"$OCR_BIN" config set provider imps-litellm >/dev/null 2>&1 \
   || fail ocr_config_failed 'cannot set ocr provider'
 "$OCR_BIN" config set model "$MODEL" >/dev/null 2>&1 \
   || fail ocr_config_failed 'cannot set ocr model'
-"$OCR_BIN" config set providers.litellm.url "$OCR_URL" >/dev/null 2>&1 \
+"$OCR_BIN" config set custom_providers.imps-litellm.url "$OCR_URL" >/dev/null 2>&1 \
   || fail ocr_config_failed 'cannot set ocr provider url'
-"$OCR_BIN" config set providers.litellm.api_key "$OCR_TOKEN" >/dev/null 2>&1 \
-  || fail ocr_config_failed 'cannot set ocr provider api_key'
+"$OCR_BIN" config set custom_providers.imps-litellm.protocol openai >/dev/null 2>&1 \
+  || fail ocr_config_failed 'cannot set ocr provider protocol'
 
 "$OCR_BIN" config set language English >/dev/null 2>&1 || true
+
+# The credential is written straight into OCR's config file under the isolated HOME
+# rather than passed as a `config set ... api_key` argv, so it never shows up in
+# process listings. The `config set` calls above created/updated that file.
+OCR_CFG="$HOME/.opencodereview/config.json"
+[ -f "$OCR_CFG" ] || fail provider_config_failed 'cannot locate OCR config file for credential'
+# Pipe the key through stdin into `--rawfile k /dev/stdin`: jq's argv then carries
+# only the /dev/stdin path, never the credential itself.
+printf '%s' "$OCR_TOKEN" | jq --rawfile k /dev/stdin \
+  '.custom_providers["imps-litellm"].api_key = $k' "$OCR_CFG" >"$OCR_CFG.tmp" 2>/dev/null &&
+  mv "$OCR_CFG.tmp" "$OCR_CFG" ||
+  fail provider_config_failed 'cannot write OCR provider credential to config'
 
 RESULT_PATH="$TMP_ROOT/result.json"
 run_with_timeout() {
@@ -267,6 +291,7 @@ run_with_timeout() {
 
 run_with_timeout "$OCR_BIN" review \
   --from "$MERGE_BASE" --to "$HEAD_SHA" \
+  --provider imps-litellm --model "$MODEL" \
   --format json \
   --concurrency "$CONCURRENCY" \
   --rule "$RULE_PATH" \
