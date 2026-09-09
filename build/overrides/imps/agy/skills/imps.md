@@ -39,7 +39,7 @@ inside the Workflow script's own execution, invisible to the calling session. He
 enforced by you.)
 <!-- END-SECTION -->
 
-<!-- REPLACE-SECTION: ## The Head Imp — opus adversarial reviewer -->
+<!-- REPLACE-SECTION: ## Plan review — cross-lineage first, Head Imp as fallback -->
 ## The Head Imp — deep-judgment adversarial reviewer
 
 The Head Imp is a one-shot adversarial reviewer dispatched at the **deepest reasoning
@@ -64,6 +64,13 @@ It never edits; it returns findings. You act on them.
 
 (On Claude Code the Head Imp is a registered `imps:😈` plan-review agent. OpenCode reviews
 the merged diff after deterministic gates.)
+
+**Lineage.** On Claude Code this gate prefers a *different model lineage* (codex) and
+falls back to the Head Imp only when that is unavailable, because a reviewer sharing the
+author's priors waves through the assumptions the author never questioned. Here the Head
+Imp runs on the same runtime that wrote the plan, so the verdict is same-lineage: where a
+cross-lineage reviewer is installed, prefer it and say which one ran.
+
 <!-- END-SECTION -->
 
 <!-- REPLACE-SECTION: ## Run identity and the slug -->
