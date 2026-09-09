@@ -9,6 +9,9 @@ argument-hint: '[--personas] <task description | issue numbers | discussion ref 
 
 ## Verified outcomes
 
+Before dispatch, validate that GOAL.md contains agreed functional criteria. Legacy plans containing only process boxes now return `no_functional_criteria`; add observable delivery outcomes before resuming. Research outputs can use inspection artifacts without a code diff.
+
+
 Read `${CLAUDE_PLUGIN_ROOT}/references/workflow-contract.md` before planning or resuming. Its revision-bound acceptance, verification, recovery and permission rules apply to every phase below. Preserve stable requirement IDs and verification methods from the input spec in GOAL.md and tasks. Revalidate after every repair before shipping.
 
 # /imps:imps — summon the swarm

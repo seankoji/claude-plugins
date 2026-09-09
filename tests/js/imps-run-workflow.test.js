@@ -254,7 +254,7 @@ test('parseGateDecision parses valid retry and skip decisions', () => {
     gate: 'lint',
     guidance: 'fix the eslint config',
   })
-  assert.deepEqual(parseGateDecision('skip lint'), { kind: 'skip', gate: 'lint' })
+  assert.deepEqual(parseGateDecision('skip lint'), { kind: 'skip', gate: 'lint', rationale: 'Operator explicitly requested: skip lint' })
 })
 
 test('parseGateDecision is case-insensitive on the retry/skip keyword', () => {
@@ -265,7 +265,7 @@ test('parseGateDecision is case-insensitive on the retry/skip keyword', () => {
     gate: 'TEST',
     guidance: 'bump the timeout',
   })
-  assert.deepEqual(parseGateDecision('SKIP BUILD'), { kind: 'skip', gate: 'BUILD' })
+  assert.deepEqual(parseGateDecision('SKIP BUILD'), { kind: 'skip', gate: 'BUILD', rationale: 'Operator explicitly requested: SKIP BUILD' })
 })
 
 test('parseGateDecision tolerates whitespace around the guidance text', () => {
@@ -291,7 +291,7 @@ test('parseGateDecision accepts gate names that are not bare \\w+', () => {
     gate: 'test-fail',
     guidance: 'guidance',
   })
-  assert.deepEqual(parseGateDecision('skip type-check'), { kind: 'skip', gate: 'type-check' })
+  assert.deepEqual(parseGateDecision('skip type-check'), { kind: 'skip', gate: 'type-check', rationale: 'Operator explicitly requested: skip type-check' })
   // The gate name itself is trimmed, not just the guidance.
   assert.deepEqual(parseGateDecision('retry   spaced gate  : do the thing'), {
     kind: 'retry',
@@ -804,7 +804,7 @@ async function executeWorkflow(state, overrides = {}) {
   const invoke = new AsyncFunction('agent', 'parallel', 'phase', 'args', 'log', source)
   const result = await invoke(async (prompt, options) => {
     calls.push({ label: options.label, prompt })
-    if (Object.hasOwn(overrides, options.label)) return overrides[options.label]
+    if (Object.hasOwn(overrides, options.label)) return typeof overrides[options.label] === 'function' ? overrides[options.label](prompt, calls) : overrides[options.label]
     if (options.label === 'claim-run') return { token: 'a'.repeat(32) }
     if (options.label === 'read-state') return state
     if (options.label === 'count-state-tasks') return { raw_task_count: state.tasks.length, raw_phase: state.phase, raw_spec_lengths: state.tasks.map(t => (t.spec || '').length) }
@@ -858,4 +858,59 @@ test('inspection evidence can complete a zero-diff research outcome', async () =
   const { agent } = prAgent({ 'revision-snapshot': { ...SNAPSHOT, base: SNAPSHOT.head, merge_base: SNAPSHOT.head } })
   const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
   assert.equal((await verifyForPublish('main')).status, 'passed')
+})
+
+
+const COMPLETE_RUN_RESPONSES = {
+  'check-contract': { requirements: SNAPSHOT.requirements },
+  'check-budget': { ok: true },
+  'get-default-branch': { default_branch: 'master' },
+  'sync-default': { conflict: null },
+  'revision-snapshot': SNAPSHOT,
+  'discover-gates': MANIFEST,
+  'ocr-review': REVIEW,
+  'dod-coverage': COVERAGE,
+  'verify-artifact': PROOF,
+  'diff-stat': { diff_stat: 'artifact-only outcome; no code diff' },
+}
+const INTEGRATE_STATE = { tasks: [], branch: 'test', phase: 'integrate', dispatched_at: '2026-09-09T00:00:00Z' }
+
+test('complete main integration reaches awaiting authorization and saves evidence', async () => {
+  const { result, calls } = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+  assert.equal(result.status, 'awaiting_authorization')
+  assert.equal(result.verification.status, 'passed')
+  assert.match(result.diff_stat, /artifact-only/)
+  assert.ok(calls.find(c => c.label === 'save-result').prompt.includes('awaiting_authorization'))
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('main integration preserves an explicit gate skip for the failed revision', async () => {
+  const gate = { name: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], cwd: '.', timeout_seconds: 60, source: 'package.json', remote_only: false, required: true }
+  const { result, calls } = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint: accepted known debt', verification: { snapshot: SNAPSHOT } }, { ...COMPLETE_RUN_RESPONSES, 'discover-gates': { gates: [gate], discovery_error: null } })
+  assert.equal(result.status, 'awaiting_authorization')
+  assert.equal(result.verification.gate_waiver.rationale, 'accepted known debt')
+  assert.equal(result.verification.gates[0].skipped, true)
+  assert.equal(result.verification.gates[0].pass, false)
+  assert.ok(!calls.some(c => c.label === 'gate-lint'))
+})
+
+test('cosmetic reviewer text changes are replaced with the canonical requirement', async () => {
+  const { agent } = prAgent({ 'dod-coverage': { criteria: [{ ...COVERAGE.criteria[0], text: 'cosmetic model rewrite' }] } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  const result = await verifyForPublish('main')
+  assert.equal(result.status, 'passed')
+  assert.equal(result.criteria[0].text, SNAPSHOT.requirements[0].text)
+})
+
+
+test('complete publish path returns a verified final PR result', async () => {
+  const integrated = await executeWorkflow(INTEGRATE_STATE, COMPLETE_RUN_RESPONSES)
+  const state = { ...INTEGRATE_STATE, pr: PR, endstate: 'pr', operator_decision: 'PR: yes', last_result: integrated.result, verification: integrated.result.verification }
+  const { result, calls } = await executeWorkflow(state, { ...COMPLETE_RUN_RESPONSES, 'pr-status': GREEN, 'finalize': { pr_ready: true, run_stats: {}, learnings_candidates: [], discussion_comment_url: null, prs_monitor: null } })
+  assert.equal(result.status, 'final')
+  assert.equal(result.pr_outcome.green, true)
+  assert.equal(result.pr_outcome.merged, false)
+  assert.equal(result.verification.status, 'passed')
+  assert.ok(calls.some(c => c.label === 'publish-evidence'))
+  assert.equal(calls.at(-1).label, 'release-run')
 })

@@ -231,8 +231,10 @@ FOCUS_FILE="$TMP_ROOT/focus.md"
 {
   printf '%s\n' 'This diff is judged against the acceptance criteria below. A finding must name a'
   printf '%s\n\n' 'concrete breaking scenario and a concrete fix. Do not manufacture findings.'
-  cat "$GOAL"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/review-context.py" "$GOAL"
 } > "$FOCUS_FILE" || { STATUS="skip"; REASON="snapshot_failed"; exit 2; }
+CONTEXT_NOTE=""
+if grep -q '^Non-contract GOAL narrative omitted' "$FOCUS_FILE"; then CONTEXT_NOTE="non_contract_narrative_omitted"; fi
 FOCUS_CHARS="$(wc -c < "$FOCUS_FILE" | tr -d ' ')"
 if [ "$FOCUS_CHARS" -gt 7800 ]; then
   skip context_too_large 'acceptance context exceeds adapter limit; no partial review'
@@ -331,5 +333,5 @@ AFTER_HEAD="$(git -C "$REPO" rev-parse HEAD)"
 AFTER_STATUS="$(git -C "$REPO" status --porcelain=v1)"
 [ "$SOURCE_HEAD" = "$AFTER_HEAD" ] && [ "$SOURCE_STATUS" = "$AFTER_STATUS" ] || blocked source_mutated 'the source checkout changed during review'
 
-STATUS="ok"; REASON=""
+STATUS="ok"; REASON="${CONTEXT_NOTE:-}"
 exit 0

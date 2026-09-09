@@ -66,7 +66,7 @@ OUT=""
 
 die() {
   echo "ocr-gate.sh: $1" >&2
-  echo "OCR status=error findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=error findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 2
 }
 
@@ -123,14 +123,14 @@ delegate_or_die() {
       --format json --exclude "$EXCLUDE" \
       >"$spec" 2>"${spec}.err" && [ -s "$spec" ]; then
       echo "ocr-gate.sh: ${tool} could not run; emitted a delegation spec instead — review it yourself before pushing" >&2
-      echo "OCR status=delegate findings=unknown result=${spec} tool=ocr-delegate head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+      echo "OCR status=delegate findings=unknown result=${spec} tool=ocr-delegate head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
       exit 3
     fi
     echo "ocr-gate.sh: ocr delegate also failed" >&2
     sed -n '1,10p' "${spec}.err" >&2 || true
   fi
 
-  echo "OCR status=error findings=0 result=- tool=${tool} head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=error findings=0 result=- tool=${tool} head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 2
 }
 
@@ -161,18 +161,19 @@ try_codex() {
   rc=$?
   set -e
   if [ "$rc" -eq 1 ]; then
-    echo "OCR status=error findings=unknown result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base=${MERGE_BASE}"
+    echo "OCR status=error findings=unknown result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"
     exit 2
   fi
   [ "$rc" -eq 0 ] || return 1
   case "$(jq -r '.verdict' "$result")" in
-    APPROVE) echo "OCR status=clean findings=0 result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base=${MERGE_BASE}"; exit 0 ;;
-    CHANGES_REQUESTED) echo "OCR status=findings findings=$(jq '.findings | length' "$result") result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base=${MERGE_BASE}"; exit 1 ;;
+    APPROVE) echo "OCR status=clean findings=0 result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"; exit 0 ;;
+    CHANGES_REQUESTED) echo "OCR status=findings findings=$(jq '.findings | length' "$result") result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"; exit 1 ;;
     *) return 1 ;;
   esac
 }
 
 [ -n "$BASE_REF" ] || die "--base <base-ref> is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required for bounded review timeouts"
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
 
@@ -195,7 +196,11 @@ fi
 # Checked before tool selection, not inside one branch of it. An empty diff is a
 # clean review, and handing "no changed files" to a review CLI makes it exit as an
 # error — which would report a perfectly fine push as status=error.
-bounded git fetch --quiet origin "$BASE_REF" >/dev/null 2>&1 || die "cannot refresh review base"
+BASE_FRESH=true
+if ! bounded git fetch --quiet origin "$BASE_REF" >/dev/null 2>&1; then
+  BASE_FRESH=false
+  echo "ocr-gate.sh: cannot refresh base; reviewing the cached base revision only" >&2
+fi
 MERGE_BASE="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
 [ -n "$MERGE_BASE" ] || die "no merge-base between HEAD and origin/${BASE_REF}"
 HEAD_SHA="$(git rev-parse HEAD)"
@@ -203,7 +208,7 @@ SOURCE_STATUS="$(git status --porcelain=v1)"
 
 if [ "$MERGE_BASE" = "$HEAD_SHA" ] || git diff --quiet "$MERGE_BASE" "$HEAD_SHA"; then
   echo "ocr-gate.sh: no changes against origin/${BASE_REF} — nothing to review" >&2
-  echo "OCR status=clean findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=clean findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 0
 fi
 
@@ -213,7 +218,7 @@ try_codex || true
 # ---- no tool installed -------------------------------------------------------
 if ! command -v ocr-pre-pr.sh >/dev/null 2>&1 && ! command -v ocr >/dev/null 2>&1; then
   echo "ocr-gate.sh: no ocr CLI on PATH — pre-push review skipped" >&2
-  echo "OCR status=skipped findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=skipped findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   [ "${BABYSITTER_REVIEW_REQUIRED:-0}" = 1 ] && exit 2
   exit 0
 fi
@@ -249,7 +254,7 @@ if command -v ocr-pre-pr.sh >/dev/null 2>&1; then
     findings="unknown"
   fi
   if [ "$status" = clean ] && [ "$findings" != 0 ]; then status=findings; fi
-  echo "OCR status=${status} findings=${findings} result=${OUT} tool=ocr-pre-pr.sh head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=${status} findings=${findings} result=${OUT} tool=ocr-pre-pr.sh head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   if [ "$status" = "clean" ]; then
     exit 0
   fi
@@ -286,9 +291,9 @@ case "$findings" in
 esac
 
 if [ "$findings" -eq 0 ]; then
-  echo "OCR status=clean findings=0 result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+  echo "OCR status=clean findings=0 result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 0
 fi
 
-echo "OCR status=findings findings=${findings} result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base=${MERGE_BASE:-unknown}"
+echo "OCR status=findings findings=${findings} result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
 exit 1

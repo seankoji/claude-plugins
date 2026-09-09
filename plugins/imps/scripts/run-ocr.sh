@@ -111,6 +111,9 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --repo|--base|--head|--goal|--model|--timeout|--concurrency) [ "$#" -ge 2 ] && [ -n "$2" ] || fail bad_arguments "missing value for $1" ;;
+  esac
+  case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
     --base) BASE="${2:-}"; shift 2 ;;
     --head) HEAD="${2:-}"; shift 2 ;;
@@ -200,8 +203,10 @@ BACKGROUND_FILE="$TMP_ROOT/background.md"
 {
   printf '%s\n' 'This diff is judged against the acceptance criteria below. A finding must name a'
   printf '%s\n\n' 'concrete breaking scenario and a concrete fix. Do not manufacture findings.'
-  cat "$GOAL"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/review-context.py" "$GOAL"
 } > "$BACKGROUND_FILE" || fail snapshot_failed 'cannot capture GOAL.md as review background'
+CONTEXT_NOTE=""
+if grep -q '^Non-contract GOAL narrative omitted' "$BACKGROUND_FILE"; then CONTEXT_NOTE="non_contract_narrative_omitted"; fi
 BG_CHARS="$(wc -c < "$BACKGROUND_FILE" | tr -d ' ')"
 if [ "$BG_CHARS" -gt 7800 ]; then
   fail context_too_large 'acceptance context exceeds OCR limit; shorten the reviewed contract without dropping requirements'
@@ -287,7 +292,7 @@ else
   else
     VERDICT="APPROVE"
   fi
-  STATUS="ok"; REASON=""
+  STATUS="ok"; REASON="${CONTEXT_NOTE:-}"
 fi
 
 AFTER_HEAD="$(git -C "$REPO" rev-parse HEAD)"

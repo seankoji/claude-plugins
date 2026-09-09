@@ -159,5 +159,11 @@ if [ "$rc" = 0 ] && jq -e '.status == "ok" and .provider != "codex"' "$out" >/de
 IMPS_CODEX_MAX_DIFF_BYTES=250k "$CODEX_DIRECT" --check >"$out" 2>"$err"; rc=$?
 if [ "$rc" = 2 ] && jq -e '.reason == "bad_arguments"' "$out" >/dev/null; then ok 'Codex preflight validates diff bounds'; else bad 'Codex preflight validates diff bounds' "rc=$rc"; fi
 
+cp "$ROOT/GOAL.md" "$ROOT/GOAL.original"
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text("## Narrative\n" + "context " * 3000 + "\n" + p.read_text())' "$ROOT/GOAL.md"
+run_dispatch 1 >"$out" 2>"$err"; rc=$?
+if [ "$rc" = 0 ] && jq -e '.status == "ok" and .reason == "non_contract_narrative_omitted"' "$out" >/dev/null; then ok 'large narrative preserves complete review contract'; else bad 'large narrative preserves complete review contract' "rc=$rc"; fi
+mv "$ROOT/GOAL.original" "$ROOT/GOAL.md"
+
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

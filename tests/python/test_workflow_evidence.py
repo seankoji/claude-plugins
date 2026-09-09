@@ -155,12 +155,12 @@ class EvidenceTest(unittest.TestCase):
 
     def test_gate_retains_actual_exit_and_hashed_log(self):
         (self.repo / 'check.sh').write_text('echo evidence; exit 7\n')
-        (self.repo / 'checks.txt').write_text('bash check.sh\n')
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'bash check.sh', '--argv-json', '["bash","check.sh"]', '--source', 'checks.txt', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
+        (self.repo / 'Makefile').write_text('check:\n\tbash check.sh\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'make check', '--argv-json', '["make","check"]', '--source', 'Makefile', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
         value = json.loads(result.stdout)
         self.addCleanup(Path(value['artifact']['path']).unlink)
         self.assertFalse(value['pass'])
-        self.assertEqual(value['exit_code'], 7)
+        self.assertEqual(value['exit_code'], 2) # make propagates a recipe failure as exit 2
         self.assertEqual(evidence.artifact(value['artifact']['path']), value['artifact'])
 
     def test_gate_cannot_change_directory_outside_checkout(self):
@@ -168,7 +168,7 @@ class EvidenceTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_shared_helpers_are_identical(self):
-        for name in ('workflow-evidence.py', 'run-bounded.py', 'run-codex-review.sh'):
+        for name in ('workflow-evidence.py', 'run-bounded.py', 'run-codex-review.sh', 'review-context.py'):
             self.assertEqual((ROOT / 'plugins/imps/scripts' / name).read_bytes(), (ROOT / 'plugins/babysitter/scripts' / name).read_bytes())
 
     def test_operator_idle_time_is_not_charged(self):
@@ -195,6 +195,25 @@ class EvidenceTest(unittest.TestCase):
         (self.repo / 'checks.txt').write_text('npm run test')
         result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', 'touch escaped',
                                  '--argv-json', json.dumps(['touch', 'escaped']), '--source', 'checks.txt', '--timeout', '5'],
+                                cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.repo / 'escaped').exists())
+
+
+    def test_review_context_keeps_contract_and_omits_only_narrative(self):
+        context_script = SCRIPT.with_name('review-context.py')
+        contract_text = self.goal.read_text()
+        self.goal.write_text('## Background\n' + 'large narrative ' * 2000 + '\n' + contract_text + '\n## Decision trail\nProgress only\n')
+        result = subprocess.run([sys.executable, str(context_script), str(self.goal)], capture_output=True, text=True, check=True)
+        self.assertIn(contract_text, result.stdout)
+        self.assertNotIn('large narrative', result.stdout)
+        self.assertNotIn('Progress only', result.stdout)
+        self.assertIn('narrative omitted', result.stderr)
+
+    def test_package_metadata_cannot_authorize_an_arbitrary_command(self):
+        (self.repo / 'package.json').write_text(json.dumps({'description': 'touch escaped', 'scripts': {}}))
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', 'touch escaped',
+                                 '--argv-json', json.dumps(['touch', 'escaped']), '--source', 'package.json', '--timeout', '5'],
                                 cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.repo / 'escaped').exists())

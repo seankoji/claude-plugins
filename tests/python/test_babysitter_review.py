@@ -69,3 +69,11 @@ class BabysitterReviewTest(unittest.TestCase):
         result = self.run_gate({'comments': []}, mutate=True)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertNotIn('status=clean', result.stdout)
+
+    def test_cached_base_is_explicit_when_refresh_fails(self):
+        self.git('fetch', '-q', 'origin', 'main')
+        self.git('remote', 'set-url', 'origin', str(self.root / 'unavailable'))
+        result = self.run_gate({'comments': []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('base_fresh=false', result.stdout)
+        self.assertIn('cached base', result.stderr)
