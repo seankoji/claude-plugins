@@ -178,10 +178,10 @@ if ! "$OCR_BIN" version 2>/dev/null | grep -qF "v${OCR_PIN_VERSION} "; then
     # throwaway cache so a single bad machine state doesn't need a manual `sudo chown`
     # before this gate can run; surface the real npm error either way instead of the
     # unhelpful generic failure that made this bug look like a PATH/fnm problem.
-    if grep -qE 'code EPERM|cache folder contains root-owned files' "$OCR_INSTALL_LOG"; then
+    if grep -qE 'code EPERM|code EACCES|cache folder contains root-owned files' "$OCR_INSTALL_LOG"; then
       NPM_CACHE_RETRY="$(mktemp -d "${TMPDIR:-/tmp}/imps-ocr-npm-cache.XXXXXX")" || fail tmpdir_failed 'cannot create fallback npm cache'
-      npm install -g "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" --cache "$NPM_CACHE_RETRY" >"$OCR_INSTALL_LOG" 2>&1 \
-        || fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION} — retry with a fresh npm cache also failed: $(tail -n 5 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
+      npm install -g "@alibaba-group/open-code-review@${OCR_PIN_VERSION}" --cache "$NPM_CACHE_RETRY" >>"$OCR_INSTALL_LOG" 2>&1 \
+        || fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION} — retry with a fresh npm cache also failed: $(tail -n 6 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
     else
       fail ocr_install_failed "cannot install @alibaba-group/open-code-review@${OCR_PIN_VERSION}: $(tail -n 5 "$OCR_INSTALL_LOG" | tr '\n' ' ')"
     fi
