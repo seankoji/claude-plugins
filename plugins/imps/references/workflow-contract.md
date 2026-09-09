@@ -44,19 +44,19 @@ issue text, findings or JSON into executable shell syntax.
 Resolve checks from repository policy, scripts and CI, including reusable workflows,
 toolchains, frozen installs, services, generation, security and product journeys.
 Order prerequisites by dependencies. Each check records `name`, `cmd`, `cwd`,
-`argv` (literal executable/arguments), `timeout_seconds` (1..3600), `source`, `remote_only` and `required`. Supported local declarations are exact check package scripts, literal Makefile targets
+`argv` (literal executable/arguments), `timeout_seconds` (1..600 locally, up to 3600 remotely), `source`, `remote_only` and `required`. Longer local gates are rejected explicitly at discovery; keep them as remote obligations. Supported local declarations are exact check package scripts, literal Makefile targets
 and checked-in check scripts. Extra package-manager flags and local execution of CI
 `run:` snippets are rejected; keep CI-only jobs as remote obligations with an exact
 `check_name` from GitHub, including matrix/reusable-workflow suffixes. A failed mapping
-reports observed names and invalidates the manifest so it can be rediscovered.
+reports observed names separately and preserves passed local evidence while CI is pending. Correct an inaccurate mapping against the actual CI declaration; never waive a required check by substituting an unrelated green name.
 
-`gate-plan` validates provenance and returns a plan; it executes nothing and grants
+`gate-plan` validates the declaration and saves a nonce-bearing plan with its source hash and a unique log path. The orchestrator observes that plan separately; it executes nothing and grants
 no permission. Run the actual command directly through the host's native foreground
 command tool so its permission, environment, sandbox and timeout controls see the
 real invocation. Do not wrap local gates in Python or a blanket helper allow rule.
 Retain the native output/exit code and use `gate-record` to hash the log and record
-that result. Infrastructure failures retain their diagnostics as unavailable and
-must not trigger speculative product edits. If native bounded execution is absent,
+that result against the saved plan, revalidating the declaration and rejecting old or shared logs. Identical log contents are valid for different gates; their paths and plan IDs must differ. This is model-mediated native-tool evidence, not cryptographic attestation of tool execution. Infrastructure failures retain their diagnostics as unavailable and
+must not trigger speculative product edits. A timeout gets one retry without a code repair. If native bounded execution is absent,
 report the host capability as unavailable. Run applicable machine checks before model
 review. Remote checks remain pending obligations; never execute deployment jobs to
 simulate CI. Empty discovery requires an explicit

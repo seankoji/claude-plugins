@@ -160,12 +160,30 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(json.loads(plan.stdout)['execution'], 'native_host_tool_required')
         self.assertFalse((self.repo / 'marker').exists())
         native = subprocess.run(['make', 'check'], cwd=self.repo, capture_output=True, text=True)
-        log = self.root / 'gate.log'
+        receipt = json.loads(plan.stdout)
+        log = Path(receipt['log_path'])
         log.write_text(native.stdout + native.stderr)
-        value = evidence.gate_record('fixture', 'make check', native.returncode, log, 1)
+        value = evidence.gate_record('fixture', 'make check', native.returncode, log, 1, plan_path=receipt['plan_path'])
         self.assertFalse(value['pass'])
         self.assertEqual(value['exit_code'], 2)
         self.assertEqual(evidence.artifact(log), value['artifact'])
+        self.assertEqual(value['plan_id'], receipt['plan_id'])
+        with self.assertRaisesRegex(ValueError, 'saved plan'):
+            evidence.gate_record('fixture', 'make check', 0, log, 1)
+        stale = receipt['created_ns'] - 1000000000
+        os.utime(log, ns=(stale, stale))
+        with self.assertRaisesRegex(ValueError, 'fresh and unique'):
+            evidence.gate_record('fixture', 'make check', 0, log, 1, plan_path=receipt['plan_path'])
+        log.write_text('current output')
+        (self.repo / 'Makefile').write_text('check:\n\tfalse\n')
+        with self.assertRaisesRegex(ValueError, 'declaration changed'):
+            evidence.gate_record('fixture', 'make check', 0, log, 1, plan_path=receipt['plan_path'])
+
+    def test_local_gate_above_host_timeout_is_explicitly_rejected(self):
+        (self.repo / 'Makefile').write_text('check:\n\ttrue\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate-plan', '--name', 'check', '--cmd', 'make check', '--argv-json', '["make","check"]', '--source', 'Makefile', '--timeout', '1800'], cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('native foreground limit', result.stdout)
 
     def test_publish_workflow_cannot_declare_a_local_gate(self):
         directory = self.repo / '.github/workflows'

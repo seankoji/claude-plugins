@@ -25,7 +25,7 @@ function loadWorkflowFunctions({ agent, parallel, phase, args, log }) {
     'phase',
     'args',
     'log',
-    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, sameRevision, acceptanceFailures, validManifest, reviewPassed, verifyForPublish, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun }`
+    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, sameRevision, acceptanceFailures, validManifest, reviewPassed, verifyForPublish, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun, runGate, runGatesWithRetry }`
   )
   return factory(agent, parallel, phase || (() => {}), args || {}, log || (() => {}))
 }
@@ -564,7 +564,7 @@ const MANIFEST = { gates: [], discovery_error: null, no_checks_reason: 'fixture 
 const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green', head: SHA, merged: false, merge_commit: null }
 function prAgent(script) {
   const calls = []
-  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {}, 'refresh-remote-manifest': {} }
+  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {}, 'refresh-remote-manifest': {}, 'save-remote-mapping': {} }
   async function agent(prompt, opts) {
     calls.push(opts.label)
     const key = Object.keys(script).find((k) => opts.label.startsWith(k))
@@ -917,12 +917,14 @@ test('complete publish path returns a verified final PR result', async () => {
 })
 
 
+const GATE_PLAN = { gate: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], source_sha256: '8'.repeat(64), plan_id: '7'.repeat(32), plan_path: '/tmp/plan.json', log_path: '/tmp/plan.json.log', cwd: '/repo', timeout_seconds: 60 }
+const GATE_RECEIPT = { ...GATE_PLAN, artifact: { path: GATE_PLAN.log_path, sha256: '6'.repeat(64) } }
 const LOCAL_LINT = { name: 'lint', cmd: 'npm run lint', argv: ['npm','run','lint'], cwd: '.', timeout_seconds: 60, source: 'package.json', remote_only: false, required: true }
 
 test('a failed gate records the post-repair head so an operator skip can bind', async () => {
   let head = SNAPSHOT.head
   let fixes = 0
-  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, head }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-lint': { gate: 'lint', cmd: LOCAL_LINT.cmd, pass: false, status: 'failed', exit_code: 1, tail: 'known debt', artifact: PROOF }, 'fix-lint': () => { fixes++; head = (fixes === 1 ? 'e' : 'f').repeat(40); return {} } }
+  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, head }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-plan-lint': GATE_PLAN, 'gate-lint': { ...GATE_RECEIPT, pass: false, status: 'failed', exit_code: 1, tail: 'known debt' }, 'fix-lint': () => { fixes++; head = (fixes === 1 ? 'e' : 'f').repeat(40); return {} } }
   const failed = await executeWorkflow(INTEGRATE_STATE, responses)
   assert.equal(failed.result.reason, 'gate_red')
   assert.equal(failed.result.detail.snapshot.head, 'f'.repeat(40))
@@ -950,12 +952,82 @@ test('remote checks use explicit rendered names instead of friendly gate labels'
   assert.equal((await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)).green, true)
 })
 
-test('missing remote mapping exposes observed names and invalidates cached discovery', async () => {
+test('missing remote mapping exposes observed names while preserving passed local evidence', async () => {
   const gate = { ...LOCAL_LINT, remote_only: true, check_name: 'wrong' }
   const { agent } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'actual-check', status: 'passing' }] } })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
   const result = await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)
   assert.equal(result.green, false)
-  assert.equal(result.verification.status, 'blocked')
+  assert.equal(result.verification.status, 'passed')
+  assert.equal(result.remote_check_observation.reason, 'remote_checks_unverified')
   assert.match(result.detail, /actual-check/)
+})
+
+
+test('gate receipt must match the separately observed plan and quoted helper path', async () => {
+  const prompts = []
+  const { runGate } = loadWorkflowFunctions({ args: { pluginRoot: "/plugin with spaces" }, agent: async (prompt, opts) => {
+    prompts.push(prompt)
+    return opts.label === 'gate-plan-lint' ? GATE_PLAN : { ...GATE_RECEIPT, pass: true, exit_code: 0, status: 'passed', plan_id: '0'.repeat(32) }
+  }, parallel })
+  const result = await runGate(LOCAL_LINT)
+  assert.equal(result.status, 'unavailable')
+  assert.match(result.tail, /does not match/)
+  assert.ok(prompts[1].includes("'python3' '/plugin with spaces/scripts/workflow-evidence.py' 'gate-record'"))
+})
+
+test('one transient timeout retries without a speculative code repair', async () => {
+  let executions = 0
+  const calls = []
+  const { runGatesWithRetry } = loadWorkflowFunctions({ agent: async (prompt, opts) => {
+    calls.push(opts.label)
+    if (opts.label === 'gate-plan-lint') return GATE_PLAN
+    executions++
+    return { ...GATE_RECEIPT, pass: false, status: 'unavailable', exit_code: 124, tail: 'timeout' }
+  }, parallel })
+  const result = await runGatesWithRetry([LOCAL_LINT])
+  assert.equal(executions, 2)
+  assert.equal(result.results[0].attempts, 2)
+  assert.ok(!calls.includes('fix-lint'))
+})
+
+test('dirty repair preserves gate diagnostics without issuing a stale waiver snapshot', async () => {
+  let dirty = false
+  const responses = { ...COMPLETE_RUN_RESPONSES, 'revision-snapshot': () => ({ ...SNAPSHOT, clean: !dirty }), 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null }, 'gate-plan-lint': GATE_PLAN, 'gate-lint': { ...GATE_RECEIPT, pass: false, status: 'failed', exit_code: 1, tail: 'specific gate failure' }, 'fix-lint': () => { dirty = true; return {} } }
+  const { result } = await executeWorkflow(INTEGRATE_STATE, responses)
+  assert.equal(result.reason, 'gate_red')
+  assert.equal(result.detail.gates[0].tail, 'specific gate failure')
+  assert.equal(result.detail.snapshot, null)
+  assert.match(result.detail.snapshot_error, /dirty/)
+  assert.equal(result.detail.last_verified_snapshot.head, SNAPSHOT.head)
+})
+
+test('unknown operator gate name lists the applicable names', async () => {
+  const { result } = await executeWorkflow({ ...INTEGRATE_STATE, operator_decision: 'skip lint-typo: accepted debt', verification: { snapshot: SNAPSHOT } }, { ...COMPLETE_RUN_RESPONSES, 'discover-gates': { gates: [LOCAL_LINT], discovery_error: null } })
+  assert.equal(result.reason, 'gate_decision_unmatched')
+  assert.deepEqual(result.detail.local_gates, ['lint'])
+})
+
+test('local manifest cannot silently exceed the native foreground timeout', () => {
+  const { validManifest } = loadWorkflowFunctions({ agent: async () => ({}), parallel })
+  assert.equal(validManifest({ gates: [{ ...LOCAL_LINT, timeout_seconds: 1800 }], discovery_error: null }), false)
+})
+
+
+test('remote name reconciliation retains local evidence without rerunning verification', async () => {
+  const gate = { ...LOCAL_LINT, remote_only: true, check_name: 'unexpanded-name' }
+  const { agent, calls } = prAgent({ 'discover-gates': { gates: [gate], discovery_error: null }, 'pr-status': { ...GREEN, check_details: [{ name: 'caller / lint (22)', status: 'passing' }] }, 'reconcile-remote-checks': { mappings: [{ gate: 'lint', source: gate.source, check_name: 'caller / lint (22)', evidence: 'fixture CI job lint expands node matrix 22 under caller' }] } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const result = await drivePrAndClose(PR, 'o/r', 'main', 'pr', false)
+  assert.equal(result.green, true)
+  assert.equal(result.verification.status, 'passed')
+  assert.equal(calls.filter(label => label === 'ocr-review').length, 1)
+  assert.equal(calls.filter(label => label === 'dod-coverage').length, 1)
+})
+
+test('a matching native receipt passes the gate orchestration', async () => {
+  const { runGatesWithRetry } = loadWorkflowFunctions({ agent: async (prompt, opts) => opts.label === 'gate-plan-lint' ? GATE_PLAN : { ...GATE_RECEIPT, pass: true, status: 'passed', exit_code: 0 }, parallel })
+  const result = await runGatesWithRetry([LOCAL_LINT])
+  assert.equal(result.blockedOn, null)
+  assert.equal(result.results[0].pass, true)
 })
