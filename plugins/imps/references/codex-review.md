@@ -30,7 +30,7 @@ to OCR silently (a line to stderr, nothing more).
 
 ## The fallback rule
 
-**Only availability and integrity failures fall back to OCR. A completed Codex verdict is
+**Only availability failures fall back to OCR. A completed Codex verdict is
 authoritative and is never second-guessed by also running OCR.** Concretely:
 
 | Codex outcome | Result |
@@ -59,22 +59,19 @@ Codex reports structured output matching `codex/schemas/review-output.schema.jso
 - `verdict`: `approve` → `APPROVE`, `needs-attention` → `CHANGES_REQUESTED`. Any other
   value is treated as `codex_unexpected_verdict` and falls back to OCR — the schema only
   permits those two, so anything else means the model deviated from it.
-- `severity`: `critical` → `blocker`, `high` → `major`, `medium` → `minor`, everything
-  else → `nit`.
+- `severity`: `critical` → `blocker`, `high` → `major`, `medium` → `minor`, `low` → `nit`. Unknown severities are rejected.
 - `message`: `"<title>: <body> Fix: <recommendation>"` (the `Fix:` clause is omitted when
   `recommendation` is empty).
 - `line`: `line_start`, falling back to `line_end`, then `1`.
 
 GOAL.md (the Definition of Done plus Global Constraints) is passed as Codex's free-text
 review focus — the same acceptance-criteria background OCR gets via `--background-file`,
-capped at the same 7500-character truncation point for consistency, since Codex has no
-equivalent flag of its own.
+bounded at 7800 bytes including the review preamble. Oversized context is rejected
+without dropping requirements.
 
 ## Isolation
 
-Codex's adversarial-review turn runs with `sandbox: "read-only"`, so it has no tool
-surface that can mutate the reviewed repository — the same property that let `run-ocr.sh`
-skip building a deny-everything snapshot. The mutation check is kept anyway, for the same
+Codex's adversarial-review turn runs with `sandbox: "read-only"`, and receives an independent checkout at the requested head — subject to the installed host enforcing its sandbox. The mutation check is kept anyway, for the same
 reason: HEAD and `git status --porcelain` are captured before and compared after, and a
 mismatch is `source_mutated` and blocks outright rather than falling back to OCR. A
 review that mutated the tree it just reviewed is not a review OCR can safely re-run

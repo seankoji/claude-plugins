@@ -564,7 +564,7 @@ const MANIFEST = { gates: [], discovery_error: null, no_checks_reason: 'fixture 
 const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green', head: SHA, merged: false, merge_commit: null }
 function prAgent(script) {
   const calls = []
-  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF }
+  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF, 'save-publish-verification': {} }
   async function agent(prompt, opts) {
     calls.push(opts.label)
     const key = Object.keys(script).find((k) => opts.label.startsWith(k))
@@ -794,4 +794,68 @@ test('merged resume without evidence cannot release', async () => {
   const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false)
   assert.equal(out.released, false)
   assert.ok(!calls.some(c => c.startsWith('cut-release')))
+})
+
+
+async function executeWorkflow(state, overrides = {}) {
+  const calls = []
+  const source = fs.readFileSync(SCRIPT_PATH, 'utf8').replace('export const meta', 'const meta')
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const invoke = new AsyncFunction('agent', 'parallel', 'phase', 'args', 'log', source)
+  const result = await invoke(async (prompt, options) => {
+    calls.push({ label: options.label, prompt })
+    if (Object.hasOwn(overrides, options.label)) return overrides[options.label]
+    if (options.label === 'claim-run') return { token: 'a'.repeat(32) }
+    if (options.label === 'read-state') return state
+    if (options.label === 'count-state-tasks') return { raw_task_count: state.tasks.length, raw_phase: state.phase, raw_spec_lengths: state.tasks.map(t => (t.spec || '').length) }
+    if (options.label === 'release-run') return { released: true }
+    return {}
+  }, parallel, () => {}, { stateFilePath: '/fixture/run.json', pluginRoot: '/fixture/plugin' }, () => {})
+  return { result, calls }
+}
+
+test('full entrypoint abort preserves resume metadata and releases ownership', async () => {
+  const { result, calls } = await executeWorkflow({ tasks: [], branch: 'test', phase: 'ready', operator_decision: 'abort', last_result: { default_branch: 'master', dispatch: { artifacts: ['kept'] } } })
+  assert.equal(result.status, 'aborted')
+  const saved = calls.find(c => c.label === 'save-result').prompt
+  assert.match(saved, /"default_branch":"master"/)
+  assert.match(saved, /"artifacts":\["kept"\]/)
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('full entrypoint rejects a mismapped read while releasing ownership', async () => {
+  const { result, calls } = await executeWorkflow({ tasks: [], branch: 'test', phase: 'ready' }, { 'count-state-tasks': { raw_task_count: 1, raw_phase: 'ready', raw_spec_lengths: [10] } })
+  assert.equal(result.reason, 'state_read_mismatch')
+  assert.equal(calls.at(-1).label, 'release-run')
+})
+
+test('full entrypoint never reads or mutates state without ownership', async () => {
+  const { result, calls } = await executeWorkflow({}, { 'claim-run': { error: 'already owned' } })
+  assert.equal(result.reason, 'run_owned_or_claim_failed')
+  assert.deepEqual(calls.map(c => c.label), ['claim-run'])
+})
+
+
+test('verification pins the fetched base for inner snapshots', async () => {
+  const snapshots = []
+  const { agent } = prAgent({ 'revision-snapshot': (_calls, prompt) => { snapshots.push(prompt); return SNAPSHOT } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'passed')
+  assert.match(snapshots[0], /--refresh/)
+  for (const prompt of snapshots.slice(1)) {
+    assert.doesNotMatch(prompt, /--refresh/)
+    assert.ok(prompt.includes(SNAPSHOT.base))
+  }
+})
+
+test('legacy process-only contracts receive an actionable reason', async () => {
+  const { agent } = prAgent({ 'revision-snapshot': { error: 'no_functional_criteria: add observable outcomes' } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'no_functional_criteria')
+})
+
+test('inspection evidence can complete a zero-diff research outcome', async () => {
+  const { agent } = prAgent({ 'revision-snapshot': { ...SNAPSHOT, base: SNAPSHOT.head, merge_base: SNAPSHOT.head } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'passed')
 })

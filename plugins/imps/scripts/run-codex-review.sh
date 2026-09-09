@@ -116,10 +116,10 @@ skip() {
 }
 
 bad_arguments() {
-  STATUS="blocked"
+  STATUS="skip"
   REASON="bad_arguments"
   [ -n "${1:-}" ] && log "$1"
-  exit 1
+  exit 2
 }
 
 usage() {
@@ -149,6 +149,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$TIMEOUT_SECONDS" in ''|0|*[!0-9]*) bad_arguments "--timeout must be a positive integer" ;; esac
+
+MAX_BYTES="${IMPS_CODEX_MAX_DIFF_BYTES:-250000}"
+case "$MAX_BYTES" in ''|0|*[!0-9]*) bad_arguments 'IMPS_CODEX_MAX_DIFF_BYTES must be positive' ;; esac
 
 command -v jq >/dev/null 2>&1 || { STATUS="skip"; REASON="jq_missing"; exit 2; }
 command -v git >/dev/null 2>&1 || { STATUS="skip"; REASON="git_missing"; exit 2; }
@@ -245,8 +248,6 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/run-bounded.py" "$TIMEOUT_SECONDS" \
   git clone --quiet --no-hardlinks --no-checkout --local "$REPO" "$SNAPSHOT" || skip snapshot_failed 'cannot isolate review checkout'
 git -C "$SNAPSHOT" remote remove origin || skip snapshot_failed 'cannot remove source remote'
 git -C "$SNAPSHOT" checkout --quiet --detach "$TARGET_HEAD" || skip snapshot_failed 'cannot check out requested head'
-MAX_BYTES="${IMPS_CODEX_MAX_DIFF_BYTES:-250000}"
-case "$MAX_BYTES" in ''|0|*[!0-9]*) bad_arguments 'IMPS_CODEX_MAX_DIFF_BYTES must be positive' ;; esac
 DIFF_BYTES="$(git -C "$SNAPSHOT" diff "$MERGE_BASE" HEAD | wc -c | tr -d ' ')"
 [ "$DIFF_BYTES" -le "$MAX_BYTES" ] || skip diff_too_large 'diff exceeds bounded Codex input policy; use OCR or smaller changes'
 CODEX_ARGS+=(--cwd "$SNAPSHOT" "$FOCUS_TEXT")

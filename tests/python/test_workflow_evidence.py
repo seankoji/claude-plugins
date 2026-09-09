@@ -109,7 +109,7 @@ class EvidenceTest(unittest.TestCase):
 
     def test_budget_survives_resume(self):
         value = json.loads(self.state.read_text())
-        value.update(budget_seconds=1, budget_started_at=time.time() - 5)
+        value.update(budget_seconds=1, budget_spent_seconds=5)
         self.state.write_text(json.dumps(value))
         owner = evidence.state_operation(self.state, 'claim')
         self.assertFalse(evidence.state_operation(self.state, 'budget', owner['token'])['ok'])
@@ -154,7 +154,9 @@ class EvidenceTest(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_gate_retains_actual_exit_and_hashed_log(self):
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'echo evidence; exit 7', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
+        (self.repo / 'check.sh').write_text('echo evidence; exit 7\n')
+        (self.repo / 'checks.txt').write_text('bash check.sh\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'bash check.sh', '--argv-json', '["bash","check.sh"]', '--source', 'checks.txt', '--cwd', '.', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True, check=True)
         value = json.loads(result.stdout)
         self.addCleanup(Path(value['artifact']['path']).unlink)
         self.assertFalse(value['pass'])
@@ -162,12 +164,40 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(evidence.artifact(value['artifact']['path']), value['artifact'])
 
     def test_gate_cannot_change_directory_outside_checkout(self):
-        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'true', '--cwd', '..', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'fixture', '--cmd', 'true', '--argv-json', '["true"]', '--source', 'checks.txt', '--cwd', '..', '--timeout', '5'], cwd=self.repo, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
 
     def test_shared_helpers_are_identical(self):
         for name in ('workflow-evidence.py', 'run-bounded.py', 'run-codex-review.sh'):
             self.assertEqual((ROOT / 'plugins/imps/scripts' / name).read_bytes(), (ROOT / 'plugins/babysitter/scripts' / name).read_bytes())
+
+    def test_operator_idle_time_is_not_charged(self):
+        with patch.object(evidence.time, 'time', return_value=1000):
+            owner = evidence.state_operation(self.state, 'claim')
+        with patch.object(evidence.time, 'time', return_value=1060):
+            evidence.state_operation(self.state, 'release', owner['token'])
+        with patch.object(evidence.time, 'time', return_value=100000):
+            owner = evidence.state_operation(self.state, 'claim')
+            budget = evidence.state_operation(self.state, 'budget', owner['token'])
+        self.assertTrue(budget['ok'])
+        self.assertEqual(budget['remaining_seconds'], 14400 - 60)
+
+    def test_shell_code_is_rejected_before_execution(self):
+        command = "sh -c 'touch escaped'"
+        (self.repo / 'checks.txt').write_text(command)
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', command,
+                                 '--argv-json', json.dumps(['sh', '-c', 'touch escaped']), '--source', 'checks.txt', '--timeout', '5'],
+                                cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.repo / 'escaped').exists())
+
+    def test_invented_gate_is_rejected(self):
+        (self.repo / 'checks.txt').write_text('npm run test')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'gate', '--name', 'unsafe', '--cmd', 'touch escaped',
+                                 '--argv-json', json.dumps(['touch', 'escaped']), '--source', 'checks.txt', '--timeout', '5'],
+                                cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.repo / 'escaped').exists())
 
 
 if __name__ == '__main__':

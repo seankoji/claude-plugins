@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import math
 import importlib.util
 import subprocess
 import sys
@@ -73,7 +75,7 @@ def contract(text):
     if len({item['id'] for item in criteria}) != len(criteria):
         raise ValueError('duplicate requirement ID')
     if not criteria:
-        raise ValueError('GOAL.md needs functional Definition of Done criteria; process boxes are insufficient')
+        raise ValueError('no_functional_criteria: add observable delivery criteria to GOAL.md; process boxes are insufficient. For research/non-code work use inspection evidence of the produced artifact, not a code diff.')
     value = {'requirements': criteria, 'constraints': '\n'.join(constraints).strip()}
     return value, digest(json.dumps(value, sort_keys=True).encode())
 
@@ -103,7 +105,9 @@ def snapshot(repo, base, goal, refresh=False):
             'merge_base': git(repo, 'merge-base', base_sha, head), 'spec_hash': spec_hash,
             'policy_hash': digest(b''.join(path.read_bytes() for path in sorted(Path(__file__).parent.iterdir())
                                           if path.name in ('workflow-evidence.py', 'imps-run.workflow.js', 'run-code-review.sh',
-                                                           'run-codex-review.sh', 'run-ocr.sh', 'run-bounded.py')) + json.dumps({
+                                                           'run-codex-review.sh', 'run-ocr.sh', 'run-bounded.py')) +
+                (Path(os.environ.get('IMPS_OCR_RULE', str(Path(__file__).parent.parent / 'references/ocr-review-rule.json'))).read_bytes()
+                 if Path(os.environ.get('IMPS_OCR_RULE', str(Path(__file__).parent.parent / 'references/ocr-review-rule.json'))).is_file() else b'') + json.dumps({
                 name: os.environ.get(name) for name in ('IMPS_CODEX_MODEL', 'IMPS_CODEX_TIMEOUT',
                 'IMPS_CODEX_MAX_DIFF_BYTES', 'IMPS_OCR_MODEL', 'IMPS_OCR_TIMEOUT', 'IMPS_OCR_VERSION')
             }, sort_keys=True).encode()),
@@ -117,11 +121,31 @@ def artifact(path):
     return {'path': str(path), 'sha256': digest(path.read_bytes())}
 
 
-def gate(name, command, cwd, seconds):
+def gate(name, command, cwd, seconds, argv=None, source=None):
     root = Path(git('.', 'rev-parse', '--show-toplevel')).resolve()
     cwd = (root / cwd).resolve(strict=True)
     if not cwd.is_relative_to(root) or not cwd.is_dir() or not 0 < seconds <= 3600:
         raise ValueError('gate cwd must be inside checkout and timeout in 1..3600 seconds')
+    if not isinstance(argv, list) or not argv or any(not isinstance(arg, str) or not arg for arg in argv):
+        raise ValueError('gate needs an explicit nonempty argv array')
+    if shlex.split(command) != argv:
+        raise ValueError('display command must match argv exactly')
+    binary = Path(argv[0]).name
+    if binary in ('sh', 'bash', 'zsh', 'dash', 'fish', 'python', 'python3', 'node', 'perl', 'ruby') and any(arg in ('-c', '-e', '--eval', '-p') for arg in argv[1:]):
+        raise ValueError('inline interpreter commands are not supported gates; use a declared repository script')
+    if binary in ('env', 'eval', 'exec'):
+        raise ValueError('indirect command execution is not a supported gate')
+    declared = (root / (source or '')).resolve(strict=True)
+    if not declared.is_relative_to(root) or not declared.is_file():
+        raise ValueError('gate source must be a repository file')
+    contents = declared.read_text()
+    supported = command in contents
+    if declared.name == 'package.json' and binary in ('npm', 'pnpm', 'yarn', 'bun'):
+        scripts = json.loads(contents).get('scripts', {})
+        script = argv[2] if len(argv) > 2 and argv[1] == 'run' else argv[1] if len(argv) > 1 else ''
+        supported = script in scripts or supported
+    if not supported:
+        raise ValueError('gate command is not declared literally in its repository source')
     runner_path = Path(__file__).with_name('run-bounded.py')
     spec = importlib.util.spec_from_file_location('bounded', runner_path)
     runner = importlib.util.module_from_spec(spec)
@@ -129,7 +153,7 @@ def gate(name, command, cwd, seconds):
     fd, log = tempfile.mkstemp(prefix='workflow-gate-', suffix='.log')
     started = time.monotonic()
     with os.fdopen(fd, 'wb') as output:
-        status = runner.run(seconds, ['/bin/sh', '-c', command], cwd=str(cwd), stdout=output, stderr=subprocess.STDOUT)
+        status = runner.run(seconds, argv, cwd=str(cwd), stdout=output, stderr=subprocess.STDOUT)
     proof = artifact(log)
     return {'gate': name, 'cmd': command, 'pass': status == 0, 'exit_code': status,
             'status': 'passed' if status == 0 else 'unavailable' if status == 124 else 'failed',
@@ -154,11 +178,12 @@ def state_operation(path, action, token=None, patch=None, confirmed_dead=False):
             seconds = state.get('budget_seconds', 14400)
             if not isinstance(seconds, (int, float)) or not 0 < seconds <= 86400:
                 raise ValueError('budget_seconds must be in 1..86400')
-            started = state.setdefault('budget_started_at', time.time())
-            if not isinstance(started, (int, float)) or started > time.time():
-                raise ValueError('invalid budget start')
-            atomic_json(path, state)
-            owner = {'token': uuid.uuid4().hex, 'claimed_at': time.time(), 'deadline': started + seconds}
+            spent = state.get('budget_spent_seconds', 0)
+            if not isinstance(spent, (int, float)) or not math.isfinite(spent) or spent < 0:
+                raise ValueError('invalid active budget expenditure')
+            now = time.time()
+            owner = {'token': uuid.uuid4().hex, 'claimed_at': now, 'deadline': now + max(0, seconds - spent),
+                     'spent_before': spent, 'budget_seconds': seconds}
             atomic_json(claim, owner)
             return owner
         if owner and (not token or owner.get('token') != token):
@@ -172,6 +197,12 @@ def state_operation(path, action, token=None, patch=None, confirmed_dead=False):
                 raise ValueError('no ownership record')
             if action == 'recover' and not confirmed_dead:
                 raise ValueError('recovery requires confirmed dead invocation, never heartbeat age alone')
+            if path.exists():
+                state = json.loads(path.read_text())
+                # Absolute charge from this claim's starting expenditure makes a crash
+                # between state replacement and owner removal safe to reconcile.
+                state['budget_spent_seconds'] = owner.get('spent_before', 0) + max(0, min(time.time(), owner['deadline']) - owner['claimed_at'])
+                atomic_json(path, state)
             claim.unlink()
             return {'released': True}
         value = json.loads(path.read_text())
@@ -199,6 +230,8 @@ def main(argv=None):
     check = commands.add_parser('gate')
     check.add_argument('--name', required=True)
     check.add_argument('--cmd', required=True)
+    check.add_argument('--argv-json', required=True)
+    check.add_argument('--source', required=True)
     check.add_argument('--cwd', default='.')
     check.add_argument('--timeout', required=True, type=int)
     for action in ('claim', 'patch', 'release', 'recover', 'budget'):
@@ -216,7 +249,7 @@ def main(argv=None):
         elif args.action == 'artifact':
             result = artifact(args.path)
         elif args.action == 'gate':
-            result = gate(args.name, args.cmd, args.cwd, args.timeout)
+            result = gate(args.name, args.cmd, args.cwd, args.timeout, json.loads(args.argv_json), args.source)
         else:
             result = state_operation(args.state, args.action, args.token,
                                      json.loads(args.patch) if args.action == 'patch' else None,

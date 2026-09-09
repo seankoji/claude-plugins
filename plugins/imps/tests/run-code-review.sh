@@ -153,5 +153,11 @@ mutate_env_run() {
 mutate_env_run >"$out" 2>"$err"; rc=$?
 if [ "$rc" = 0 ] && jq -e '.status == "ok" and .provider == "codex"' "$out" >/dev/null; then ok 'run-codex-review.sh emits the imps contract directly'; else bad 'run-codex-review.sh emits the imps contract directly' "rc=$rc $(cat "$out")"; fi
 
+IMPS_CODEX_MAX_DIFF_BYTES=250k run_dispatch 1 >"$out" 2>"$err"; rc=$?
+if [ "$rc" = 0 ] && jq -e '.status == "ok" and .provider != "codex"' "$out" >/dev/null; then ok 'invalid Codex configuration falls back to OCR'; else bad 'invalid Codex configuration falls back to OCR' "rc=$rc"; fi
+
+IMPS_CODEX_MAX_DIFF_BYTES=250k "$CODEX_DIRECT" --check >"$out" 2>"$err"; rc=$?
+if [ "$rc" = 2 ] && jq -e '.reason == "bad_arguments"' "$out" >/dev/null; then ok 'Codex preflight validates diff bounds'; else bad 'Codex preflight validates diff bounds' "rc=$rc"; fi
+
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
