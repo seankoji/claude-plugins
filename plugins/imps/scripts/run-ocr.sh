@@ -51,6 +51,8 @@ REASON="unknown"
 EMITTED=0
 REVIEW_PID=""
 TMP_ROOT=""
+OCR_INSTALL_LOG=""
+NPM_CACHE_RETRY=""
 START_NS="$(date +%s000000000 2>/dev/null || echo 0)"
 
 log() { printf '%s\n' "$*" >&2; }
@@ -88,7 +90,11 @@ emit_contract() {
     '{status:$status, verdict:(if $verdict == "" then null else $verdict end), findings:$findings, model:$model, provider:(if $provider == "" then null else $provider end), session_id:(if $session_id == "" then null else $session_id end), duration_ms:$duration_ms, cost_usd:$cost_usd, reason:(if $reason == "" then null else $reason end)}' >&3
 }
 
-cleanup() { [ -z "$TMP_ROOT" ] || rm -rf "$TMP_ROOT"; }
+cleanup() {
+  [ -z "$TMP_ROOT" ] || rm -rf "$TMP_ROOT"
+  [ -z "$OCR_INSTALL_LOG" ] || rm -f "$OCR_INSTALL_LOG"
+  [ -z "$NPM_CACHE_RETRY" ] || rm -rf "$NPM_CACHE_RETRY"
+}
 on_exit() { cleanup; emit_contract; }
 trap on_exit EXIT
 trap '[ -z "$REVIEW_PID" ] || kill -TERM "$REVIEW_PID" 2>/dev/null; exit 129' HUP
