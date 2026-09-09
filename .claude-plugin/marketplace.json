@@ -9,23 +9,23 @@
       "name": "elephant-goldfish",
       "version": "0.2.9",
       "source": "./plugins/elephant-goldfish",
-      "description": "Design-doc command with a different-lineage Gemini judge, plus /elephant-goldfish:thinking \u2014 steps 1 and 2 of Rensin's process: interrogate the problem, build the rubric, emit the plan."
+      "description": "Design-doc command with a different-lineage Gemini judge, plus /elephant-goldfish:thinking — steps 1 and 2 of Rensin's process: interrogate the problem, build the rubric, emit the plan."
     },
     {
       "name": "claude-tuneup",
       "version": "0.1.19",
       "source": "./plugins/claude-tuneup",
-      "description": "Permission audit and settings tuneup \u2014 scans transcripts, classifies by scope, deduplicates global vs project settings."
+      "description": "Permission audit and settings tuneup — scans transcripts, classifies by scope, deduplicates global vs project settings."
     },
     {
       "name": "prompt-builder",
       "version": "0.1.21",
       "source": "./plugins/prompt-builder",
-      "description": "Iterative prompt engineering assistant \u2014 structures with Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers a finished artefact with test cases."
+      "description": "Iterative prompt engineering assistant — structures with Anthropic's evidence-based prompting techniques, drafts, critiques, and delivers a finished artefact with test cases."
     },
     {
       "name": "imps",
-      "version": "0.3.58",
+      "version": "0.3.59",
       "source": "./plugins/imps",
       "description": "Swarm orchestration with model-routed execution, deterministic gates, whole-repo audits, PR monitoring, and proof-led blast-radius analysis."
     },
@@ -39,13 +39,13 @@
       "name": "babysitter",
       "version": "0.5.4",
       "source": "./plugins/babysitter",
-      "description": "Keeps open pull requests unblocked and lands them \u2014 sweep a whole org, one repository, or one PR; each gets a worktree-isolated agent that clears review comments, merge conflicts, failing checks and base-branch drift, then an immediate merge attempt (or GitHub auto-merge where the repo allows it) finishes the job, and a live watch picks up new pull requests and new events as they land."
+      "description": "Keeps open pull requests unblocked and lands them — sweep a whole org, one repository, or one PR; each gets a worktree-isolated agent that clears review comments, merge conflicts, failing checks and base-branch drift, then an immediate merge attempt (or GitHub auto-merge where the repo allows it) finishes the job, and a live watch picks up new pull requests and new events as they land."
     },
     {
       "name": "offload-sidecar",
       "version": "0.3.7",
       "source": "./plugins/offload-sidecar",
-      "description": "MCP tool that offloads file transforms, log triage, and vision tasks so Claude passes file paths, not content \u2014 deterministic in-process where possible, else routed across local Ollama tiers (deep/fast, private) or Gemini via the agy CLI (flash/pro, budget-gated so quota exhaustion rejects up front instead of failing mid-call). Formerly ollama-sidecar."
+      "description": "MCP tool that offloads file transforms, log triage, and vision tasks so Claude passes file paths, not content — deterministic in-process where possible, else routed across local Ollama tiers (deep/fast, private) or Gemini via the agy CLI (flash/pro, budget-gated so quota exhaustion rejects up front instead of failing mid-call). Formerly ollama-sidecar."
     }
   ]
 }
