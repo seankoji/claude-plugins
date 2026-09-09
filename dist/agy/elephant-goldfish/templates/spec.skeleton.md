@@ -4,7 +4,7 @@ A grading rubric a stranger could apply, not a wishlist. The test for every line
 someone who was not in the conversation mark this pass or fail without asking anyone?
 
 ## 1. Pass/fail criteria
-Itemised. Each one checkable cold. Cross-reference discovery.md where it sharpens the
+Itemised. Give each requirement a stable ID such as `[REQ-LOGIN]`, retain it through the handoff and implementation task, and specify its verification method (`inspection`, `command`, `runtime`, or `manual`). Each one checkable cold. For implementation, use `[verify:runtime]` for user journeys and `[verify:command]` for executable checks. Record the observable outcome, environment, failure/recovery cases and evidence needed. Unverified is incomplete; an implementer may not weaken a criterion to pass it. Cross-reference discovery.md where it sharpens the
 criterion — "per the budget ceiling in discovery.md §2, no recommended option above £X".
 
 Reject anything that cannot be marked without judgement calls the grader hasn't been given.

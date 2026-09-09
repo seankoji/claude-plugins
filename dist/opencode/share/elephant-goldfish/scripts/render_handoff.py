@@ -19,6 +19,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
+import tempfile
 import json
 import re
 import sys
@@ -89,6 +92,7 @@ def main(argv=None) -> int:
     parser.add_argument("--root", default=DEFAULT_ROOT)
     parser.add_argument("--template-dir", default=None)
     parser.add_argument("--stdout", action="store_true", help="print instead of writing handoff.md")
+    parser.add_argument("--check", action="store_true", help="verify saved input/output hashes without writing")
     args = parser.parse_args(argv)
 
     try:
@@ -116,7 +120,23 @@ def main(argv=None) -> int:
             "SPEC": read_required(tdir / "spec.md", "spec.md"),
         }
         out = render(tpl_file.read_text(encoding="utf-8"), values)
-    except (RenderError, json.JSONDecodeError) as exc:
+        manifest = {
+            "schema": 1,
+            "topic": args.slug,
+            "output_type": output_type,
+            "discovery_sha256": hashlib.sha256(values["DISCOVERY"].encode()).hexdigest(),
+            "spec_sha256": hashlib.sha256(values["SPEC"].encode()).hexdigest(),
+            "handoff_sha256": hashlib.sha256(out.encode()).hexdigest(),
+            "requirement_ids": list(dict.fromkeys(re.findall(r"\[(REQ-[A-Z0-9_-]+)\]", values["SPEC"]))),
+        }
+        if args.check:
+            manifest["handoff_sha256"] = hashlib.sha256((tdir / "handoff.md").read_bytes()).hexdigest()
+            saved = json.loads((tdir / "handoff.manifest.json").read_text())
+            if saved != manifest:
+                raise RenderError("handoff provenance mismatch; re-render from the reviewed inputs")
+            print("handoff provenance verified")
+            return 0
+    except (RenderError, json.JSONDecodeError, OSError) as exc:
         print(f"render_handoff: {exc}", file=sys.stderr)
         return 1
 
@@ -124,7 +144,19 @@ def main(argv=None) -> int:
         sys.stdout.write(out)
     else:
         target = tdir / "handoff.md"
-        target.write_text(out, encoding="utf-8")
+        # Each file is atomic. Consumers compare the output hash, so a crash between
+        # the two replaces is detected instead of accepting a stale manifest.
+        for dest, content in ((target, out), (tdir / "handoff.manifest.json", json.dumps(manifest, indent=2) + "\n")):
+            fd, temporary = tempfile.mkstemp(prefix=dest.name + '.', dir=tdir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, dest)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
         print(target)
     return 0
 
