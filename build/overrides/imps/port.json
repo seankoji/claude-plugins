@@ -12,7 +12,10 @@
     "scripts/imps-paths.sh": "Derives the Claude run slug and the paths keyed off it, all rooted at ~/.claude/imps/runs. This build keeps its run state under its own platform directory, so the script would resolve every path into Claude's tree. The equivalent derivation is inline in this directory's overrides, against the correct root.",
     "scripts/imps-run.workflow.js": "The Claude Code Workflow runtime for the whole run \u2014 agent() dispatch, isolation: 'worktree', the Workflow resume model. Neither platform has a Workflow tool, so shipping it would present Claude mechanics as if they run there (contract item 16). The per-platform dispatch loop is prose, from this directory's overrides.",
     "scripts/imps-worktree.sh": "Manages the per-run git worktrees that make concurrent Claude runs safe. Its liveness check reads ~/.claude/imps/runs, so it would report every run on this platform as idle and offer to remove a live run's worktree. The underlying worktree-per-run technique is platform-neutral and would port, but it needs this build's own state root and a matching prose change in the overrides \u2014 not done here, so the script is excluded rather than shipped pointing at the wrong tree.",
-    "scripts/run-ocr.sh": "The Claude-host read-only OCR review harness. It uses Claude Workflow wrapper mechanics and temporary configuration overrides, neither of which belongs in generated runtimes that already review inside their own runtime."
+    "scripts/run-ocr.sh": "The Claude-host read-only OCR review harness. It uses Claude Workflow wrapper mechanics and temporary configuration overrides, neither of which belongs in generated runtimes that already review inside their own runtime.",
+    "scripts/run-code-review.sh": "Claude installation-dependent review adapter. Generated runtimes use their own declared review capability; workflow-evidence.py and run-bounded.py remain portable.",
+    "scripts/run-codex-review.sh": "Claude installation-dependent review adapter. Generated runtimes use their own declared review capability; workflow-evidence.py and run-bounded.py remain portable.",
+    "references/codex-review.md": "Claude-installed Codex companion instructions; portable runtimes use their own available independent review tools."
   },
   "asset_replacements": {
     "references/checklist-mode.md": [
@@ -58,6 +61,6 @@
     "description": "Swarm orchestration with serial tier-routed execution, deterministic gates, whole-repo audits, PR monitoring, and proof-led blast-radius analysis. (The Claude Code build drives the main run from a background Workflow script; here the skill drives it directly.)"
   },
   "source_hash_pins": {
-    "scripts/imps-run.workflow.js": "0d6546f5d9af4315fe8c3b21d555d76fb9499f9f470b2aa320550a68036603f9"
+    "scripts/imps-run.workflow.js": "e09e6ebc75b8596635f0cb90ac115eb9820135f742b40a5b3251dd494d227a22"
   }
 }

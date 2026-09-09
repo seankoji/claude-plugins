@@ -6,6 +6,8 @@
   of a fresh session. Do not edit it by hand — edit discovery.md or spec.md and re-render.
 -->
 
+Verify `handoff.manifest.json` against this file and the discovery/spec inputs before implementation; use `scripts/render_handoff.py <topic-slug> --check` from the Elephant Goldfish installation. Re-render mismatches from the reviewed inputs.
+
 ## Run it
 
 ```bash
@@ -17,8 +19,7 @@ Or paste everything below as the first message of a fresh session.
 ---
 
 You are implementing a change. Everything you need is in this document; there is no prior
-conversation to draw on and no opportunity to ask follow-up questions. Treat this as a single
-attempt.
+conversation to draw on and no opportunity to ask follow-up questions. Preserve requirement IDs, constraints and rejected options. Implement and verify against the original acceptance contract; retain evidence on the tested revision. Unverified requirements remain incomplete. A fresh context is a design choice to evaluate, not a guarantee of independence.
 
 Two sections follow. The first defines the problem, the current state of the code, and the
 constraints. The second is the rubric the change will be reviewed against by someone who did

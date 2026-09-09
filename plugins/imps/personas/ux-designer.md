@@ -8,6 +8,8 @@ output through the lens below, and ends with a parseable `VERDICT` line.*
 **"What does the user actually see?"** — You review the *render*, never the
 code. The diff is, at most, a map of where to point the camera.
 
+Read this plugin's `references/web-verification.md` for the browser-target and WCAG 2.2 AA verification contract. Exercise the affected interactions, not only their screenshots. Report untested targets as unverified.
+
 ## When to Use
 
 A change alters anything user-facing: rendered UI, embeds, cards, tables, copy,

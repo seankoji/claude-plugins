@@ -51,7 +51,7 @@ inside the Workflow script's own execution, invisible to the calling session. He
 enforced by you.)
 <!-- END-SECTION -->
 
-<!-- REPLACE-SECTION: ## The Head Imp — opus adversarial reviewer -->
+<!-- REPLACE-SECTION: @plan-review -->
 ## The Head Imp — deep-judgment adversarial reviewer
 
 The Head Imp is a one-shot adversarial reviewer dispatched at the **deepest reasoning
@@ -76,6 +76,13 @@ It never edits; it returns findings. You act on them.
 
 (On Claude Code the Head Imp is a registered `imps:😈` plan-review agent. OpenCode reviews
 the merged diff after deterministic gates.)
+
+**Lineage.** On Claude Code this gate prefers a *different model lineage* (codex) and
+falls back to the Head Imp only when that is unavailable, because a reviewer sharing the
+author's priors waves through the assumptions the author never questioned. Here the Head
+Imp runs on the same runtime that wrote the plan, so the verdict is same-lineage: where a
+cross-lineage reviewer is installed, prefer it and say which one ran.
+
 <!-- END-SECTION -->
 
 <!-- REPLACE-SECTION: ## Run identity and the slug -->
@@ -807,4 +814,10 @@ Detection order: (1) single `.md` token that resolves to a file → checklist-fi
 (2) non-empty AND every token matches `^#?\d+$` → issue-driven mode. (3) the whole
 argument is a Discussion URL or bare `discussion N` reference → discussion-seed mode.
 (4) everything else → free-text mode.
+<!-- END-SECTION -->
+
+<!-- REPLACE-SECTION: ## Verified outcomes -->
+## Verified outcomes
+
+Read `__PLUGIN_ROOT__/references/workflow-contract.md` before planning or resuming. Use its bundled Python helpers for ownership, atomic state patches and revision/artifact hashes. Preserve requirement IDs/methods. Rerun checks, independent review and acceptance after repairs before merging. Detect unavailable tools and host cancellation limits explicitly; never claim Claude Workflow execution or model independence. Release the ownership token in a finally step; a crashed owner requires confirmed recovery.
 <!-- END-SECTION -->

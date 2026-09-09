@@ -7,6 +7,13 @@ description: >
 argument-hint: '[--personas] <task description | issue numbers | discussion ref | checklist.md>'
 ---
 
+## Verified outcomes
+
+Before dispatch, validate that GOAL.md contains agreed functional criteria. Legacy plans containing only process boxes now return `no_functional_criteria`; add observable delivery outcomes before resuming. Research outputs can use inspection artifacts without a code diff.
+
+
+Read `${CLAUDE_PLUGIN_ROOT}/references/workflow-contract.md` before planning or resuming. Its revision-bound acceptance, verification, recovery and permission rules apply to every phase below. Preserve stable requirement IDs and verification methods from the input spec in GOAL.md and tasks. Revalidate after every repair before shipping.
+
 # /imps:imps — summon the swarm
 
 Arguments: `$ARGUMENTS`
@@ -72,7 +79,7 @@ runs — the remaining text is what mode detection and every phase below operate
 flag anywhere in the argument string counts; order does not matter.
 
 - **`--personas`** — opt into the in-run five-persona review panel. **Default: OFF.**
-  Without it, the Head Imp reviews the plan and read-only OCR reviews the merged diff.
+  Without it, the plan gets its adversarial review (codex, else Head Imp) and read-only OCR reviews the merged diff.
   With it, the full panel + fix-loop + adjudication runs exactly as before.
 
 Derive a single boolean `PERSONA_PANEL` (`true` only if `--personas` was present) and
@@ -151,14 +158,65 @@ code block). It is purely cosmetic — skip silently if absent.
 
 ---
 
-## The Head Imp — opus adversarial reviewer
+<!-- SECTION-ID: plan-review -->
+## Plan review — cross-lineage first, Head Imp as fallback
 
-The Head Imp is a reusable one-shot `model: opus` agent that reviews plans adversarially.
-OCR reviews the merged diff in a read-only snapshot after gates pass. A missing setup,
-timeout, malformed output, or unresolved major finding blocks rather than falling back
-to Claude. See `references/ocr-review.md` for endpoint configuration, pinning, and rules.
+The plan gets an adversarial reviewer before any imp is dispatched. **Prefer a different
+model lineage.** A Claude agent grading a plan Claude just wrote shares the author's
+priors and will wave through the assumptions the author never questioned — the same
+reasoning that forbids same-lineage review of the diff
+(`references/ocr-review.md`) and that keeps the elephant judge off Claude.
 
-Invoke it like this (swap in the actual reference and role):
+| Tier | Reviewer | Selected when |
+| --- | --- | --- |
+| 1 | Codex adversarial review | the codex runtime resolves and returns a verdict |
+| 2 | The Head Imp (`model: opus`) | codex is absent, unauthenticated, times out, or returns no parseable verdict |
+
+Tier 2 is a real fallback, not a formality: an unreviewed plan is never acceptable, so
+a codex failure demotes to the Head Imp rather than skipping the gate. **Say which tier
+ran** when you report the verdict — a Head Imp verdict is same-lineage and the operator
+should know that is what they got.
+
+### Tier 1 — Codex
+
+GOAL.md is uncommitted in the working tree at this point, so a working-tree scope sees
+it as the change under review. It is a single file, which keeps it under codex's
+inline-diff file cap and away from the unbounded self-collect path a many-file diff
+takes.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/run-bounded.py" 300 node "<codex plugin root>/scripts/codex-companion.mjs" adversarial-review \
+  --wait --json --scope working-tree \
+  "This diff is an implementation PLAN (GOAL.md), not shipped code. Argue against the
+   plan itself: wrong task boundaries against the sizing heuristic in
+   ${CLAUDE_PLUGIN_ROOT}/references/task-sizing.md, mis-routed models, missing
+   dependency edges, unsafe assumptions, and gaps or unverifiable criteria in the
+   Definition of Done. Ignore prose and formatting."
+```
+
+Resolve the codex plugin root at runtime — `IMPS_CODEX_ROOT` if set, otherwise the
+harness's own `installed_plugins.json` under the Claude config directory. Never write a
+resolved path into the repo or into `dist/`, and don't glob the plugin cache for a version
+directory: those sort lexically, so `1.0.10` loses to `1.0.6`.
+
+The focus text is load-bearing. Without it codex reviews GOAL.md as a changed file and
+returns findings about the Markdown; with it, it argues against the plan. It is still
+subject to the anti-pre-judging rule below — redirect the reviewer's *subject*, never
+its conclusion.
+
+Codex returns `{verdict: approve|needs-attention, findings[{severity: critical|high|
+medium|low, …}], summary, next_steps}`. Map `critical→blocker`, `high→major`,
+`medium→minor`, `low→nit`, and **derive `CHANGES_REQUESTED` from any blocker or major
+rather than trusting `verdict` alone** — then floor it, so a `needs-attention` never
+resolves to `APPROVE` even when every finding mapped below major.
+
+Tier 1 gives up one thing tier 2 has: there is no `agentId`, so an amended GOAL.md costs
+a full fresh review rather than a delta (see the amendment note below).
+
+### Tier 2 — the Head Imp
+
+A reusable one-shot `model: opus` agent. Invoke it like this (swap in the actual
+reference and role):
 
 ```
 agent(
@@ -182,15 +240,21 @@ agent(
 
 **Phase 2 (plan review):** pass the absolute path of GOAL.md — the Head Imp Reads it.
 The **diff review** happens later through `scripts/run-ocr.sh` — you never invoke
-the Head Imp on a diff yourself. See `references/ocr-review.md`.
+the Head Imp on a diff yourself, at either tier. See `references/ocr-review.md`.
 
-**Keep the `agentId` the `Agent` call returns.** If the user requests amendments after
-this review, don't dispatch a fresh Head Imp for the revised GOAL.md — `SendMessage`
-the same `agentId` with what changed (a diff of the section, or "task 3 now reads...").
-It already holds its own prior findings in its own transcript and only needs the delta
-to re-verdict; a fresh dispatch re-reads the whole plan and re-derives context it
-already had. Only dispatch a genuinely new Head Imp if GOAL.md was rewritten wholesale
-rather than revised in place.
+**Amendments.** On tier 2, keep the `agentId` the `Agent` call returns. If the user
+requests amendments after this review, don't dispatch a fresh Head Imp for the revised
+GOAL.md — `SendMessage` the same `agentId` with what changed (a diff of the section, or
+"task 3 now reads..."). It already holds its own prior findings in its own transcript
+and only needs the delta to re-verdict; a fresh dispatch re-reads the whole plan and
+re-derives context it already had. Only dispatch a genuinely new Head Imp if GOAL.md was
+rewritten wholesale rather than revised in place.
+
+Tier 1 has no equivalent — each `adversarial-review` invocation is one-shot, so an
+amended plan is re-reviewed in full. Don't fall back to the Head Imp for the amendment
+round just to get the delta path: that would mean the plan's first review and its
+re-review came from different lineages, and the cheaper round is the one that no longer
+disagrees with the author. Re-run tier 1.
 
 Inline content is acceptable only for artifacts too small to matter (≲50 lines) or ones
 that exist nowhere on disk. **Imps may also consult the Head Imp** mid-task when they
@@ -668,7 +732,7 @@ quote or reason about their contents. Then:
   single file/command/config change, or a task whose plan is already fully specified with
   nothing left to split — do not invent a multi-task table just to populate rows. Write a
   **single-row task table** and skip straight to Step 2. This is not a lighter path around
-  the process, it's the same process with a smaller DAG: Head Imp reviews the plan
+  the process, it's the same process with a smaller DAG: the plan is adversarially reviewed
   (Step 3) and OCR later reviews the merged diff; the one task still dispatches through the Workflow script
   exactly like any other stage, which is what offloads the actual work into an isolated
   worktree agent, out of this session's context; gates, the persona panel (when
@@ -747,8 +811,7 @@ discussion body. Never a paraphrase; this section exists to be checked against.>
 ## Definition of Done
 - [ ] <acceptance criterion 1>
 - [ ] <acceptance criterion 2 — one line each from discovery>
-- [ ] Gates green (build · lint · test · type — per GATE_CMDS)
-- [ ] Head Imp reviewed the plan; OCR reviewed the merged diff; all blocker/major findings addressed
+- [ ] Plan adversarially reviewed (codex, else Head Imp); OCR reviewed the merged diff; all blocker/major findings addressed
 - [ ] No merge conflicts with the default branch
 
 ## Global Constraints
@@ -853,45 +916,58 @@ will not take effect. After handover, GOAL.md belongs to the script — it ticks
 and keeps Status current.
 
 **😈 Step 4 — Critique (mandatory).**
-Before calling `ExitPlanMode`, summon the Head Imp (see the Head Imp section above).
-Pass the **absolute path** of `GOAL.md` — the `$GOAL_PATH` value echoed in Step 2, e.g.
-`/Users/you/.claude/imps/runs/${SLUG}.md`, never the `~/...` form — as the
-artifact — the Head Imp Reads it itself. The Head Imp argues AGAINST the plan — wrong
-boundaries, mis-routed models, missing deps, gaps in the DoD. Fix what the critique
-exposes before proceeding.
+Before calling `ExitPlanMode`, get an adversarial verdict on the plan — **tier 1 (codex)
+first, the Head Imp only if codex is unavailable** (see
+[Plan review](#plan-review--cross-lineage-first-head-imp-as-fallback) above). Either way
+the reviewer argues AGAINST the plan — wrong boundaries, mis-routed models, missing deps,
+gaps in the DoD. Fix what the critique exposes before proceeding.
+
+For tier 1, GOAL.md must be **uncommitted in the working tree** so a working-tree scope
+sees it; if it has already been committed, review it with `--scope branch --base
+<default>` instead of leaving codex with an empty diff and no findings — an empty scope
+is a failed review, not an approval. For tier 2, pass the **absolute path** of `GOAL.md`
+— the `$GOAL_PATH` value echoed in Step 2, e.g. `/Users/you/.claude/imps/runs/${SLUG}.md`,
+never the `~/...` form — and the Head Imp Reads it itself.
+
+**Record which tier produced the verdict** in the decision trail. A tier-2 verdict is
+same-lineage, and an operator reading the trail later needs to know the plan was graded
+by a sibling of its author.
 
 Before sending, read the composed prompt back against
 [Never pre-judge a reviewer's findings inside its own prompt](#never-pre-judge-a-reviewers-findings-inside-its-own-prompt)
 and delete anything that pre-clears a finding, narrows the mandate, or supplies the
-verdict. There is no script-side enforcement of this — the check happens here, at the
-moment you write the string, or not at all.
+verdict. This applies to tier 1's focus text exactly as it does to the Head Imp's prompt:
+the focus text may redirect the reviewer's *subject* from Markdown to the plan, and may
+not touch its conclusion. There is no script-side enforcement of this — the check happens
+here, at the moment you write the string, or not at all.
 
 **Then get a second verdict on what you changed.** If you fixed any blocker or major
-finding, `SendMessage` the same Head Imp `agentId` with the delta and wait for a fresh
-VERDICT before Step 4. An approval of the *unfixed* plan is not an approval of the fixed
-one, and round-1 fixes have twice introduced round-2 bugs — once a "make this executable"
-fix that turned out to be platform-unsound on the actual dev machine. Resuming is cheap:
-the Head Imp already holds its own findings and needs only what changed. Minor and nit
+finding, re-review before Step 5 and wait for a fresh VERDICT. An approval of the
+*unfixed* plan is not an approval of the fixed one, and round-1 fixes have twice
+introduced round-2 bugs — once a "make this executable" fix that turned out to be
+platform-unsound on the actual dev machine. On tier 2 this is cheap — `SendMessage` the
+same `agentId` with the delta, since the Head Imp already holds its own findings. On tier
+1 it is a full fresh review; pay it rather than switching tiers mid-plan. Minor and nit
 findings do not require a re-verdict.
 
 **✅ Step 5 — Approve.** What happens here is the `plan_review` answer from Phase 1 Step 7:
 
 - **`"ask"` (the default)** — call **`ExitPlanMode`**. This IS the approval gate.
-- **`"on_objection"`** — the operator delegated plan review to the Head Imp. On a Step 4
+- **`"on_objection"`** — the operator delegated plan review to the adversarial reviewer. On a Step 4
   verdict of `APPROVE`, skip `ExitPlanMode` and proceed to Step 6; on
   `CHANGES_REQUESTED`, call `ExitPlanMode` anyway and show them the findings. Every plan
-  is still adversarially reviewed — this trades *their* review for the Head Imp's, not
+  is still adversarially reviewed — this trades *their* review for the reviewer's, not
   for none.
 
 **Two things override `"on_objection"` and always stop for the operator:** a
-production-touching task (see Phase 1 Step 7), and a plan whose Head Imp verdict was
+production-touching task (see Phase 1 Step 7), and a plan whose adversarial verdict was
 reached only after you applied fixes and re-verdicted. In both cases call `ExitPlanMode`
 regardless of the policy, and say which of the two triggered it. This is the last point
 this session controls before the Workflow script owns dispatch.
 
-If the user requests changes, stay in plan mode and revise `GOAL.md`, then resume the same
-Head Imp with the delta (see the Head Imp section) rather than re-dispatching fresh; when
-approved, proceed.
+If the user requests changes, stay in plan mode and revise `GOAL.md`, then re-review it —
+resuming the same Head Imp with the delta on tier 2, or a fresh tier-1 run — rather than
+proceeding on the stale verdict; when approved, proceed.
 
 **⏱️ Step 6 — Pace.** Set `poll_interval_seconds: 300` (5-minute default — no user prompt needed).
 
@@ -1144,7 +1220,7 @@ hardcoded slug check to the Workflow script.
 
 **`personaPanel` gates whether the panel runs at all.** It is `false` by default (no
 `--personas` flag): the script skips the entire panel + fix-loop + adjudication block and
-finalizes on the Head Imp plan review and OCR diff review, which is the intended default for
+finalizes on the adversarial plan review and OCR diff review, which is the intended default for
 repos whose PRs already draw persona reviews from a GitHub-side automation. Pass the
 `PERSONA_PANEL` boolean derived in **Runtime flags**. `personaBriefPaths` is always
 supplied regardless — the script only reads it when `personaPanel` is `true`, so there is
@@ -1196,7 +1272,7 @@ are named here to make a blocked result legible rather than because you drive th
 | 🔀 **1 — Merge** | imp branches onto the run branch, default branch synced in | `merge_conflict`, `branch_mismatch` |
 | 🚦 **2 — Gate** | build · lint · test · type, with a fix round per failure | `gate_red` |
 | 🔬 **3 — Review** | OCR on the merged diff, up to 3 fix rounds | `code_review_red`, `code_review_unavailable`, `uncommitted_changes` |
-| 📊 **4 — Cover** | each functional DoD criterion graded against the diff | never blocks; degrades to a warning |
+| 📊 **4 — Cover** | each functional DoD criterion graded against the diff | required unmet or unverified outcomes block completion |
 | 🔑 **5 — Authorize** | publish decision, derived from `endstate` | returns `awaiting_authorization` |
 
 Gates run **before** review deliberately: a review-driven fix re-runs every gate and is
@@ -1279,48 +1355,22 @@ reconciles against the state file and git ground truth exactly as the old `resum
 wrangler did (worktree branches, GOAL.md checkboxes, published artifacts) — see the
 design note for what the script must implement to preserve this.
 
-**`blocked` results** — surface the problem, agree the next step with the user, persist
-the decision, re-invoke:
-- `state_read_mismatch` — readState()'s task count/phase disagree with a raw `jq` check
-  of the state file (the readState() mismapping failure mode, #87) — everything else in
-  `state`, including `operator_decision` itself, is untrustworthy this invocation, so the
-  script refuses to route on it. Inspect the raw file (`jq . <state file>`); if it looks
-  fine, this was likely a one-off read blip — persist `resolved, continue` to retry. If
-  the file itself is actually garbled, fix it by hand or persist `abort`.
-- `dispatch_failed` — preflight rebase conflict or imp-dispatch error. The user fixes
-  the tree (or decides); persist `resolved, continue` or `abort`.
-- `imps_failed` — failed tasks block the DoD. Ask the user (retry with guidance / skip
-  those tasks / integrate without any of the unresolved ones / abort) and persist
-  `retry tasks #N: ...`, `skip tasks #N`, `integrate partial`, or `abort`.
-- `merge_conflict` — the conflict is live in the shared working tree. List the branch +
-  files; let the user resolve (or resolve trivial conflicts yourself), then persist
-  `resolved, continue`.
-- `gate_red` — surface the gate name + log tail; agree retry guidance, skip, or abort.
-- `uncommitted_changes` — the working tree had uncommitted work at a point where
-  everything downstream reads commits: the code review reads `MERGE_BASE..HEAD`,
-  `diff_stat` and `dod_coverage` read `origin/<default>..HEAD`, and `git push` sends
-  commits. Proceeding would review around the change and then drop it, with every gate
-  still green. `detail.porcelain` names the files and `detail.where` says which point
-  tripped. Establish whose the changes are first — a shared checkout can be in use by an
-  unrelated concurrent session — then either commit them or, if they are not this run's,
-  hand them back to their owner. Never stash: the stash stack is shared across every
-  worktree on the machine. Persist `resolved, continue` once the tree is clean.
-- `code_review_red` — OCR reviewed the merged diff, returned CHANGES_REQUESTED, and three
-  fix rounds did not clear it. `detail.findings` carries what survived, with the model and
-  provider that produced them. Agree a path: fix the findings and persist
-  `resolved, continue`, or accept them on the record with
-  `override code review: <rationale>`. Treat a *clean* pass on a large diff with less
-  confidence than it invites — repeated OCR runs over one large diff have produced
-  different finding sets each time, so absence of a finding on one pass is not evidence it
-  was addressed, only that it wasn't sampled.
-- `code_review_unavailable` — the review could not run *at all*: a setup/endpoint failure,
-  or a diff too large for the pinned model to finish. This is not a red verdict, it is no
-  verdict, and it can arrive from the pre-dispatch preflight as well as from the review
-  itself. Fix the cause and persist `resolved, continue`, or — when the review genuinely
-  cannot complete for this diff — persist `skip code review: <rationale>`. That verb
-  records the review as *never run*, distinct from `override code review:`, which accepts
-  one that ran and returned findings. Both reach the PR body and the audit trail; neither
-  is ever rendered as an approval.
+**`blocked` results** — report the actual reason and evidence. Preserve prior authorization; use the saved segment to resume. Read `references/workflow-contract.md` for the helper protocol.
+
+- `run_owned_or_claim_failed` — inspect the returned owner-file path. Confirm the prior invocation has stopped, read its token, then use the returned `recover --confirmed-dead` command. Never recover from heartbeat age alone. An unreadable state is repaired before claiming again.
+- `state_read_mismatch` — compare the raw state with the reported task count and phase. Correct the read or malformed file, then `resolved, continue`.
+- `dispatch_failed`, `invalid_concurrency` — resolve dispatch/dependency errors or set `max_concurrency` in 1..10, then resume.
+- `imps_failed` — use `retry tasks #N: <guidance>`, `skip tasks #N`, `integrate partial`, or `abort` according to the authorized scope. Required missing outcomes still block completion.
+- `merge_conflict` — resolve the named conflict while preserving unrelated work, then `resolved, continue`.
+- `gate_red` — inspect the native tool log and the recorded post-repair head. Environment/toolchain failures are unavailable and must not trigger speculative code edits. Use `retry <gate>: <guidance>`, `skip <gate>: <rationale>`, or `abort`.
+- `gate_waiver_stale` — the skip targeted another head. Confirm the decision against the returned current head or retry; it is never silently carried forward.
+- `gate_evidence_invalid`, `evidence_artifact_changed` — regenerate the actual command/runtime evidence; do not manufacture a receipt or hash.
+- `gates_changed_revision`, `revision_changed_during_verification` — finish the concurrent change and rerun verification for the stable committed revision.
+- `verification_manifest_invalid`, `verification_unavailable`, `verification_retry_limit` — inspect the underlying error, declarations and bounded retry history. Repair configuration or unavailable prerequisites, then resume. A failed discovery is not a no-checks policy.
+- `no_functional_criteria`, `acceptance_incomplete` — add agreed observable criteria to a legacy process-only plan, or implement/verify the named outcomes. Preserve original scope; non-code deliverables can use inspection artifacts.
+- `code_review_unavailable`, `code_review_unavailable_or_adverse` — distinguish an unavailable engine from a completed adverse verdict in the detail. Fix findings or setup, then resume. Explicit `skip code review: <rationale>` records no review; `override code review: <rationale>` accepts an adverse review. Neither is approval.
+- `run_budget_exhausted` — while unowned, increase `budget_seconds` only with operator authorization, up to 86400 active seconds, then resume the saved segment. Idle authorization waits consume no budget.
+- `remote_checks_unverified`, `publish_incomplete` — reconcile the exact observed check names, pending checks, PR head and actual merge/release outcome. Resume the existing publish segment; do not create another PR or re-ask for granted authorization. Missing remote checks cannot be silently waived.
 - `branch_mismatch` — reconcile branch state with the user, then persist
   `reconciled, continue`. Don't take an agent's self-reported `id` or `branch` at face
   value here — agents can collide on the same self-reported id or report the base
@@ -1329,7 +1379,7 @@ the decision, re-invoke:
   worktree list` for the actual branch names.
 - `unresolved_findings` — the persona panel's fix loop hit its 3-round cap with findings
   still standing, an opus adjudicator ruled on each survivor, and at least one ruling came
-  back `load-bearing`. This is the only blocked reason that arrives *after* the PR exists.
+  back `load-bearing`. This reason can arrive after the PR exists.
   The result's `detail` carries the rulings; `parked_findings` and `wontfix_rulings` are
   also in the state file and in the final result object. Surface every `load-bearing`
   finding with its rationale, then agree one of: `retry findings` (another capped fix

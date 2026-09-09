@@ -3,11 +3,16 @@
 # ocr-gate.sh — review the babysitter's own work before it is pushed.
 #
 # Every fix this plugin makes lands on someone's open PR, where a bad change costs a
-# whole extra review round-trip. Running OpenCodeReview (`ocr`) over the diff first
-# turns that round-trip into a local loop: the agent reads the findings, fixes them,
-# and pushes once.
+# whole extra review round-trip. Running a review over the diff first turns that
+# round-trip into a local loop: the agent reads the findings, fixes them, and pushes
+# once.
 #
 # Tool selection, in order:
+#   0. codex adversarial-review — tried first when the Codex plugin is installed and
+#      usable. A completed verdict (approve or needs-attention) is authoritative and
+#      is reported immediately; anything else (not installed, crashed, timed out, no
+#      usable verdict) falls through to the chain below without comment — Codex is a
+#      best-effort first opinion, not a required one.
 #   1. ocr-pre-pr.sh — the user's own wrapper, if installed. Preferred because it
 #      writes the HEAD-keyed cache entry their before-PR gate reads, so a babysitter
 #      push and a hand-made push are gated by the same record.
@@ -18,9 +23,9 @@
 #
 # Case 4 is deliberately fail-soft, which is the opposite of this repo's usual
 # fail-closed rule, and the reason is the same one that exempts audit-log.sh: `ocr`
-# is an optional third-party CLI, not a bundled dependency. Hard-failing here would
-# make the entire plugin unusable for anyone who has not installed it. What is NOT
-# soft is the reporting — status=skipped is stated in the summary line so no agent
+# (and now Codex) are optional third-party tools, not bundled dependencies. Hard-failing
+# here would make the entire plugin unusable for anyone who has not installed them. What
+# is NOT soft is the reporting — status=skipped is stated in the summary line so no agent
 # can report a push as "reviewed" when nothing reviewed it.
 #
 # Case 3 exists because of a specific, observed failure. `ocr` talks to an LLM gateway
@@ -61,7 +66,7 @@ OUT=""
 
 die() {
   echo "ocr-gate.sh: $1" >&2
-  echo "OCR status=error findings=0 result=- tool=-"
+  echo "OCR status=error findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 2
 }
 
@@ -89,6 +94,12 @@ done
 # Defined up here because both the upstream-CLI path and the delegate fallback pass it.
 EXCLUDE="package-lock.json,yarn.lock,pnpm-lock.yaml,bun.lockb,composer.lock,Cargo.lock,Gemfile.lock,poetry.lock,Pipfile.lock"
 
+REVIEW_HELPERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+bounded() { python3 "$REVIEW_HELPERS/run-bounded.py" "${BABYSITTER_REVIEW_TIMEOUT:-300}" "$@"; }
+assert_revision() {
+  [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] && [ "$(git status --porcelain=v1)" = "$SOURCE_STATUS" ] || die "reviewed checkout changed during review"
+}
+
 # Called on every path where a review was supposed to run and could not. Emits the
 # summary line and exits — either with a delegation spec the agent can review from
 # (exit 3), or with a plain error (exit 2). Never returns.
@@ -107,23 +118,62 @@ delegate_or_die() {
 
   if command -v ocr >/dev/null 2>&1; then
     local spec="${OUT}.delegate.json"
-    if ocr delegate preview \
+    if bounded ocr delegate preview \
       --from "$MERGE_BASE" --to "$HEAD_SHA" \
       --format json --exclude "$EXCLUDE" \
       >"$spec" 2>"${spec}.err" && [ -s "$spec" ]; then
       echo "ocr-gate.sh: ${tool} could not run; emitted a delegation spec instead — review it yourself before pushing" >&2
-      echo "OCR status=delegate findings=unknown result=${spec} tool=ocr-delegate"
+      echo "OCR status=delegate findings=unknown result=${spec} tool=ocr-delegate head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
       exit 3
     fi
     echo "ocr-gate.sh: ocr delegate also failed" >&2
     sed -n '1,10p' "${spec}.err" >&2 || true
   fi
 
-  echo "OCR status=error findings=0 result=- tool=${tool}"
+  echo "OCR status=error findings=0 result=- tool=${tool} head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 2
 }
 
+# Codex is a separate, independently installed plugin — its script root isn't knowable
+# ahead of time, so it's resolved at runtime from Claude Code's own install manifest
+# (the same file every plugin is actually recorded in), preferring a user-scope install.
+# `/codex:adversarial-review` itself can't be invoked here: its command frontmatter sets
+# `disable-model-invocation: true`, which blocks the SlashCommand tool from calling it
+# programmatically. This calls the same underlying runtime the slash command wraps
+# (`codex-companion.mjs adversarial-review`) directly instead.
+#
+# Returns 1 (never exits) on anything short of a completed verdict, so the caller falls
+# through to the existing ocr-pre-pr.sh / ocr / delegate chain untouched. Exits directly
+# (0 clean, 1 findings) only once Codex has actually produced a verdict — that verdict is
+# authoritative and is never double-checked by also running OCR.
+try_codex() {
+  local root goal result rc
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  goal="$(pwd)/GOAL.md"
+  if [ ! -f "$goal" ]; then
+    goal="${OUT}.goal.md"
+    printf '%s\n' 'Review the changed code for concrete correctness and security defects, against the repository conventions. Report unavailable acceptance context; never infer that product requirements passed.' > "$goal"
+  fi
+  result="${OUT}.codex.json"
+  set +e
+  IMPS_CODEX_TIMEOUT="${BABYSITTER_CODEX_TIMEOUT:-300}" \
+    "$root/run-codex-review.sh" --repo "$(pwd)" --base "$MERGE_BASE" --head "$HEAD_SHA" --goal "$goal" > "$result"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 1 ]; then
+    echo "OCR status=error findings=unknown result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"
+    exit 2
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  case "$(jq -r '.verdict' "$result")" in
+    APPROVE) echo "OCR status=clean findings=0 result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"; exit 0 ;;
+    CHANGES_REQUESTED) echo "OCR status=findings findings=$(jq '.findings | length' "$result") result=${result} tool=codex-adversarial-review head=${HEAD_SHA} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE}"; exit 1 ;;
+    *) return 1 ;;
+  esac
+}
+
 [ -n "$BASE_REF" ] || die "--base <base-ref> is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required for bounded review timeouts"
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
 
@@ -146,28 +196,37 @@ fi
 # Checked before tool selection, not inside one branch of it. An empty diff is a
 # clean review, and handing "no changed files" to a review CLI makes it exit as an
 # error — which would report a perfectly fine push as status=error.
-git fetch --quiet origin "$BASE_REF" >/dev/null 2>&1 || true
+BASE_FRESH=true
+if ! bounded git fetch --quiet origin "$BASE_REF" >/dev/null 2>&1; then
+  BASE_FRESH=false
+  echo "ocr-gate.sh: cannot refresh base; reviewing the cached base revision only" >&2
+fi
 MERGE_BASE="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
 [ -n "$MERGE_BASE" ] || die "no merge-base between HEAD and origin/${BASE_REF}"
 HEAD_SHA="$(git rev-parse HEAD)"
+SOURCE_STATUS="$(git status --porcelain=v1)"
 
 if [ "$MERGE_BASE" = "$HEAD_SHA" ] || git diff --quiet "$MERGE_BASE" "$HEAD_SHA"; then
   echo "ocr-gate.sh: no changes against origin/${BASE_REF} — nothing to review" >&2
-  echo "OCR status=clean findings=0 result=- tool=-"
+  echo "OCR status=clean findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 0
 fi
+
+# ---- Codex first, best-effort --------------------------------------------------
+try_codex || true
 
 # ---- no tool installed -------------------------------------------------------
 if ! command -v ocr-pre-pr.sh >/dev/null 2>&1 && ! command -v ocr >/dev/null 2>&1; then
   echo "ocr-gate.sh: no ocr CLI on PATH — pre-push review skipped" >&2
-  echo "OCR status=skipped findings=0 result=- tool=-"
+  echo "OCR status=skipped findings=0 result=- tool=- head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
+  [ "${BABYSITTER_REVIEW_REQUIRED:-0}" = 1 ] && exit 2
   exit 0
 fi
 
 # ---- the user's own wrapper wins --------------------------------------------
 if command -v ocr-pre-pr.sh >/dev/null 2>&1; then
   set +e
-  OCR_BASE_REF="$BASE_REF" OCR_RESULT_PATH="$OUT" ocr-pre-pr.sh >"${OUT}.summary" 2>"${OUT}.err"
+  OCR_BASE_REF="$BASE_REF" OCR_RESULT_PATH="$OUT" bounded ocr-pre-pr.sh >"${OUT}.summary" 2>"${OUT}.err"
   rc=$?
   set -e
   case "$rc" in
@@ -179,6 +238,10 @@ if command -v ocr-pre-pr.sh >/dev/null 2>&1; then
     delegate_or_die "ocr-pre-pr.sh" "${OUT}.err"
     ;;
   esac
+  assert_revision
+  if [ "$status" = clean ] && ! jq -e '.comments | type == "array"' "$OUT" >/dev/null 2>&1; then
+    die "wrapper returned success without a valid findings array"
+  fi
   findings="$(jq -r '.comments | length' "$OUT" 2>/dev/null || true)"
   case "$findings" in
   '' | *[!0-9]*) findings="unknown" ;;
@@ -190,7 +253,8 @@ if command -v ocr-pre-pr.sh >/dev/null 2>&1; then
   if [ "$status" = "findings" ] && [ "$findings" = "0" ]; then
     findings="unknown"
   fi
-  echo "OCR status=${status} findings=${findings} result=${OUT} tool=ocr-pre-pr.sh"
+  if [ "$status" = clean ] && [ "$findings" != 0 ]; then status=findings; fi
+  echo "OCR status=${status} findings=${findings} result=${OUT} tool=ocr-pre-pr.sh head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   if [ "$status" = "clean" ]; then
     exit 0
   fi
@@ -199,7 +263,7 @@ fi
 
 # ---- upstream CLI ------------------------------------------------------------
 set +e
-ocr review \
+bounded ocr review \
   --from "$MERGE_BASE" --to "$HEAD_SHA" \
   --format json --audience agent \
   --exclude "$EXCLUDE" \
@@ -208,7 +272,8 @@ ocr review \
 rc=$?
 set -e
 
-if [ "$rc" -ne 0 ] && ! jq -e '.' "$OUT" >/dev/null 2>&1; then
+assert_revision
+if [ "$rc" -ne 0 ] || ! jq -e '.comments | type == "array"' "$OUT" >/dev/null 2>&1; then
   echo "ocr-gate.sh: ocr review failed (exit ${rc})" >&2
   sed -n '1,20p' "${OUT}.err" >&2 || true
   delegate_or_die "ocr" "${OUT}.err"
@@ -226,9 +291,9 @@ case "$findings" in
 esac
 
 if [ "$findings" -eq 0 ]; then
-  echo "OCR status=clean findings=0 result=${OUT} tool=ocr"
+  echo "OCR status=clean findings=0 result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
   exit 0
 fi
 
-echo "OCR status=findings findings=${findings} result=${OUT} tool=ocr"
+echo "OCR status=findings findings=${findings} result=${OUT} tool=ocr head=${HEAD_SHA:-unknown} base_fresh=${BASE_FRESH:-false} base=${MERGE_BASE:-unknown}"
 exit 1
