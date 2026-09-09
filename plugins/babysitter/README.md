@@ -266,3 +266,7 @@ event-stream primitive, only the command prose needs porting.
 ## License
 
 MIT.
+
+## Required review and revision freshness
+
+Set `BABYSITTER_REVIEW_REQUIRED=1` to block when review tooling is unavailable. The default retains an explicit skipped result. Codex review uses an isolated checkout and a process-group timeout (`BABYSITTER_CODEX_TIMEOUT`, default 300 seconds); fallback cannot erase an adverse verdict. Re-run review after each repair, retain base/head and evidence, and compare the remote head before merge. Bundled helpers install independently of Imps.

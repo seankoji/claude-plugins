@@ -7,5 +7,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-node --test "$ROOT/tests/js/**/*.test.js"
-exit $?
+node --test "$ROOT/tests/js/**/*.test.js" || exit $?
+eval_report="$(mktemp)" || exit 1
+trap 'rm -f "$eval_report"' EXIT
+node "$ROOT/tests/evals/workflow-policy-eval.js" >"$eval_report" || { cat "$eval_report"; exit 1; }
+node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1])).metrics))' "$eval_report"

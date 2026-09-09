@@ -363,3 +363,7 @@ Repos with no UI surface skip the browser half entirely.
 ## License
 
 MIT
+
+## Verified outcomes and recovery
+
+Implementation runs use the [verified workflow contract](references/workflow-contract.md): stable requirement IDs, revision-bound evidence, checks before independent review, and fresh verification after repairs. Required unverified outcomes block completion. The contract documents helper commands, process timeouts, ownership recovery, runtime limitations and evaluation. Codex-first diff review reuses the adapter work from PR #258; plan routing incorporates PR #263.

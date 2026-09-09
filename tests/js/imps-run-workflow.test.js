@@ -25,7 +25,7 @@ function loadWorkflowFunctions({ agent, parallel, phase, args, log }) {
     'phase',
     'args',
     'log',
-    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun }`
+    `${body}\nreturn { runDispatch, stageTasks, dispatchImp, parseTaskDecision, parseGateDecision, validateStateRead, nowIso, fixLoopRound, adjudicateFindings, writeParkedFindings, constraintsPointer, constraintsPointerForReviewer, resolvePolicy, sameRevision, acceptanceFailures, validManifest, reviewPassed, verifyForPublish, drivePrAndClose, ocrReview, ocrPreflight, fixOcrReview, personaReview, fixGate, finalizeRun }`
   )
   return factory(agent, parallel, phase || (() => {}), args || {}, log || (() => {}))
 }
@@ -407,7 +407,7 @@ test('OCR review is a mechanical wrapper and code fixes carry constraints', asyn
 
   const wrapper = calls.find((c) => c.opts.label === 'ocr-review')
   assert.ok(wrapper.prompt.includes('Do not read, summarize, review, edit'), 'wrapper must not receive review work')
-  assert.ok(wrapper.prompt.includes('run-ocr.sh'), 'wrapper must invoke the dedicated harness')
+  assert.ok(wrapper.prompt.includes('run-code-review.sh'), 'wrapper must invoke the dedicated harness')
   assert.ok(wrapper.prompt.includes(GOAL_ARGS.goalFilePath), 'wrapper must pass GOAL.md by path')
 })
 
@@ -513,7 +513,7 @@ test('a throwing nowIso never costs the heartbeat its dispatch bookkeeping', asy
     if (opts.label === 'now') throw new Error('clock agent died')
     if (opts.label === 'imp-1') return { status: 'done', branch: 'br-1', artifacts: [{ url: 'x' }] }
     if (opts.label === 'heartbeat') {
-      patches.push(JSON.parse(prompt.match(/leaving every other existing field untouched: (\{.*\})\. Write/s)[1]))
+      patches.push(JSON.parse(prompt.match(/'--patch' '(.*?)'/s)[1]))
       return {}
     }
     return {}
@@ -541,7 +541,7 @@ test('a working nowIso puts a real ISO value in the heartbeat', async () => {
     if (opts.label === 'now') return { iso: '2026-08-07T11:22:33Z' }
     if (opts.label === 'imp-1') return { status: 'done', branch: 'br-1', artifacts: [] }
     if (opts.label === 'heartbeat') {
-      patches.push(JSON.parse(prompt.match(/leaving every other existing field untouched: (\{.*\})\. Write/s)[1]))
+      patches.push(JSON.parse(prompt.match(/'--patch' '(.*?)'/s)[1]))
       return {}
     }
     return {}
@@ -555,19 +555,104 @@ test('a working nowIso puts a real ISO value in the heartbeat', async () => {
 
 // ---- Phase 5: drive-to-green and close ----
 
+const SHA = 'a'.repeat(40)
+const PROOF = { path: '/tmp/test-evidence.log', sha256: 'd'.repeat(64) }
+const SNAPSHOT = { schema: 1, repo: '/repo', head: SHA, base: 'b'.repeat(40), merge_base: 'b'.repeat(40), spec_hash: 'c'.repeat(64), policy_hash: '9'.repeat(64), clean: true, requirements: [{ id: 'REQ-1', text: 'it works' }] }
+const COVERAGE = { criteria: [{ id: 'REQ-1', text: 'it works', status: 'satisfied', evidence: 'checked implementation', verification: { kind: 'inspection', artifacts: [PROOF] } }] }
+const REVIEW = { status: 'ok', verdict: 'APPROVE', findings: [], model: 'fixture-model', provider: 'fixture' }
+const MANIFEST = { gates: [], discovery_error: null, no_checks_reason: 'fixture explicitly has no CI' }
+const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green', head: SHA, merged: false, merge_commit: null }
 function prAgent(script) {
   const calls = []
+  const defaults = { 'revision-snapshot': SNAPSHOT, 'discover-gates': MANIFEST, 'ocr-review': REVIEW, 'dod-coverage': COVERAGE, 'verify-artifact': PROOF }
   async function agent(prompt, opts) {
     calls.push(opts.label)
     const key = Object.keys(script).find((k) => opts.label.startsWith(k))
-    const v = script[key]
-    return typeof v === 'function' ? v(calls) : v
+    const v = key ? script[key] : defaults[opts.label]
+    return typeof v === 'function' ? v(calls, prompt) : v
   }
   return { agent, calls }
 }
 
-const GREEN = { checks: 'passing', mergeable: 'clean', unresolved_comments: [], detail: 'green' }
 const PR = { number: 7, url: 'https://example.test/pr/7' }
+
+test('a PR repair is reviewed and accepted before merge', async () => {
+  let repaired = false
+  const { agent, calls } = prAgent({
+    'pr-status': () => ({ ...GREEN, checks: repaired ? 'passing' : 'failing' }),
+    'pr-fix': () => { repaired = true; return {} },
+    'merge-pr': { done: true, refused: false },
+  })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+  assert.equal(out.merged, true)
+  assert.ok(calls.indexOf('ocr-review') > calls.indexOf('pr-fix-7'))
+  assert.ok(calls.indexOf('dod-coverage') < calls.indexOf('merge-pr-7'))
+})
+
+for (const [name, response] of [
+  ['unimplemented requirement', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], status: 'unsatisfied' }] }],
+  ['runtime criterion with no proof', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], verification: { kind: 'runtime', artifacts: [] } }] }],
+  ['missing requirement', { criteria: [] }],
+  ['stale checked criterion', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], status: 'unverifiable' }] }],
+  ['unknown requirement ID', { ...COVERAGE, criteria: [{ ...COVERAGE.criteria[0], id: 'invented' }] }],
+  ['duplicate requirement ID', { criteria: [...COVERAGE.criteria, ...COVERAGE.criteria] }],
+]) {
+  test(`acceptance blocks ${name}`, async () => {
+    const { agent, calls } = prAgent({ 'pr-status': GREEN, 'dod-coverage': response })
+    const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+    const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+    assert.equal(out.green, false)
+    assert.equal(out.merged, false)
+    assert.ok(!calls.includes('merge-pr-7'))
+  })
+}
+
+test('late external PR head movement blocks merge', async () => {
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, head: 'f'.repeat(40) } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', false)
+  assert.match(out.detail, /head differs/)
+  assert.ok(!calls.includes('merge-pr-7'))
+})
+
+test('evidence artifact drift blocks completion', async () => {
+  const { agent } = prAgent({ 'verify-artifact': { ...PROOF, sha256: 'f'.repeat(64) } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'evidence_artifact_changed')
+})
+
+test('model inspection cannot satisfy an explicit runtime method', () => {
+  const { acceptanceFailures } = loadWorkflowFunctions({ agent: async () => {}, parallel })
+  assert.deepEqual(acceptanceFailures({ ...SNAPSHOT, requirements: [{ ...SNAPSHOT.requirements[0], method: 'runtime' }] }, COVERAGE.criteria), ['REQ-1'])
+})
+
+test('changed requirement contract invalidates prior passing evidence', async () => {
+  const { agent, calls } = prAgent({})
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  const old = { schema: 1, status: 'passed', snapshot: { ...SNAPSHOT, spec_hash: 'e'.repeat(64) } }
+  await verifyForPublish('main', old)
+  assert.ok(calls.includes('dod-coverage'))
+  assert.ok(calls.includes('ocr-review'))
+})
+
+test('missing check discovery cannot masquerade as a no-checks project', async () => {
+  const { agent } = prAgent({ 'discover-gates': { gates: [], discovery_error: 'unreadable CI', no_checks_reason: null } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).reason, 'verification_manifest_invalid')
+})
+
+test('contradictory approval with a major finding is rejected', async () => {
+  const { agent } = prAgent({ 'ocr-review': { ...REVIEW, findings: [{ severity: 'major' }] } })
+  const { verifyForPublish } = loadWorkflowFunctions({ agent, parallel })
+  assert.equal((await verifyForPublish('main')).status, 'blocked')
+})
+
+test('different base and dirty checkout invalidate evidence', () => {
+  const { sameRevision } = loadWorkflowFunctions({ agent: async () => {}, parallel })
+  assert.equal(sameRevision(SNAPSHOT, { ...SNAPSHOT, base: 'e'.repeat(40) }), false)
+  assert.equal(sameRevision(SNAPSHOT, { ...SNAPSHOT, clean: false }), false)
+})
 
 test('a green PR with endstate "pr" is never merged', async () => {
   const { agent, calls } = prAgent({ 'pr-status': GREEN })
@@ -609,7 +694,7 @@ test('a merge that is refused never proceeds to a release', async () => {
 })
 
 test('the green loop is bounded and hands off rather than looping forever', async () => {
-  const RED = { checks: 'failing', mergeable: 'clean', unresolved_comments: [], detail: 'tests red' }
+  const RED = { ...GREEN, checks: 'failing', mergeable: 'clean', unresolved_comments: [], detail: 'tests red' }
   const { agent, calls } = prAgent({ 'pr-status': RED, 'pr-fix': {} })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
@@ -623,7 +708,7 @@ test('the green loop is bounded and hands off rather than looping forever', asyn
 })
 
 test('an already-merged PR is not merged again on a resume', async () => {
-  const { agent, calls } = prAgent({ 'pr-status': GREEN })
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
   const out = await drivePrAndClose(PR, 'o/r', 'main', 'merge', true)
@@ -638,7 +723,7 @@ test('unresolved review comments block green just as a failing check does', asyn
     'pr-status': () => {
       round += 1
       return round === 1
-        ? { checks: 'passing', mergeable: 'clean', unresolved_comments: ['rename the helper'], detail: '1 comment' }
+        ? { ...GREEN, checks: 'passing', mergeable: 'clean', unresolved_comments: ['rename the helper'], detail: '1 comment' }
         : GREEN
     },
     'pr-fix': {},
@@ -654,7 +739,7 @@ test('unresolved review comments block green just as a failing check does', asyn
 test('an unknown mergeability is not green — the check fails closed', async () => {
   // GitHub computes mergeability asynchronously and reports unknown while it does.
   // Treating that as green would merge on the absence of the fact the check establishes.
-  const UNKNOWN = { checks: 'passing', mergeable: 'unknown', unresolved_comments: [], detail: 'mergeability not computed' }
+  const UNKNOWN = { ...GREEN, checks: 'passing', mergeable: 'unknown', unresolved_comments: [], detail: 'mergeability not computed' }
   const { agent, calls } = prAgent({ 'pr-status': UNKNOWN, 'pr-fix': {} })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
@@ -669,12 +754,12 @@ test('a resume after a merge can still cut the release it never got to', async (
   // The failure this guards: merge lands, the run dies, and the resume returns early
   // because the PR is already merged — so the authorized release never happens.
   const { agent, calls } = prAgent({
-    'pr-status': GREEN,
+    'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) },
     'cut-release': { done: true, refused: false, url: 'https://example.test/releases/v1', detail: 'cut' },
   })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
-  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false)
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false, { schema: 1, status: 'passed', snapshot: { head: GREEN.head }, manifest: { gates: [] } })
 
   assert.ok(!calls.some((c) => c.startsWith('merge-pr')), 'an already-merged PR must not be re-merged')
   assert.equal(out.released, true, 'the release must still be reachable on resume')
@@ -682,7 +767,7 @@ test('a resume after a merge can still cut the release it never got to', async (
 })
 
 test('an already-released run re-cuts nothing', async () => {
-  const { agent, calls } = prAgent({ 'pr-status': GREEN })
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
   const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
 
   const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, true)
@@ -700,4 +785,13 @@ test('a run with no PR reports that rather than treating it as an error', async 
   assert.equal(out.merged, false)
   assert.match(out.detail, /no PR/)
   assert.equal(calls.length, 0)
+})
+
+
+test('merged resume without evidence cannot release', async () => {
+  const { agent, calls } = prAgent({ 'pr-status': { ...GREEN, merged: true, merge_commit: 'e'.repeat(40) } })
+  const { drivePrAndClose } = loadWorkflowFunctions({ agent, parallel })
+  const out = await drivePrAndClose(PR, 'o/r', 'main', 'release', true, false)
+  assert.equal(out.released, false)
+  assert.ok(!calls.some(c => c.startsWith('cut-release')))
 })

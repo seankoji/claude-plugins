@@ -130,7 +130,7 @@ case "$CONCURRENCY" in ''|0|*[!0-9]*) fail bad_arguments "--concurrency must be 
 
 command -v jq >/dev/null 2>&1 || fail jq_missing "jq is required"
 command -v git >/dev/null 2>&1 || fail git_missing "git is required"
-command -v perl >/dev/null 2>&1 || fail timeout_unsupported 'perl is required for the portable timeout guard'
+command -v python3 >/dev/null 2>&1 || fail timeout_unsupported 'python3 is required for process-group timeouts'
 [ -f "$RULE_PATH" ] || fail rule_missing "review rule file is missing: $RULE_PATH"
 
 # ---- Endpoint credentials --------------------------------------------------------
@@ -204,10 +204,7 @@ BACKGROUND_FILE="$TMP_ROOT/background.md"
 } > "$BACKGROUND_FILE" || fail snapshot_failed 'cannot capture GOAL.md as review background'
 BG_CHARS="$(wc -c < "$BACKGROUND_FILE" | tr -d ' ')"
 if [ "$BG_CHARS" -gt 7800 ]; then
-  log "background is ${BG_CHARS} chars; truncating to 7500"
-  head -c 7500 "$BACKGROUND_FILE" > "$BACKGROUND_FILE.trunc" \
-    && printf '\n...(truncated)\n' >> "$BACKGROUND_FILE.trunc" \
-    && mv "$BACKGROUND_FILE.trunc" "$BACKGROUND_FILE"
+  fail context_too_large 'acceptance context exceeds OCR limit; shorten the reviewed contract without dropping requirements'
 fi
 
 # ---- Run ---------------------------------------------------------------------------
@@ -221,9 +218,7 @@ export OCR_LLM_TIMEOUT="${IMPS_OCR_LLM_TIMEOUT:-180}"
 
 RESULT_PATH="$TMP_ROOT/result.json"
 run_with_timeout() {
-  # `exec` means Perl becomes OCR, so the alarm kills the reviewed process itself and
-  # cannot leave a watchdog child behind. macOS ships Perl; see the preflight.
-  perl -e '$SIG{ALRM} = sub { exit 124 }; alarm shift @ARGV; exec @ARGV or exit 127' \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/run-bounded.py" \
     "$TIMEOUT_SECONDS" "$@" >"$RESULT_PATH" 2>"$TMP_ROOT/ocr.err" &
   REVIEW_PID=$!
   wait "$REVIEW_PID"
