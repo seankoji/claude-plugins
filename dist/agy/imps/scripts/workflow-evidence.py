@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 import shlex
 import math
-import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -121,7 +120,7 @@ def artifact(path):
     return {'path': str(path), 'sha256': digest(path.read_bytes())}
 
 
-def gate(name, command, cwd, seconds, argv=None, source=None):
+def gate_plan(name, command, cwd, seconds, argv=None, source=None):
     root = Path(git('.', 'rev-parse', '--show-toplevel')).resolve()
     cwd = (root / cwd).resolve(strict=True)
     if not cwd.is_relative_to(root) or not cwd.is_dir() or not 0 < seconds <= 3600:
@@ -140,46 +139,39 @@ def gate(name, command, cwd, seconds, argv=None, source=None):
         raise ValueError('gate source must be a repository file')
     contents = declared.read_text()
     supported = False
+    check_name = re.compile(r'^(test|lint|build|typecheck|type-check|check|verify|validate|fmt|format)(?:$|[:_.-])', re.I)
     if declared.name == 'package.json' and binary in ('npm', 'pnpm', 'yarn', 'bun'):
         scripts = json.loads(contents).get('scripts', {})
-        script = argv[2] if len(argv) > 2 and argv[1] == 'run' else argv[1] if len(argv) > 1 else ''
-        supported = script in scripts
+        # No model-added filters, directory switches, snapshot updates or tolerance flags.
+        script = argv[2] if len(argv) == 3 and argv[1] == 'run' else argv[1] if binary == 'npm' and argv == ['npm', 'test'] else ''
+        supported = declared.parent == cwd and script in scripts and bool(check_name.match(script))
     elif declared.name in ('Makefile', 'makefile', 'GNUmakefile') and binary == 'make':
-        # Require a literal target; options, variable assignments and implicit rules
-        # are outside this bounded discovery contract.
         targets = set(re.findall(r'^([A-Za-z0-9_.-]+)\s*:(?!=)', contents, re.M))
-        supported = len(argv) == 2 and argv[1] in targets
-    elif declared.relative_to(root).as_posix().startswith('.github/workflows/') and declared.suffix in ('.yml', '.yaml'):
-        # Deliberately support only literal single-line run steps. Complex shell
-        # blocks belong in checked-in scripts, not an inline evaluator here.
-        for line in contents.splitlines():
-            match = re.match(r'^\s*(?:-\s+)?run:\s*(.+?)\s*$', line)
-            if not match:
-                continue
-            literal = match.group(1)
-            if literal.startswith('"'):
-                try:
-                    literal = json.loads(literal)
-                except ValueError:
-                    continue
-            elif literal.startswith("'") and literal.endswith("'"):
-                literal = literal[1:-1].replace("''", "'")
-            supported = supported or literal == command
+        supported = declared.parent == cwd and len(argv) == 2 and argv[1] in targets and bool(check_name.match(argv[1]))
+    elif declared.suffix in ('.sh', '.py', '.js', '.mjs'):
+        # The script itself is the executable declaration. CI YAML is never treated
+        # as a bag of commands: use its checked-in test script or a remote obligation.
+        relative = declared.relative_to(root).as_posix()
+        invocation = (cwd / argv[-1]).resolve() if argv else None
+        supported = invocation == declared and (relative.startswith('tests/') or bool(check_name.match(declared.stem))) and (
+            (len(argv) == 1 and os.access(declared, os.X_OK)) or
+            (len(argv) == 2 and binary in ('bash', 'sh', 'python3', 'node')))
     if not supported:
-        raise ValueError('unsupported gate source: use a package script, literal Make target, or single-line CI run step')
-    runner_path = Path(__file__).with_name('run-bounded.py')
-    spec = importlib.util.spec_from_file_location('bounded', runner_path)
-    runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
-    fd, log = tempfile.mkstemp(prefix='workflow-gate-', suffix='.log')
-    started = time.monotonic()
-    with os.fdopen(fd, 'wb') as output:
-        status = runner.run(seconds, argv, cwd=str(cwd), stdout=output, stderr=subprocess.STDOUT,
-                            env={key: value for key, value in os.environ.items() if key in ('PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'SYSTEMROOT')})
+        raise ValueError('unsupported gate declaration: use an exact check package script, Make target, or checked-in check script; CI-only jobs remain remote obligations')
+    return {'gate': name, 'cmd': command, 'argv': argv, 'cwd': str(cwd), 'timeout_seconds': seconds,
+            'source': str(declared), 'source_sha256': digest(declared.read_bytes()), 'execution': 'native_host_tool_required'}
+
+
+def gate_record(name, command, status, log, duration_ms, unavailable_reason=None):
+    """Record a native tool result. This helper never executes a gate command."""
+    if status == 0 and unavailable_reason:
+        raise ValueError('a successful exit cannot be recorded as unavailable')
+    if duration_ms is not None and duration_ms < 0:
+        raise ValueError('duration must not be negative')
     proof = artifact(log)
     return {'gate': name, 'cmd': command, 'pass': status == 0, 'exit_code': status,
-            'status': 'passed' if status == 0 else 'unavailable' if status == 124 else 'failed',
-            'duration_ms': round((time.monotonic() - started) * 1000), 'artifact': proof,
+            'status': 'passed' if status == 0 else 'unavailable' if unavailable_reason or status in (124, 126, 127) else 'failed',
+            'duration_ms': duration_ms, 'artifact': proof, 'unavailable_reason': unavailable_reason, 'environment_policy': 'native_host',
             'tail': '\n'.join(Path(log).read_text(errors='replace').splitlines()[-20:])}
 
 
@@ -251,13 +243,20 @@ def main(argv=None):
     contract_cmd.add_argument('--goal', required=True)
     evidence = commands.add_parser('artifact')
     evidence.add_argument('path')
-    check = commands.add_parser('gate')
+    check = commands.add_parser('gate-plan')
     check.add_argument('--name', required=True)
     check.add_argument('--cmd', required=True)
     check.add_argument('--argv-json', required=True)
     check.add_argument('--source', required=True)
     check.add_argument('--cwd', default='.')
     check.add_argument('--timeout', required=True, type=int)
+    receipt = commands.add_parser('gate-record')
+    receipt.add_argument('--name', required=True)
+    receipt.add_argument('--cmd', required=True)
+    receipt.add_argument('--exit-code', required=True, type=int)
+    receipt.add_argument('--log', required=True)
+    receipt.add_argument('--duration-ms', type=int)
+    receipt.add_argument('--unavailable-reason')
     for action in ('claim', 'patch', 'release', 'recover', 'budget'):
         sub = commands.add_parser(action)
         sub.add_argument('--state', required=True)
@@ -275,8 +274,10 @@ def main(argv=None):
             result = {**value, 'spec_hash': spec_hash}
         elif args.action == 'artifact':
             result = artifact(args.path)
-        elif args.action == 'gate':
-            result = gate(args.name, args.cmd, args.cwd, args.timeout, json.loads(args.argv_json), args.source)
+        elif args.action == 'gate-plan':
+            result = gate_plan(args.name, args.cmd, args.cwd, args.timeout, json.loads(args.argv_json), args.source)
+        elif args.action == 'gate-record':
+            result = gate_record(args.name, args.cmd, args.exit_code, args.log, args.duration_ms, args.unavailable_reason)
         else:
             result = state_operation(args.state, args.action, args.token,
                                      json.loads(args.patch) if args.action == 'patch' else None,

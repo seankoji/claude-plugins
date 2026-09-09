@@ -509,7 +509,6 @@ discussion body. Never a paraphrase; this section exists to be checked against.>
 ## Definition of Done
 - [ ] <acceptance criterion 1>
 - [ ] <acceptance criterion 2 — one line each from discovery>
-- [ ] Gates green (build · lint · test · type — per GATE_CMDS)
 - [ ] Plan adversarially reviewed (codex, else Head Imp); OCR reviewed the merged diff; all blocker/major findings addressed
 - [ ] No merge conflicts with the default branch
 
