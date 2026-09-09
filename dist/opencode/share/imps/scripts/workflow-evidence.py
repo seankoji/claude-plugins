@@ -121,10 +121,10 @@ def artifact(path):
 
 
 def gate_plan(name, command, cwd, seconds, argv=None, source=None):
-    root = Path(git('.', 'rev-parse', '--show-toplevel')).resolve()
+    root = Path(git(cwd, 'rev-parse', '--show-toplevel')).resolve()
     cwd = (root / cwd).resolve(strict=True)
-    if not cwd.is_relative_to(root) or not cwd.is_dir() or not 0 < seconds <= 3600:
-        raise ValueError('gate cwd must be inside checkout and timeout in 1..3600 seconds')
+    if not cwd.is_relative_to(root) or not cwd.is_dir() or not 0 < seconds <= 600:
+        raise ValueError('local gate cwd must be inside checkout and timeout in 1..600 seconds (native foreground limit); longer checks must remain remote')
     if not isinstance(argv, list) or not argv or any(not isinstance(arg, str) or not arg for arg in argv):
         raise ValueError('gate needs an explicit nonempty argv array')
     if shlex.split(command) != argv:
@@ -162,16 +162,25 @@ def gate_plan(name, command, cwd, seconds, argv=None, source=None):
             'source': str(declared), 'source_sha256': digest(declared.read_bytes()), 'execution': 'native_host_tool_required'}
 
 
-def gate_record(name, command, status, log, duration_ms, unavailable_reason=None):
+def gate_record(name, command, status, log, duration_ms, unavailable_reason=None, plan_path=None):
     """Record a native tool result. This helper never executes a gate command."""
     if status == 0 and unavailable_reason:
         raise ValueError('a successful exit cannot be recorded as unavailable')
     if duration_ms is not None and duration_ms < 0:
         raise ValueError('duration must not be negative')
+    if not plan_path:
+        raise ValueError('gate record requires its saved plan receipt')
+    plan = json.loads(Path(plan_path).read_text())
+    current = gate_plan(name, command, plan['cwd'], plan['timeout_seconds'], plan['argv'], plan['source'])
+    if any(current[key] != plan[key] for key in current):
+        raise ValueError('gate declaration changed after planning')
+    if Path(log).resolve() != Path(str(plan_path) + '.log').resolve() or Path(log).stat().st_mtime_ns < plan['created_ns']:
+        raise ValueError('gate log must be fresh and unique to this plan')
     proof = artifact(log)
     return {'gate': name, 'cmd': command, 'pass': status == 0, 'exit_code': status,
             'status': 'passed' if status == 0 else 'unavailable' if unavailable_reason or status in (124, 126, 127) else 'failed',
-            'duration_ms': duration_ms, 'artifact': proof, 'unavailable_reason': unavailable_reason, 'environment_policy': 'native_host',
+            'duration_ms': duration_ms, 'artifact': proof, 'argv': plan['argv'], 'source_sha256': plan['source_sha256'],
+            'plan_id': plan['plan_id'], 'unavailable_reason': unavailable_reason, 'environment_policy': 'native_host',
             'tail': '\n'.join(Path(log).read_text(errors='replace').splitlines()[-20:])}
 
 
@@ -253,6 +262,7 @@ def main(argv=None):
     receipt = commands.add_parser('gate-record')
     receipt.add_argument('--name', required=True)
     receipt.add_argument('--cmd', required=True)
+    receipt.add_argument('--plan', required=True)
     receipt.add_argument('--exit-code', required=True, type=int)
     receipt.add_argument('--log', required=True)
     receipt.add_argument('--duration-ms', type=int)
@@ -276,8 +286,12 @@ def main(argv=None):
             result = artifact(args.path)
         elif args.action == 'gate-plan':
             result = gate_plan(args.name, args.cmd, args.cwd, args.timeout, json.loads(args.argv_json), args.source)
+            fd, plan_path = tempfile.mkstemp(prefix='imps-gate-', suffix='.json')
+            os.close(fd)
+            result.update(plan_id=uuid.uuid4().hex, created_ns=time.time_ns(), plan_path=plan_path, log_path=plan_path + '.log')
+            atomic_json(plan_path, result)
         elif args.action == 'gate-record':
-            result = gate_record(args.name, args.cmd, args.exit_code, args.log, args.duration_ms, args.unavailable_reason)
+            result = gate_record(args.name, args.cmd, args.exit_code, args.log, args.duration_ms, args.unavailable_reason, args.plan)
         else:
             result = state_operation(args.state, args.action, args.token,
                                      json.loads(args.patch) if args.action == 'patch' else None,
