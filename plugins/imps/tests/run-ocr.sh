@@ -16,18 +16,19 @@ bad() { printf 'FAIL %s: %s\n' "$1" "$2" >&2; fail=$((fail + 1)); }
 mkdir -p "$ROOT/bin" "$ROOT/tmp" "$ROOT/realhome"
 
 # `ocr` stub. STUB_CASE selects the review payload; STUB_VERSION exercises the version
-# gate. Every review invocation records the endpoint and model it was handed, so the URL
-# normalisation and credential plumbing can be asserted without printing the secret.
+# gate. The harness configures the endpoint through `ocr config set`, so the stub records
+# every config-set key/value pair; the URL normalisation, model plumbing and credential
+# handling are asserted from that record without printing the secret.
 cat > "$ROOT/bin/ocr" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 case "${1:-}" in
   version) printf 'open-code-review v%s (deadbeef) darwin/arm64\n' "${STUB_VERSION:-1.10.1}"; exit 0 ;;
-  config) exit 0 ;;
+  config)
+    if [ "${2:-}" = "set" ]; then printf '%s=%s\n' "${3:-}" "${4:-}" >> "$STUB_CONFIG_SINK"; fi
+    exit 0 ;;
   review)
     if [ "${2:-}" = "--help" ]; then printf '%s\n' '--from --to --format json --concurrency --rule --background-file'; exit 0; fi
-    printf '%s\n' "${OCR_LLM_URL:-}" > "$STUB_URL_SINK"
-    printf '%s\n' "${OCR_LLM_MODEL:-}" >> "$STUB_URL_SINK"
     case "${STUB_CASE:-approve}" in
       timeout) sleep 5 ;;
       not_json) printf 'this is not json\n' ;;
@@ -63,9 +64,12 @@ write_config() { printf '%s\n' "$1" > "$CONFIG"; }
 GOOD_CONFIG='{"provider":{"litellm":{"options":{"baseURL":"http://endpoint.invalid:4000","apiKey":"secret-litellm-key"}}}}'
 write_config "$GOOD_CONFIG"
 
+# Last value the harness configured for a given `ocr config set` key, or empty.
+configured() { grep "^$1=" "$ROOT/config-sink" 2>/dev/null | tail -n 1 | cut -d= -f2-; }
+
 run_review() {
   env STUB_CASE="${STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.10.1}" \
-    STUB_URL_SINK="$ROOT/url-sink" \
+    STUB_CONFIG_SINK="$ROOT/config-sink" \
     HOME="$ROOT/realhome" TMPDIR="$ROOT/tmp" PATH="$ROOT/bin:$PATH" \
     IMPS_OCR_BIN=ocr IMPS_OPENCODE_CONFIG_PATH="$CONFIG" \
     "$REVIEW" --repo "$ROOT/repo" --base "$BASE" --goal "$ROOT/GOAL.md" --timeout 3 "$@"
@@ -82,8 +86,8 @@ if [ -z "$(find "$ROOT/tmp" -mindepth 1 -maxdepth 1 -name 'imps-ocr-review.*' -p
 
 # OpenCode stores the endpoint as a bare root; OCR needs the OpenAI-compatible base.
 # Getting this wrong 404s every request, so assert the normalisation directly.
-if [ "$(head -n 1 "$ROOT/url-sink" 2>/dev/null)" = "http://endpoint.invalid:4000/v1" ]; then ok 'base URL normalised to /v1'; else bad 'base URL normalised to /v1' "got $(head -n 1 "$ROOT/url-sink" 2>/dev/null)"; fi
-if [ "$(sed -n 2p "$ROOT/url-sink" 2>/dev/null)" = "deepseek-v4-flash" ]; then ok 'default model reaches OCR'; else bad 'default model reaches OCR' "got $(sed -n 2p "$ROOT/url-sink" 2>/dev/null)"; fi
+if [ "$(configured providers.litellm.url)" = "http://endpoint.invalid:4000/v1" ]; then ok 'base URL normalised to /v1'; else bad 'base URL normalised to /v1' "got $(configured providers.litellm.url)"; fi
+if [ "$(configured model)" = "deepseek-v4-flash" ]; then ok 'default model reaches OCR'; else bad 'default model reaches OCR' "got $(configured model)"; fi
 
 STUB_CASE=major run_review >"$out" 2>"$err"; rc=$?
 if [ "$rc" = 0 ] && jq -e '.verdict == "CHANGES_REQUESTED" and .findings[0].severity == "major" and .findings[0].path == "lib/a.js" and (.findings[0].message | test("^\\[?major") | not)' "$out" >/dev/null; then ok 'tagged major blocks and strips its tag'; else bad 'tagged major blocks and strips its tag' "rc=$rc $(cat "$out")"; fi
@@ -124,7 +128,7 @@ write_config "$GOOD_CONFIG"
 # Explicit env overrides must win over the config file, including an endpoint that
 # already carries /v1 — normalising that twice would produce /v1/v1.
 STUB_CASE=approve IMPS_OCR_URL="http://override.invalid:8080/v1" IMPS_OCR_TOKEN=tok IMPS_OCR_MODEL=other-model run_review >"$out" 2>"$err"; rc=$?
-if [ "$rc" = 0 ] && [ "$(head -n 1 "$ROOT/url-sink")" = "http://override.invalid:8080/v1" ] && jq -e '.model == "other-model"' "$out" >/dev/null; then ok 'env overrides win and /v1 is not doubled'; else bad 'env overrides win and /v1 is not doubled' "rc=$rc got $(head -n 1 "$ROOT/url-sink")"; fi
+if [ "$rc" = 0 ] && [ "$(configured providers.litellm.url)" = "http://override.invalid:8080/v1" ] && jq -e '.model == "other-model"' "$out" >/dev/null; then ok 'env overrides win and /v1 is not doubled'; else bad 'env overrides win and /v1 is not doubled' "rc=$rc got $(configured providers.litellm.url)"; fi
 
 STUB_CASE=approve run_review --concurrency 0 >"$out" 2>"$err"; rc=$?
 if [ "$rc" != 0 ] && jq -e '.reason == "bad_arguments"' "$out" >/dev/null; then ok 'rejects non-positive --concurrency'; else bad 'rejects non-positive --concurrency' "rc=$rc"; fi
