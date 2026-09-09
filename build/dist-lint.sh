@@ -921,7 +921,7 @@ FIXTURE
   mkdir -p "$tmp/override"
   sed 's/end not in headings/not HEADING_RE.match(body_lines[end])/' \
     "$ROOT/build/generate.py" > "$tmp/override/broken_fence.py"
-  sed 's/sorted(override.replacements, key=source_position)/override.replacements/' \
+  sed 's/sorted(replacements, key=source_position)/replacements/' \
     "$ROOT/build/generate.py" > "$tmp/override/broken_order.py"
   st_case "override-fenced-heading" \
     "check_override_fenced_heading '$tmp/override/broken_fence.py'" \

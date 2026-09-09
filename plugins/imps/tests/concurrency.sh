@@ -69,8 +69,12 @@ assert "worktrees-get-distinct-slugs" \
   "$([ -n "$alpha_slug" ] && [ -n "$beta_slug" ] && [ "$alpha_slug" != "$beta_slug" ] && [ "$alpha_slug" != "$main_slug" ] && echo 1 || echo 0)" \
   "main=$main_slug alpha=$alpha_slug beta=$beta_slug"
 
+case "$main_slug" in
+  *__repo) main_slug_ok=1 ;;
+  *) main_slug_ok=0 ;;
+esac
 assert "main-checkout-slug-shape" \
-  "$([ "$main_slug" = "$(basename "$(dirname "$TMP/repo")")_origin__repo" ] || case "$main_slug" in *__repo) echo 1;; *) echo 0;; esac)" \
+  "$main_slug_ok" \
   "expected an owner_repo__repo form, got: $main_slug"
 
 # --- B: CLAUDE_PROJECT_DIR must not collapse worktree identity --------------

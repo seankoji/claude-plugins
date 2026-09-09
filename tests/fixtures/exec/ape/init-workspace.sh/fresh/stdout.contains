@@ -1,3 +1,4 @@
 ^slug=.+$
 ^workspace=.*/tmp/repo-research/.+$
-^fingerprint=none$
+^reports=.*/reports/run\.[A-Za-z0-9]+$
+^fingerprint=.*/reports/run\.[A-Za-z0-9]+/fingerprint.md$

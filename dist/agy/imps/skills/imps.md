@@ -6,6 +6,10 @@ description: >
   read-only audits or a single diff's impact analysis.
 ---
 
+## Verified outcomes
+
+Read `__PLUGIN_ROOT__/references/workflow-contract.md` before planning or resuming. Use its bundled Python helpers for ownership, atomic state patches and revision/artifact hashes. Preserve requirement IDs/methods. Rerun checks, independent review and acceptance after repairs before merging. Detect unavailable tools and host cancellation limits explicitly; never claim Claude Workflow execution or model independence. Release the ownership token in a finally step; a crashed owner requires confirmed recovery.
+
 # /imps — summon the swarm
 
 Decompose a vague task into dependency-mapped imps, dispatch them, and merge the result
@@ -64,7 +68,7 @@ runs — the remaining text is what mode detection and every phase below operate
 flag anywhere in the argument string counts; order does not matter.
 
 - **`--personas`** — opt into the in-run five-persona review panel. **Default: OFF.**
-  Without it, the Head Imp reviews the plan and read-only OCR reviews the merged diff.
+  Without it, the plan gets its adversarial review (codex, else Head Imp) and read-only OCR reviews the merged diff.
   With it, the full panel + fix-loop + adjudication runs exactly as before.
 
 Derive a single boolean `PERSONA_PANEL` (`true` only if `--personas` was present) and
@@ -137,6 +141,7 @@ code block). It is purely cosmetic — skip silently if absent.
 
 ---
 
+<!-- SECTION-ID: plan-review -->
 ## The Head Imp — deep-judgment adversarial reviewer
 
 The Head Imp is a one-shot adversarial reviewer dispatched at the **deepest reasoning
@@ -161,6 +166,96 @@ It never edits; it returns findings. You act on them.
 
 (On Claude Code the Head Imp is a registered `imps:😈` plan-review agent. OpenCode reviews
 the merged diff after deterministic gates.)
+
+**Lineage.** On Claude Code this gate prefers a *different model lineage* (codex) and
+falls back to the Head Imp only when that is unavailable, because a reviewer sharing the
+author's priors waves through the assumptions the author never questioned. Here the Head
+Imp runs on the same runtime that wrote the plan, so the verdict is same-lineage: where a
+cross-lineage reviewer is installed, prefer it and say which one ran.
+
+### Tier 1 — Codex
+
+GOAL.md is uncommitted in the working tree at this point, so a working-tree scope sees
+it as the change under review. It is a single file, which keeps it under codex's
+inline-diff file cap and away from the unbounded self-collect path a many-file diff
+takes.
+
+```bash
+python3 "__PLUGIN_ROOT__/scripts/run-bounded.py" 300 node "<codex plugin root>/scripts/codex-companion.mjs" adversarial-review \
+  --wait --json --scope working-tree \
+  "This diff is an implementation PLAN (GOAL.md), not shipped code. Argue against the
+   plan itself: wrong task boundaries against the sizing heuristic in
+   __PLUGIN_ROOT__/references/task-sizing.md, mis-routed models, missing
+   dependency edges, unsafe assumptions, and gaps or unverifiable criteria in the
+   Definition of Done. Ignore prose and formatting."
+```
+
+Resolve the codex plugin root at runtime — `IMPS_CODEX_ROOT` if set, otherwise the
+harness's own `installed_plugins.json` under the Claude config directory. Never write a
+resolved path into the repo or into `dist/`, and don't glob the plugin cache for a version
+directory: those sort lexically, so `1.0.10` loses to `1.0.6`.
+
+The focus text is load-bearing. Without it codex reviews GOAL.md as a changed file and
+returns findings about the Markdown; with it, it argues against the plan. It is still
+subject to the anti-pre-judging rule below — redirect the reviewer's *subject*, never
+its conclusion.
+
+Codex returns `{verdict: approve|needs-attention, findings[{severity: critical|high|
+medium|low, …}], summary, next_steps}`. Map `critical→blocker`, `high→major`,
+`medium→minor`, `low→nit`, and **derive `CHANGES_REQUESTED` from any blocker or major
+rather than trusting `verdict` alone** — then floor it, so a `needs-attention` never
+resolves to `APPROVE` even when every finding mapped below major.
+
+Tier 1 gives up one thing tier 2 has: there is no `agentId`, so an amended GOAL.md costs
+a full fresh review rather than a delta (see the amendment note below).
+
+### Tier 2 — the Head Imp
+
+A reusable one-shot `model: opus` agent. Invoke it like this (swap in the actual
+reference and role):
+
+```
+agent(
+  `You are the Head Imp — the sharpest critic in the swarm.
+   Your briefs: [READ __PLUGIN_ROOT__/personas/solution-architect.md]
+               [READ __PLUGIN_ROOT__/personas/grumpy-engineer.md]
+
+   ARTIFACT (fetch it yourself):
+   <a file path to Read, or a command to run>
+
+   Argue AGAINST this. Find wrong task boundaries (for a plan artifact, check every
+   task's boundary against the sizing heuristic at
+   __PLUGIN_ROOT__/references/task-sizing.md — read it, don't rely on memory of
+   it — any task that fails it is a wrong-boundaries finding), mis-routed models,
+   missing deps, correctness bugs, unsafe assumptions, gaps in the DoD. Steelman the
+   case that this should NOT ship. Return a list of findings (blocker | major | minor |
+   nit), then a one-line VERDICT: APPROVE | CHANGES_REQUESTED.`,
+  { model: '<opus model id>', label: '😈' }
+)
+```
+
+**Phase 2 (plan review):** pass the absolute path of GOAL.md — the Head Imp Reads it.
+The **diff review** happens later through `scripts/run-ocr.sh` — you never invoke
+the Head Imp on a diff yourself, at either tier. See `references/ocr-review.md`.
+
+**Amendments.** On tier 2, keep the `agentId` the `Agent` call returns. If the user
+requests amendments after this review, don't dispatch a fresh Head Imp for the revised
+GOAL.md — `SendMessage` the same `agentId` with what changed (a diff of the section, or
+"task 3 now reads..."). It already holds its own prior findings in its own transcript
+and only needs the delta to re-verdict; a fresh dispatch re-reads the whole plan and
+re-derives context it already had. Only dispatch a genuinely new Head Imp if GOAL.md was
+rewritten wholesale rather than revised in place.
+
+Tier 1 has no equivalent — each `adversarial-review` invocation is one-shot, so an
+amended plan is re-reviewed in full. Don't fall back to the Head Imp for the amendment
+round just to get the delta path: that would mean the plan's first review and its
+re-review came from different lineages, and the cheaper round is the one that no longer
+disagrees with the author. Re-run tier 1.
+
+Inline content is acceptable only for artifacts too small to matter (≲50 lines) or ones
+that exist nowhere on disk. **Imps may also consult the Head Imp** mid-task when they
+hit an ambiguous decision, correctness risk, or a cross-cutting change they're unsure
+about — one consultation per blocking question, not a rubber-stamp.
 
 ### Never pre-judge a reviewer's findings inside its own prompt
 
@@ -324,6 +419,10 @@ select for this session, not a plan-mode routing rule.
 Read the `## Active rules` section from each that exists. Project-scoped rules win on
 conflict. Apply them to tier assignment, task boundaries, and dependency detection.
 
+Read the dispatch value check in `__PLUGIN_ROOT__/references/task-sizing.md` first.
+Reuse facts already verified in this run. Only delegate exploration for a named,
+bounded unknown; skip the recon pass when the brief already supplies the answers.
+
 **Step 1:** Ground the plan in reality — but **delegate the exploration** rather than
 doing it in this context: dispatch cheap read-only runs for mechanical recon (default
 branch, gate commands, file/symbol enumeration, "where is X"). Read a file directly only
@@ -398,8 +497,7 @@ discussion body. Never a paraphrase; this section exists to be checked against.>
 ## Definition of Done
 - [ ] <acceptance criterion 1>
 - [ ] <acceptance criterion 2 — one line each from discovery>
-- [ ] Gates green (build · lint · test · type — per GATE_CMDS)
-- [ ] Head Imp reviewed the plan; OCR reviewed the merged diff; all blocker/major findings addressed
+- [ ] Plan adversarially reviewed (codex, else Head Imp); OCR reviewed the merged diff; all blocker/major findings addressed
 - [ ] No merge conflicts with the default branch
 
 ## Global Constraints

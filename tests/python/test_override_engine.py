@@ -43,6 +43,29 @@ def _render(body: str, replacements) -> str:
     return generate.restore_overrides(swapped, held, "<test>")
 
 
+class StableSectionIdsTest(unittest.TestCase):
+    def test_renamed_heading_keeps_override(self):
+        for heading in ('## Original', '## Renamed'):
+            body = _doc('<!-- SECTION-ID: stable -->', heading, 'old', '## Next', 'retain')
+            self.assertIn('replacement', _render(body, [('@stable', '## Replacement\nreplacement', False)]))
+
+    def test_duplicate_and_missing_ids_fail(self):
+        with self.assertRaisesRegex(generate.GenerateError, 'duplicate section ID'):
+            _render(_doc('<!-- SECTION-ID: stable -->', '## One', '<!-- SECTION-ID: stable -->', '## Two'), [('@stable', 'new', False)])
+        with self.assertRaisesRegex(generate.GenerateError, 'section ID.*not found'):
+            _render('## Plain', [('@missing', 'new', False)])
+
+    def test_id_in_opaque_code_fence_is_not_target(self):
+        with self.assertRaises(generate.GenerateError):
+            _render(_doc('```bash', '<!-- SECTION-ID: fake -->', '## Not a heading', '```'), [('@fake', 'bad', False)])
+
+    def test_previous_replacement_does_not_consume_id_resolution(self):
+        body = _doc('## First', 'a', '<!-- SECTION-ID: second -->', '## Second', 'b')
+        result = _render(body, [('## First', 'first', False), ('@second', 'second', False)])
+        self.assertIn('first', result)
+        self.assertIn('second', result)
+
+
 class HeadingIndicesTest(unittest.TestCase):
     def test_plain_headings_at_every_level(self):
         lines = ["# One", "text", "###### Six", "####### Seven (not a heading)", "#NoSpace"]

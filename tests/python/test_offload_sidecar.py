@@ -14,6 +14,7 @@ sidecar", has a hyphen and isn't an importable package name).
 
 import importlib.util
 import io
+import hashlib
 import json
 import os
 import sys
@@ -1185,6 +1186,9 @@ class HandleProcessLocalFileTest(unittest.TestCase):
             }
         )
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["engine"], "deterministic")
+        self.assertEqual(result["validation_scope"], "deterministic_transform")
+        self.assertEqual(result["output_sha256"], hashlib.sha256(b"b\na\n").hexdigest())
         with open(os.path.join(self.root, "out.txt")) as f:
             self.assertEqual(f.read(), "b\na\n")
 
@@ -1244,6 +1248,9 @@ class HandleProcessLocalFileTest(unittest.TestCase):
                 }
             )
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["validation_scope"], "format_and_heuristics_only")
+        with open(result["output_path"], "rb") as output:
+            self.assertEqual(result["output_sha256"], hashlib.sha256(output.read()).hexdigest())
 
     def test_llm_operation_truncated_generation_errors(self):
         self._write("in.txt", "line one\n")
