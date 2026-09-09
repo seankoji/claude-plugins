@@ -72,6 +72,19 @@ STUB
 chmod +x "$ROOT/bin/npm"
 export STUB_OCR_SOURCE="$ROOT/bin/ocr"
 
+# The credential write reaches the config file through `jq --rawfile k /dev/stdin`, never
+# through a `jq --arg` flag. Intercept jq too: record every invocation's argv, then exec
+# the real binary. The sentinel-key assertions below then prove no external command ever
+# received the credential in its arguments — a property stdout/stderr checks cannot see.
+REAL_JQ="$(command -v jq)"
+: > "$ROOT/jq-argv-sink"
+cat > "$ROOT/bin/jq" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JQ_ARGV_SINK"
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$ROOT/bin/jq"
+
 git init -q "$ROOT/repo"
 git -C "$ROOT/repo" config user.email test@example.invalid
 git -C "$ROOT/repo" config user.name test
@@ -94,6 +107,7 @@ run_review() {
   env STUB_CASE="${STUB_CASE:-approve}" STUB_VERSION="${STUB_VERSION:-1.11.3}" \
     STUB_NPM_FAIL="${STUB_NPM_FAIL:-0}" \
     STUB_CONFIG_SINK="$ROOT/config-sink" \
+    JQ_ARGV_SINK="$ROOT/jq-argv-sink" REAL_JQ="$REAL_JQ" \
     HOME="$ROOT/realhome" TMPDIR="$ROOT/tmp" PATH="$ROOT/bin:$PATH" \
     IMPS_OCR_BIN=ocr IMPS_OCR_VERSION=1.11.3 IMPS_OPENCODE_CONFIG_PATH="$CONFIG" \
     "$REVIEW" --repo "$ROOT/repo" --base "$BASE" --goal "$ROOT/GOAL.md" --timeout 3 "$@"
@@ -109,6 +123,8 @@ out="$ROOT/out" err="$ROOT/err"
 STUB_CASE=approve run_review >"$out" 2>"$err"; rc=$?
 if [ "$rc" = 0 ] && check_contract "$out" && jq -e '.status == "ok" and .verdict == "APPROVE" and (.findings | length) == 0' "$out" >/dev/null; then ok 'clean diff approves'; else bad 'clean diff approves' "rc=$rc"; fi
 if ! grep -q 'secret-litellm-key' "$out" "$err"; then ok 'credential never reaches stdout or stderr'; else bad 'credential never reaches stdout or stderr' 'secret leaked'; fi
+if ! grep -q 'secret-litellm-key' "$ROOT/config-sink" 2>/dev/null; then ok 'credential never reaches `config set` argv'; else bad 'credential never reaches `config set` argv' 'api_key was passed as a config-set argument'; fi
+if ! grep -q 'secret-litellm-key' "$ROOT/jq-argv-sink" 2>/dev/null; then ok 'credential never reaches jq argv'; else bad 'credential never reaches jq argv' 'api_key reached jq as an argument'; fi
 if [ -z "$(find "$ROOT/tmp" -mindepth 1 -maxdepth 1 -name 'imps-ocr-review.*' -print 2>/dev/null)" ]; then ok 'cleanup after success'; else bad 'cleanup after success' 'temporary review directory remained'; fi
 
 # OpenCode stores the endpoint as a bare root; OCR needs the OpenAI-compatible base.

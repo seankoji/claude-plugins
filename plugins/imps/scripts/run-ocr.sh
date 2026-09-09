@@ -258,7 +258,10 @@ export OCR_LLM_TIMEOUT="${IMPS_OCR_LLM_TIMEOUT:-180}"
 # process listings. The `config set` calls above created/updated that file.
 OCR_CFG="$HOME/.opencodereview/config.json"
 [ -f "$OCR_CFG" ] || fail provider_config_failed 'cannot locate OCR config file for credential'
-jq --arg k "$OCR_TOKEN" '.custom_providers["imps-litellm"].api_key = $k' "$OCR_CFG" >"$OCR_CFG.tmp" 2>/dev/null &&
+# Pipe the key through stdin into `--rawfile k /dev/stdin`: jq's argv then carries
+# only the /dev/stdin path, never the credential itself.
+printf '%s' "$OCR_TOKEN" | jq --rawfile k /dev/stdin \
+  '.custom_providers["imps-litellm"].api_key = $k' "$OCR_CFG" >"$OCR_CFG.tmp" 2>/dev/null &&
   mv "$OCR_CFG.tmp" "$OCR_CFG" ||
   fail provider_config_failed 'cannot write OCR provider credential to config'
 
