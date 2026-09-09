@@ -105,7 +105,7 @@ def snapshot(repo, base, goal, refresh=False):
             'merge_base': git(repo, 'merge-base', base_sha, head), 'spec_hash': spec_hash,
             'policy_hash': digest(b''.join(path.read_bytes() for path in sorted(Path(__file__).parent.iterdir())
                                           if path.name in ('workflow-evidence.py', 'imps-run.workflow.js', 'run-code-review.sh',
-                                                           'run-codex-review.sh', 'run-ocr.sh', 'run-bounded.py')) +
+                                                           'run-codex-review.sh', 'run-ocr.sh', 'run-bounded.py', 'review-context.py')) +
                 (Path(os.environ.get('IMPS_OCR_RULE', str(Path(__file__).parent.parent / 'references/ocr-review-rule.json'))).read_bytes()
                  if Path(os.environ.get('IMPS_OCR_RULE', str(Path(__file__).parent.parent / 'references/ocr-review-rule.json'))).is_file() else b'') + json.dumps({
                 name: os.environ.get(name) for name in ('IMPS_CODEX_MODEL', 'IMPS_CODEX_TIMEOUT',
@@ -139,13 +139,34 @@ def gate(name, command, cwd, seconds, argv=None, source=None):
     if not declared.is_relative_to(root) or not declared.is_file():
         raise ValueError('gate source must be a repository file')
     contents = declared.read_text()
-    supported = command in contents
+    supported = False
     if declared.name == 'package.json' and binary in ('npm', 'pnpm', 'yarn', 'bun'):
         scripts = json.loads(contents).get('scripts', {})
         script = argv[2] if len(argv) > 2 and argv[1] == 'run' else argv[1] if len(argv) > 1 else ''
-        supported = script in scripts or supported
+        supported = script in scripts
+    elif declared.name in ('Makefile', 'makefile', 'GNUmakefile') and binary == 'make':
+        # Require a literal target; options, variable assignments and implicit rules
+        # are outside this bounded discovery contract.
+        targets = set(re.findall(r'^([A-Za-z0-9_.-]+)\s*:(?!=)', contents, re.M))
+        supported = len(argv) == 2 and argv[1] in targets
+    elif declared.relative_to(root).as_posix().startswith('.github/workflows/') and declared.suffix in ('.yml', '.yaml'):
+        # Deliberately support only literal single-line run steps. Complex shell
+        # blocks belong in checked-in scripts, not an inline evaluator here.
+        for line in contents.splitlines():
+            match = re.match(r'^\s*(?:-\s+)?run:\s*(.+?)\s*$', line)
+            if not match:
+                continue
+            literal = match.group(1)
+            if literal.startswith('"'):
+                try:
+                    literal = json.loads(literal)
+                except ValueError:
+                    continue
+            elif literal.startswith("'") and literal.endswith("'"):
+                literal = literal[1:-1].replace("''", "'")
+            supported = supported or literal == command
     if not supported:
-        raise ValueError('gate command is not declared literally in its repository source')
+        raise ValueError('unsupported gate source: use a package script, literal Make target, or single-line CI run step')
     runner_path = Path(__file__).with_name('run-bounded.py')
     spec = importlib.util.spec_from_file_location('bounded', runner_path)
     runner = importlib.util.module_from_spec(spec)
@@ -153,7 +174,8 @@ def gate(name, command, cwd, seconds, argv=None, source=None):
     fd, log = tempfile.mkstemp(prefix='workflow-gate-', suffix='.log')
     started = time.monotonic()
     with os.fdopen(fd, 'wb') as output:
-        status = runner.run(seconds, argv, cwd=str(cwd), stdout=output, stderr=subprocess.STDOUT)
+        status = runner.run(seconds, argv, cwd=str(cwd), stdout=output, stderr=subprocess.STDOUT,
+                            env={key: value for key, value in os.environ.items() if key in ('PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'SYSTEMROOT')})
     proof = artifact(log)
     return {'gate': name, 'cmd': command, 'pass': status == 0, 'exit_code': status,
             'status': 'passed' if status == 0 else 'unavailable' if status == 124 else 'failed',
@@ -225,6 +247,8 @@ def main(argv=None):
     snap.add_argument('--base', required=True)
     snap.add_argument('--goal', required=True)
     snap.add_argument('--refresh', action='store_true')
+    contract_cmd = commands.add_parser('contract')
+    contract_cmd.add_argument('--goal', required=True)
     evidence = commands.add_parser('artifact')
     evidence.add_argument('path')
     check = commands.add_parser('gate')
@@ -246,6 +270,9 @@ def main(argv=None):
     try:
         if args.action == 'snapshot':
             result = snapshot(args.repo, args.base, args.goal, args.refresh)
+        elif args.action == 'contract':
+            value, spec_hash = contract(Path(args.goal).read_text())
+            result = {**value, 'spec_hash': spec_hash}
         elif args.action == 'artifact':
             result = artifact(args.path)
         elif args.action == 'gate':
